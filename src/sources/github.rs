@@ -89,16 +89,11 @@ impl GitHubSource {
     }
 
     fn is_todo(issue: &GhIssue) -> bool {
-        let has_todo = issue
-            .labels
-            .iter()
-            .any(|l| l.name.eq_ignore_ascii_case("todo"));
-        let has_active = issue.labels.iter().any(|l| {
+        !issue.labels.iter().any(|l| {
             l.name.eq_ignore_ascii_case("in-progress")
                 || l.name.eq_ignore_ascii_case("in-review")
                 || l.name.eq_ignore_ascii_case("done")
-        });
-        has_todo && !has_active
+        })
     }
 }
 
@@ -131,29 +126,22 @@ impl TaskSource for GitHubSource {
     }
 
     fn mark_in_progress(&self, task_id: &str) -> Result<()> {
-        self.client.run(&[
+        let _ = self.client.run(&["issue", "reopen", task_id]);
+        let _ = self.client.run(&[
             "issue",
             "edit",
             task_id,
             "--add-label",
             "in-progress",
             "--remove-label",
-            "todo",
-        ])?;
+            "in-review",
+        ]);
         debug!(task_id, "marked in-progress");
         Ok(())
     }
 
     fn mark_done(&self, task_id: &str) -> Result<()> {
-        self.client.run(&[
-            "issue",
-            "edit",
-            task_id,
-            "--add-label",
-            "done",
-            "--remove-label",
-            "in-progress,in-review",
-        ])?;
+        self.client.run(&["issue", "close", task_id])?;
         debug!(task_id, "marked done");
         Ok(())
     }
@@ -247,10 +235,10 @@ mod tests {
     #[test]
     fn test_fetch_filters_todo_only() {
         let json = mock_issues_json(&[
-            issue_json(1, "Task 1", &["rlph", "todo"], "body 1"),
+            issue_json(1, "Task 1", &["rlph"], "body 1"),
             issue_json(2, "Task 2", &["rlph", "in-progress"], "body 2"),
-            issue_json(3, "Task 3", &["rlph", "todo", "done"], "body 3"),
-            issue_json(4, "Task 4", &["rlph", "todo"], "body 4"),
+            issue_json(3, "Task 3", &["rlph", "done"], "body 3"),
+            issue_json(4, "Task 4", &["rlph"], "body 4"),
         ]);
         let client = MockGhClient::new(vec![Ok(json)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
@@ -263,8 +251,8 @@ mod tests {
     #[test]
     fn test_fetch_excludes_in_review() {
         let json = mock_issues_json(&[
-            issue_json(1, "Task 1", &["rlph", "todo"], "body"),
-            issue_json(2, "Task 2", &["rlph", "todo", "in-review"], "body"),
+            issue_json(1, "Task 1", &["rlph"], "body"),
+            issue_json(2, "Task 2", &["rlph", "in-review"], "body"),
         ]);
         let client = MockGhClient::new(vec![Ok(json)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
@@ -276,9 +264,9 @@ mod tests {
     #[test]
     fn test_fetch_parses_priority() {
         let json = mock_issues_json(&[
-            issue_json(1, "High pri", &["rlph", "todo", "p1"], "body"),
-            issue_json(2, "Low pri", &["rlph", "todo", "priority-low"], "body"),
-            issue_json(3, "No pri", &["rlph", "todo"], "body"),
+            issue_json(1, "High pri", &["rlph", "p1"], "body"),
+            issue_json(2, "Low pri", &["rlph", "priority-low"], "body"),
+            issue_json(3, "No pri", &["rlph"], "body"),
         ]);
         let client = MockGhClient::new(vec![Ok(json)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
@@ -290,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_mark_in_progress() {
-        let client = MockGhClient::new(vec![Ok(String::new())]);
+        let client = MockGhClient::new(vec![Ok(String::new()), Ok(String::new())]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
         source.mark_in_progress("42").unwrap();
     }
@@ -321,11 +309,11 @@ mod tests {
     }
 
     #[test]
-    fn test_fetch_filters_mixed_case_todo() {
+    fn test_fetch_includes_issues_without_active_labels() {
         let json = mock_issues_json(&[
-            issue_json(1, "Uppercase", &["rlph", "TODO"], "body"),
-            issue_json(2, "Title case", &["rlph", "Todo"], "body"),
-            issue_json(3, "Weird case", &["rlph", "ToDo"], "body"),
+            issue_json(1, "Just rlph", &["rlph"], "body"),
+            issue_json(2, "Extra label", &["rlph", "bug"], "body"),
+            issue_json(3, "No labels", &[], "body"),
         ]);
         let client = MockGhClient::new(vec![Ok(json)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
@@ -336,10 +324,10 @@ mod tests {
     #[test]
     fn test_fetch_excludes_mixed_case_active_labels() {
         let json = mock_issues_json(&[
-            issue_json(1, "In progress", &["rlph", "todo", "In-Progress"], "body"),
-            issue_json(2, "In review", &["rlph", "Todo", "IN-REVIEW"], "body"),
-            issue_json(3, "Done", &["rlph", "TODO", "Done"], "body"),
-            issue_json(4, "Eligible", &["rlph", "Todo"], "body"),
+            issue_json(1, "In progress", &["rlph", "In-Progress"], "body"),
+            issue_json(2, "In review", &["rlph", "IN-REVIEW"], "body"),
+            issue_json(3, "Done", &["rlph", "Done"], "body"),
+            issue_json(4, "Eligible", &["rlph"], "body"),
         ]);
         let client = MockGhClient::new(vec![Ok(json)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
