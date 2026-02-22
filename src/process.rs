@@ -98,16 +98,19 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     );
     eprintln!("[{}] started (pid {pid}): {command_preview}", log_prefix);
 
-    // Write stdin data if provided, then close stdin.
-    if let Some(data) = config.stdin_data {
+    // Spawn stdin write concurrently so it cannot block the timeout/select path
+    // if the child stalls or the data exceeds the OS pipe buffer.
+    let stdin_task = if let Some(data) = config.stdin_data {
         use tokio::io::AsyncWriteExt;
         let mut stdin = child.stdin.take().expect("stdin is piped");
-        stdin
-            .write_all(data.as_bytes())
-            .await
-            .map_err(|e| Error::Process(format!("failed to write stdin: {e}")))?;
-        drop(stdin);
-    }
+        Some(tokio::spawn(async move {
+            stdin.write_all(data.as_bytes()).await?;
+            drop(stdin);
+            Ok::<(), std::io::Error>(())
+        }))
+    } else {
+        None
+    };
 
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
@@ -182,6 +185,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let status = match status_result {
         Ok(status) => status,
         Err(Error::ProcessTimeout { timeout, .. }) => {
+            if let Some(t) = stdin_task { t.abort(); }
             // Wait briefly for reader tasks to drain buffered output.
             let stdout_lines = match tokio::time::timeout(READER_DRAIN_TIMEOUT, stdout_task).await {
                 Ok(Ok(lines)) => lines,
@@ -198,11 +202,21 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
             });
         }
         Err(e) => {
+            if let Some(t) = stdin_task { t.abort(); }
             stdout_task.abort();
             stderr_task.abort();
             return Err(e);
         }
     };
+
+    // Ensure stdin writer finished successfully.
+    if let Some(t) = stdin_task {
+        match t.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(Error::Process(format!("failed to write stdin: {e}"))),
+            Err(e) => return Err(Error::Process(format!("stdin writer task failed: {e}"))),
+        }
+    }
 
     let stdout_lines = stdout_task
         .await

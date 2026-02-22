@@ -276,3 +276,48 @@ async fn test_stdin_data_multiline() {
     assert!(output.success());
     assert_eq!(output.stdout_lines, vec!["line1", "line2", "line3"]);
 }
+
+#[tokio::test]
+async fn test_stdin_write_error_propagated() {
+    // Child closes stdin immediately without reading, then exits 0.
+    // The stdin write should fail and that error must propagate.
+    // Generate data larger than the OS pipe buffer to guarantee a broken-pipe.
+    let large_data = "x".repeat(256 * 1024);
+    let config = ProcessConfig {
+        command: "bash".to_string(),
+        args: vec!["-c".to_string(), "exec 0<&-; exit 0".to_string()],
+        working_dir: PathBuf::from("."),
+        timeout: Some(Duration::from_secs(5)),
+        log_prefix: "test:stdin-err".to_string(),
+        env: vec![],
+        stdin_data: Some(large_data),
+    };
+    let result = spawn_and_stream(config).await;
+    assert!(result.is_err(), "should propagate stdin write failure");
+    assert!(
+        result.unwrap_err().to_string().contains("stdin"),
+        "error should mention stdin"
+    );
+}
+
+#[tokio::test]
+async fn test_stdin_blocked_still_times_out() {
+    // Child never reads stdin. With large data the write would block forever
+    // if done synchronously. The timeout must still fire.
+    let large_data = "x".repeat(256 * 1024);
+    let config = ProcessConfig {
+        command: "bash".to_string(),
+        args: vec!["-c".to_string(), "sleep 60".to_string()],
+        working_dir: PathBuf::from("."),
+        timeout: Some(Duration::from_millis(500)),
+        log_prefix: "test:stdin-block".to_string(),
+        env: vec![],
+        stdin_data: Some(large_data),
+    };
+    let result = spawn_and_stream(config).await;
+    assert!(result.is_err());
+    assert!(
+        result.unwrap_err().to_string().contains("timed out"),
+        "should time out even when stdin write is blocked"
+    );
+}
