@@ -627,7 +627,7 @@ run_review_loops() {
   for ((loop=1; loop<=MAX_REVIEW_LOOPS; loop++)); do
     log "INFO" "Review loop $loop/$MAX_REVIEW_LOOPS for issue #$issue_number (PR #$pr_number)"
 
-    gh pr view "$pr_number" --json number,title,url,body,state,reviews,comments,reviewComments,files,headRefName,baseRefName > "$PR_CONTEXT_FILE"
+    gh pr view "$pr_number" --json number,title,url,body,state,reviews,comments,files,headRefName,baseRefName > "$PR_CONTEXT_FILE"
 
     local review_prompt
     review_prompt="$(build_review_prompt "$issue_number" "$issue_title" "$pr_number" "$pr_url" "$branch" "$previous_instructions_file")"
