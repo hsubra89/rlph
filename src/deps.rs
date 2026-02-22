@@ -122,9 +122,18 @@ impl DependencyGraph {
     /// on cycle tasks are still enforced.
     pub fn filter_eligible(&self, tasks: Vec<Task>, done_ids: &HashSet<u64>) -> Vec<Task> {
         let cycles = self.detect_cycles();
-        let cycle_nodes: HashSet<u64> = cycles.iter().flat_map(|c| c.iter().copied()).collect();
 
-        if !cycle_nodes.is_empty() {
+        // Build per-node set of cycle peers (nodes sharing any cycle with it).
+        // This correctly distinguishes same-cycle deps from cross-cycle deps.
+        let mut cycle_peers: HashMap<u64, HashSet<u64>> = HashMap::new();
+        for cycle in &cycles {
+            let cycle_set: HashSet<u64> = cycle.iter().copied().collect();
+            for &node in cycle {
+                cycle_peers.entry(node).or_default().extend(&cycle_set);
+            }
+        }
+
+        if !cycle_peers.is_empty() {
             warn!(
                 ?cycles,
                 "dependency cycles detected; ignoring cycle-internal blockers (external blockers still enforced)"
@@ -141,10 +150,10 @@ impl DependencyGraph {
                 match self.edges.get(&id) {
                     None => true,
                     Some(deps) => {
-                        if cycle_nodes.contains(&id) {
-                            // Ignore cycle-internal blockers but still enforce external ones
+                        if let Some(peers) = cycle_peers.get(&id) {
+                            // Ignore same-cycle blockers but still enforce external ones
                             deps.iter()
-                                .filter(|dep| !cycle_nodes.contains(dep))
+                                .filter(|dep| !peers.contains(dep))
                                 .all(|dep| done_ids.contains(dep))
                         } else {
                             deps.iter().all(|dep| done_ids.contains(dep))
@@ -385,6 +394,36 @@ mod tests {
         let done = HashSet::new();
         let eligible = graph.filter_eligible(tasks, &done);
         assert_eq!(eligible.len(), 2);
+    }
+
+    #[test]
+    fn test_cross_cycle_dependency_still_enforced() {
+        // Two separate cycles: {1,2} and {3,4}
+        // Task 1 also depends on task 3 (cross-cycle dep) — must be enforced
+        let tasks = vec![
+            make_task(1, "Blocked by #2\nBlocked by #3"),
+            make_task(2, "Blocked by #1"),
+            make_task(3, "Blocked by #4"),
+            make_task(4, "Blocked by #3"),
+        ];
+        let graph = DependencyGraph::build(&tasks);
+        let done = HashSet::new();
+        let eligible = graph.filter_eligible(tasks.clone(), &done);
+        // Task 1: cycle peer is 2, dep on 3 is cross-cycle → blocked
+        // Task 2: only cycle-internal dep on 1 → eligible
+        // Task 3: cycle peer is 4, no external deps → eligible
+        // Task 4: cycle peer is 3, no external deps → eligible
+        assert_eq!(eligible.len(), 3);
+        let ids: Vec<&str> = eligible.iter().map(|t| t.id.as_str()).collect();
+        assert!(!ids.contains(&"1"));
+        assert!(ids.contains(&"2"));
+        assert!(ids.contains(&"3"));
+        assert!(ids.contains(&"4"));
+
+        // Mark task 3 as done: task 1's cross-cycle dep resolved
+        let done: HashSet<u64> = [3].into_iter().collect();
+        let eligible = graph.filter_eligible(tasks, &done);
+        assert_eq!(eligible.len(), 4);
     }
 
     #[test]
