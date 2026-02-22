@@ -273,7 +273,7 @@ fn make_task(number: u64, title: &str) -> Task {
 fn make_config(dry_run: bool) -> Config {
     Config {
         source: "github".to_string(),
-        runner: "bare".to_string(),
+        runner: "claude".to_string(),
         submission: "github".to_string(),
         label: "rlph".to_string(),
         poll_interval: 60,

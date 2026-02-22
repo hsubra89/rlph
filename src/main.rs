@@ -8,7 +8,7 @@ use rlph::cli::Cli;
 use rlph::config::Config;
 use rlph::orchestrator::Orchestrator;
 use rlph::prompts::PromptEngine;
-use rlph::runner::BareClaudeRunner;
+use rlph::runner::{AnyRunner, BareClaudeRunner, CodexRunner};
 use rlph::sources::github::GitHubSource;
 use rlph::state::StateManager;
 use rlph::submission::GitHubSubmission;
@@ -46,12 +46,21 @@ async fn main() {
     let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     let source = GitHubSource::new(&config);
-    let runner = BareClaudeRunner::new(
-        config.agent_binary.clone(),
-        config.agent_model.clone(),
-        config.agent_timeout.map(Duration::from_secs),
-        config.agent_timeout_retries,
-    );
+    let timeout = config.agent_timeout.map(Duration::from_secs);
+    let runner = match config.runner.as_str() {
+        "codex" => AnyRunner::Codex(CodexRunner::new(
+            config.agent_binary.clone(),
+            config.agent_model.clone(),
+            timeout,
+            config.agent_timeout_retries,
+        )),
+        _ => AnyRunner::Claude(BareClaudeRunner::new(
+            config.agent_binary.clone(),
+            config.agent_model.clone(),
+            timeout,
+            config.agent_timeout_retries,
+        )),
+    };
     let submission = GitHubSubmission::new();
     let worktree_base = PathBuf::from(&config.worktree_dir);
     let worktree_mgr =

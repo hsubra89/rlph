@@ -24,6 +24,9 @@ pub struct ProcessConfig {
     pub timeout: Option<Duration>,
     pub log_prefix: String,
     pub env: Vec<(String, String)>,
+    /// Data to write to the child's stdin. When `Some`, stdin is piped and the
+    /// data is written before closing. When `None`, stdin is connected to /dev/null.
+    pub stdin_data: Option<String>,
 }
 
 /// Output from a completed child process.
@@ -51,9 +54,14 @@ impl ProcessOutput {
 pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let started_at = Instant::now();
     let mut cmd = Command::new(&config.command);
+    let has_stdin = config.stdin_data.is_some();
     cmd.args(&config.args)
         .current_dir(&config.working_dir)
-        .stdin(Stdio::null())
+        .stdin(if has_stdin {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -89,6 +97,20 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
         log_prefix, pid
     );
     eprintln!("[{}] started (pid {pid}): {command_preview}", log_prefix);
+
+    // Spawn stdin write concurrently so it cannot block the timeout/select path
+    // if the child stalls or the data exceeds the OS pipe buffer.
+    let stdin_task = if let Some(data) = config.stdin_data {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        Some(tokio::spawn(async move {
+            stdin.write_all(data.as_bytes()).await?;
+            drop(stdin);
+            Ok::<(), std::io::Error>(())
+        }))
+    } else {
+        None
+    };
 
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
@@ -163,6 +185,9 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let status = match status_result {
         Ok(status) => status,
         Err(Error::ProcessTimeout { timeout, .. }) => {
+            if let Some(t) = stdin_task {
+                t.abort();
+            }
             // Wait briefly for reader tasks to drain buffered output.
             let stdout_lines = match tokio::time::timeout(READER_DRAIN_TIMEOUT, stdout_task).await {
                 Ok(Ok(lines)) => lines,
@@ -179,11 +204,23 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
             });
         }
         Err(e) => {
+            if let Some(t) = stdin_task {
+                t.abort();
+            }
             stdout_task.abort();
             stderr_task.abort();
             return Err(e);
         }
     };
+
+    // Ensure stdin writer finished successfully.
+    if let Some(t) = stdin_task {
+        match t.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(Error::Process(format!("failed to write stdin: {e}"))),
+            Err(e) => return Err(Error::Process(format!("stdin writer task failed: {e}"))),
+        }
+    }
 
     let stdout_lines = stdout_task
         .await
