@@ -121,6 +121,47 @@ impl AgentRunner for MockRunner {
     }
 }
 
+/// Runner whose choose phase reports an existing PR number.
+struct ExistingPrRunner {
+    task_id: String,
+    pr_number: u64,
+}
+
+impl AgentRunner for ExistingPrRunner {
+    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        match phase {
+            Phase::Choose => {
+                let ralph_dir = working_dir.join(".ralph");
+                std::fs::create_dir_all(&ralph_dir)
+                    .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                std::fs::write(
+                    ralph_dir.join("task.toml"),
+                    format!(
+                        "id = \"{}\"\ngithubPrNumber = {}",
+                        self.task_id, self.pr_number
+                    ),
+                )
+                .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "Selected task".into(),
+                    stderr: String::new(),
+                })
+            }
+            Phase::Implement => Ok(RunResult {
+                exit_code: 0,
+                stdout: "IMPLEMENTATION_COMPLETE: done".into(),
+                stderr: String::new(),
+            }),
+            Phase::Review => Ok(RunResult {
+                exit_code: 0,
+                stdout: "REVIEW_COMPLETE: ok".into(),
+                stderr: String::new(),
+            }),
+        }
+    }
+}
+
 /// Runner that fails at a specific phase.
 struct FailAtPhaseRunner {
     fail_at: Phase,
@@ -651,4 +692,37 @@ async fn test_review_exhaustion_does_not_mark_done() {
     assert!(state.current_task.is_some());
     assert_eq!(state.current_task.unwrap().phase, "review");
     assert!(state.history.is_empty());
+}
+
+#[tokio::test]
+async fn test_existing_pr_skips_submission() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let orchestrator = Orchestrator::new(
+        MockSource::new(vec![task], Arc::clone(&source_tracker)),
+        ExistingPrRunner {
+            task_id: "gh-42".to_string(),
+            pr_number: 99,
+        },
+        MockSubmission::new(Arc::clone(&sub_tracker)),
+        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf()),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        make_config(false), // non-dry-run so submission would normally fire
+        repo_dir.path().to_path_buf(),
+    );
+
+    orchestrator.run_once().await.unwrap();
+
+    // Submission should NOT have been called
+    let subs = sub_tracker.lock().unwrap();
+    assert!(
+        subs.submissions.is_empty(),
+        "expected no submissions when existing PR reported, got {}",
+        subs.submissions.len()
+    );
 }

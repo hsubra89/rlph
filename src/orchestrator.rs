@@ -80,9 +80,12 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             .await?;
 
         // 3. Parse task selection from .ralph/task.toml
-        let (task_id, _pr_number) = self.parse_task_selection()?;
+        let (task_id, existing_pr_number) = self.parse_task_selection()?;
         let issue_number = parse_issue_number(&task_id)?;
         info!("[rlph:orchestrator] Selected task: {task_id} (issue #{issue_number})");
+        if let Some(pr) = existing_pr_number {
+            info!("[rlph:orchestrator] Existing PR #{pr} reported by choose agent");
+        }
 
         // 4. Get task details
         let task = self.source.get_task_details(&issue_number.to_string())?;
@@ -113,7 +116,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
 
         // Run the implement → submit → review pipeline, cleaning up on success
         let result = self
-            .run_implement_review(&task, &task_id, issue_number, &worktree_info)
+            .run_implement_review(&task, &task_id, issue_number, &worktree_info, existing_pr_number)
             .await;
 
         match result {
@@ -149,6 +152,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
         _task_id: &str,
         issue_number: u64,
         worktree_info: &WorktreeInfo,
+        existing_pr_number: Option<u64>,
     ) -> Result<()> {
         let vars = self.build_task_vars(task, worktree_info);
 
@@ -165,8 +169,10 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             self.push_branch(worktree_info)?;
         }
 
-        // 9. Submit PR
-        if !self.config.dry_run {
+        // 9. Submit PR (skip if choose agent reported an existing PR)
+        if let Some(pr) = existing_pr_number {
+            info!("[rlph:orchestrator] Skipping PR submission — existing PR #{pr}");
+        } else if !self.config.dry_run {
             info!("[rlph:orchestrator] Submitting PR...");
             let pr_body = format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.");
             let result =
