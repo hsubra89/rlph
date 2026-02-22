@@ -21,6 +21,7 @@ pub struct ConfigFile {
     pub agent_model: Option<String>,
     pub agent_timeout: Option<u64>,
     pub max_review_rounds: Option<u32>,
+    pub agent_timeout_retries: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,6 +41,7 @@ pub struct Config {
     pub agent_model: Option<String>,
     pub agent_timeout: Option<u64>,
     pub max_review_rounds: u32,
+    pub agent_timeout_retries: u32,
 }
 
 const DEFAULT_CONFIG_FILE: &str = ".rlph/config.toml";
@@ -122,11 +124,15 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .or(file.agent_binary)
             .unwrap_or_else(|| "claude".to_string()),
         agent_model: cli.agent_model.clone().or(file.agent_model),
-        agent_timeout: cli.agent_timeout.or(file.agent_timeout).or(Some(300)),
+        agent_timeout: cli.agent_timeout.or(file.agent_timeout).or(Some(600)),
         max_review_rounds: cli
             .max_review_rounds
             .or(file.max_review_rounds)
             .unwrap_or(3),
+        agent_timeout_retries: cli
+            .agent_timeout_retries
+            .or(file.agent_timeout_retries)
+            .unwrap_or(2),
     };
     validate(&config)?;
     Ok(config)
@@ -278,7 +284,8 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
         assert_eq!(config.poll_interval, 60);
-        assert_eq!(config.agent_timeout, Some(300));
+        assert_eq!(config.agent_timeout, Some(600));
+        assert_eq!(config.agent_timeout_retries, 2);
     }
 
     #[test]

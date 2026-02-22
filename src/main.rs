@@ -50,10 +50,12 @@ async fn main() {
         config.agent_binary.clone(),
         config.agent_model.clone(),
         config.agent_timeout.map(Duration::from_secs),
+        config.agent_timeout_retries,
     );
     let submission = GitHubSubmission::new();
     let worktree_base = PathBuf::from(&config.worktree_dir);
-    let worktree_mgr = WorktreeManager::new(repo_root.clone(), worktree_base, config.base_branch.clone());
+    let worktree_mgr =
+        WorktreeManager::new(repo_root.clone(), worktree_base, config.base_branch.clone());
     let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
     let prompt_engine = PromptEngine::new(None);
 
