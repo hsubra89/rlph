@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+#[allow(dead_code)]
 mod deps;
 #[allow(dead_code)]
 mod error;
