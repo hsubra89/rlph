@@ -57,8 +57,16 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
         cmd.env(key, value);
     }
 
+    // Allow nested Claude CLI invocations (parent sets CLAUDECODE=1).
+    cmd.env_remove("CLAUDECODE");
+
     #[cfg(unix)]
     cmd.process_group(0);
+
+    let command_preview = format_command_preview(&config.command, &config.args);
+    let log_prefix = config.log_prefix.clone();
+    info!("[{}] launching command={command_preview}", log_prefix);
+    eprintln!("[{}] launching: {command_preview}", log_prefix);
 
     let mut child = cmd
         .spawn()
@@ -67,8 +75,6 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let pid = child
         .id()
         .ok_or_else(|| Error::Process("child has no pid".into()))?;
-    let command_preview = format_command_preview(&config.command, &config.args);
-    let log_prefix = config.log_prefix.clone();
     info!(
         "[{}] started pid={} command={command_preview}",
         log_prefix, pid
