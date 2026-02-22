@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
@@ -164,6 +165,31 @@ impl TaskSource for GitHubSource {
         self.client.run(&["issue", "close", task_id])?;
         debug!(task_id, "marked done");
         Ok(())
+    }
+
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
+        let json = self.client.run(&[
+            "issue",
+            "list",
+            "--state",
+            "closed",
+            "--json",
+            "number",
+            "--limit",
+            "200",
+        ])?;
+
+        #[derive(Deserialize)]
+        struct Num {
+            number: u64,
+        }
+
+        let nums: Vec<Num> = serde_json::from_str(&json)
+            .map_err(|e| Error::TaskSource(format!("failed to parse closed issues: {e}")))?;
+
+        let ids = nums.into_iter().map(|n| n.number).collect();
+        debug!(?ids, "fetched closed task ids");
+        Ok(ids)
     }
 
     fn get_task_details(&self, task_id: &str) -> Result<Task> {
