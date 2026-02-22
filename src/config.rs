@@ -38,14 +38,32 @@ pub struct Config {
     pub agent_timeout: Option<u64>,
 }
 
+const DEFAULT_CONFIG_FILE: &str = ".rlph/config.toml";
+
 impl Config {
     pub fn load(cli: &Cli) -> Result<Self> {
-        let config_path = Path::new(&cli.config);
-        let file_config = if config_path.exists() {
-            let content = std::fs::read_to_string(config_path)?;
-            parse_config(&content)?
-        } else {
-            return Err(Error::ConfigNotFound(config_path.to_path_buf()));
+        Self::load_from(cli, Path::new("."))
+    }
+
+    pub fn load_from(cli: &Cli, project_dir: &Path) -> Result<Self> {
+        let file_config = match &cli.config {
+            Some(explicit_path) => {
+                let path = Path::new(explicit_path);
+                if !path.exists() {
+                    return Err(Error::ConfigNotFound(path.to_path_buf()));
+                }
+                let content = std::fs::read_to_string(path)?;
+                parse_config(&content)?
+            }
+            None => {
+                let path = project_dir.join(DEFAULT_CONFIG_FILE);
+                if path.exists() {
+                    let content = std::fs::read_to_string(&path)?;
+                    parse_config(&content)?
+                } else {
+                    ConfigFile::default()
+                }
+            }
         };
 
         Ok(merge(file_config, cli))
@@ -238,5 +256,39 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
         assert_eq!(config.poll_interval, 60);
+    }
+
+    #[test]
+    fn test_load_missing_default_config_falls_back_to_defaults() {
+        // When no --config is provided and .rlph/config.toml doesn't exist,
+        // Config::load should succeed with built-in defaults.
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.source, "github");
+        assert_eq!(config.runner, "bare");
+        assert_eq!(config.submission, "github");
+        assert_eq!(config.label, "rlph");
+        assert_eq!(config.poll_interval, 60);
+        assert!(config.once);
+    }
+
+    #[test]
+    fn test_load_missing_default_config_with_cli_overrides() {
+        // CLI overrides should still win when default config file is absent.
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once", "--runner", "docker", "--label", "custom"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.runner, "docker");
+        assert_eq!(config.label, "custom");
+        assert_eq!(config.source, "github"); // default
+    }
+
+    #[test]
+    fn test_load_explicit_missing_config_errors() {
+        // When --config points to a missing file, Config::load should fail.
+        let cli = Cli::parse_from(["rlph", "--once", "--config", "/nonexistent/config.toml"]);
+        let err = Config::load(&cli).unwrap_err();
+        assert!(err.to_string().contains("config file not found"));
     }
 }
