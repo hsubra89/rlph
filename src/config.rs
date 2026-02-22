@@ -72,49 +72,7 @@ impl Config {
 
 pub fn parse_config(content: &str) -> Result<ConfigFile> {
     let config: ConfigFile = toml::from_str(content)?;
-    validate(&config)?;
     Ok(config)
-}
-
-fn validate(config: &ConfigFile) -> Result<()> {
-    if let Some(ref source) = config.source {
-        match source.as_str() {
-            "github" | "linear" => {}
-            other => {
-                return Err(Error::ConfigValidation(format!(
-                    "unknown source: {other} (expected: github, linear)"
-                )));
-            }
-        }
-    }
-    if let Some(ref runner) = config.runner {
-        match runner.as_str() {
-            "bare" | "docker" => {}
-            other => {
-                return Err(Error::ConfigValidation(format!(
-                    "unknown runner: {other} (expected: bare, docker)"
-                )));
-            }
-        }
-    }
-    if let Some(ref submission) = config.submission {
-        match submission.as_str() {
-            "github" | "graphite" => {}
-            other => {
-                return Err(Error::ConfigValidation(format!(
-                    "unknown submission: {other} (expected: github, graphite)"
-                )));
-            }
-        }
-    }
-    if let Some(interval) = config.poll_interval
-        && interval == 0
-    {
-        return Err(Error::ConfigValidation(
-            "poll_interval must be > 0".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
@@ -157,11 +115,11 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         agent_model: cli.agent_model.clone().or(file.agent_model),
         agent_timeout: cli.agent_timeout.or(file.agent_timeout),
     };
-    validate_effective(&config)?;
+    validate(&config)?;
     Ok(config)
 }
 
-fn validate_effective(config: &Config) -> Result<()> {
+fn validate(config: &Config) -> Result<()> {
     match config.source.as_str() {
         "github" | "linear" => {}
         other => {
@@ -222,30 +180,46 @@ worktree_dir = "/tmp/wt"
     }
 
     #[test]
-    fn test_parse_invalid_source() {
-        let toml = r#"source = "jira""#;
-        let err = parse_config(toml).unwrap_err();
-        assert!(err.to_string().contains("unknown source"));
+    fn test_file_invalid_source_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("config.toml"), r#"source = "jira""#).unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("unknown source: jira"));
     }
 
     #[test]
-    fn test_parse_invalid_runner() {
-        let toml = r#"runner = "podman""#;
-        let err = parse_config(toml).unwrap_err();
-        assert!(err.to_string().contains("unknown runner"));
+    fn test_file_invalid_runner_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("config.toml"), r#"runner = "podman""#).unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("unknown runner: podman"));
     }
 
     #[test]
-    fn test_parse_invalid_submission() {
-        let toml = r#"submission = "gitlab""#;
-        let err = parse_config(toml).unwrap_err();
-        assert!(err.to_string().contains("unknown submission"));
+    fn test_file_invalid_submission_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("config.toml"), r#"submission = "gitlab""#).unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("unknown submission: gitlab"));
     }
 
     #[test]
-    fn test_parse_zero_poll_interval() {
-        let toml = r#"poll_interval = 0"#;
-        let err = parse_config(toml).unwrap_err();
+    fn test_file_zero_poll_interval_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("config.toml"), r#"poll_interval = 0"#).unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
         assert!(err.to_string().contains("poll_interval must be > 0"));
     }
 
