@@ -75,16 +75,28 @@ impl StateManager {
         }
     }
 
-    /// Save state to disk.
+    /// Save state to disk atomically (write tmp + fsync + rename).
     pub fn save(&self, state: &StateData) -> Result<()> {
+        use std::io::Write;
+
         std::fs::create_dir_all(&self.state_dir)
             .map_err(|e| Error::State(format!("failed to create state dir: {e}")))?;
 
         let content = toml::to_string_pretty(state)
             .map_err(|e| Error::State(format!("failed to serialize state: {e}")))?;
 
-        std::fs::write(self.state_file(), content)
-            .map_err(|e| Error::State(format!("failed to write state file: {e}")))?;
+        let dest = self.state_file();
+        let tmp = self.state_dir.join(".state.toml.tmp");
+
+        let mut file = std::fs::File::create(&tmp)
+            .map_err(|e| Error::State(format!("failed to create temp state file: {e}")))?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| Error::State(format!("failed to write temp state file: {e}")))?;
+        file.sync_all()
+            .map_err(|e| Error::State(format!("failed to fsync temp state file: {e}")))?;
+
+        std::fs::rename(&tmp, &dest)
+            .map_err(|e| Error::State(format!("failed to rename temp state file: {e}")))?;
 
         Ok(())
     }
