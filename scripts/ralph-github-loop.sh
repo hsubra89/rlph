@@ -11,6 +11,7 @@ AGENT_BIN="${AGENT_BIN:-claude}"
 AGENT_ARGS="${AGENT_ARGS:---dangerously-skip-permissions --verbose --model opus}"
 AGENT_CMD_PREFIX="${AGENT_CMD_PREFIX:-}"
 ONCE_MODE=false
+REVIEW_PR_NUMBER=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMPTS_DIR="$SCRIPT_DIR/ralph-prompts"
@@ -85,11 +86,12 @@ gh_retry() {
 
 usage() {
   cat <<EOF
-Usage: scripts/ralph-github-loop.sh [--once] [--help]
+Usage: scripts/ralph-github-loop.sh [--once] [--review-pr <N>] [--help]
 
 Options:
-  --once    Process at most one selected issue, then exit.
-  --help    Show this help text.
+  --once           Process at most one selected issue, then exit.
+  --review-pr <N>  Skip issue selection; run review pass directly on PR #N, then exit.
+  --help           Show this help text.
 EOF
 }
 
@@ -99,6 +101,12 @@ parse_args() {
       --once)
         ONCE_MODE=true
         shift
+        ;;
+      --review-pr)
+        REVIEW_PR_NUMBER="${2:-}"
+        [[ -n "$REVIEW_PR_NUMBER" ]] || die "--review-pr requires a PR number"
+        ONCE_MODE=true
+        shift 2
         ;;
       --help|-h)
         usage
@@ -774,6 +782,50 @@ process_issue() {
   popd >/dev/null
 }
 
+run_direct_review() {
+  local pr_number="$1"
+  local base_branch="$2"
+
+  local pr_json
+  pr_json="$(gh_retry gh pr view "$pr_number" --json number,title,url,body,headRefName,baseRefName,state)" \
+    || die "Failed to fetch PR #$pr_number"
+
+  local pr_url branch pr_title pr_body
+  pr_url="$(printf '%s' "$pr_json" | jq -r '.url')"
+  branch="$(printf '%s' "$pr_json" | jq -r '.headRefName')"
+  pr_title="$(printf '%s' "$pr_json" | jq -r '.title')"
+  pr_body="$(printf '%s' "$pr_json" | jq -r '.body // ""')"
+
+  # Extract issue number from PR body (Closes/Fixes/Resolves #N) or title (#N)
+  local issue_number=""
+  if [[ "$pr_body" =~ (Closes|Fixes|Resolves)[[:space:]]+#([0-9]+) ]]; then
+    issue_number="${BASH_REMATCH[2]}"
+  elif [[ "$pr_title" =~ \#([0-9]+) ]]; then
+    issue_number="${BASH_REMATCH[1]}"
+  fi
+
+  local issue_title="$pr_title"
+  if [[ -n "$issue_number" ]]; then
+    issue_title="$(gh issue view "$issue_number" --json title --jq '.title' 2>/dev/null || echo "$pr_title")"
+  else
+    issue_number="0"
+    log "WARN" "Could not extract issue number from PR #$pr_number; using 0"
+  fi
+
+  # Create/reuse worktree for the PR branch
+  local wt_info wt_path
+  wt_info="$(create_worktree "$issue_number" "$issue_title" "$base_branch" "$pr_number")"
+  wt_path="${wt_info%%|*}"
+  branch="${wt_info##*|}"
+
+  pushd "$wt_path" >/dev/null
+
+  log "INFO" "Running direct review for PR #$pr_number (issue #$issue_number) on branch $branch"
+  run_review_loops "$issue_number" "$issue_title" "$pr_number" "$pr_url" "$branch" "" "$wt_path"
+
+  popd >/dev/null
+}
+
 main() {
   parse_args "$@"
 
@@ -796,6 +848,12 @@ main() {
   mkdir -p "$RUN_DIR" "$RALPH_DIR"
   local base_branch
   base_branch="$(resolve_base_branch)"
+
+  if [[ -n "$REVIEW_PR_NUMBER" ]]; then
+    log "INFO" "Direct review mode for PR #$REVIEW_PR_NUMBER"
+    run_direct_review "$REVIEW_PR_NUMBER" "$base_branch"
+    return
+  fi
 
   log "INFO" "Starting ralph GitHub loop"
   log "INFO" "Label filter: $LABEL_FILTER"
