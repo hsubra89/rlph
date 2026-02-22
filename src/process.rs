@@ -112,6 +112,8 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
             Ok(r) => r.map_err(|e| Error::Process(format!("wait error: {e}")))?,
             Err(_) => {
                 #[cfg(unix)]
+                signal_task.abort();
+                #[cfg(unix)]
                 unsafe {
                     libc::killpg(pid as i32, libc::SIGTERM);
                 }
@@ -120,6 +122,8 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
                 unsafe {
                     libc::killpg(pid as i32, libc::SIGKILL);
                 }
+                stdout_task.abort();
+                stderr_task.abort();
                 return Err(Error::Process(format!("process timed out after {dur:?}")));
             }
         }
