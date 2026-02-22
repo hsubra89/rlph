@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use rlph::process::{ProcessConfig, spawn_and_stream};
+use serial_test::serial;
 
 fn make_config(command: &str, args: &[&str]) -> ProcessConfig {
     ProcessConfig {
@@ -16,6 +17,7 @@ fn make_config(command: &str, args: &[&str]) -> ProcessConfig {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_stdout_streaming() {
     let config = make_config("bash", &["-c", "echo line1; echo line2; echo line3"]);
     let output = spawn_and_stream(config).await.unwrap();
@@ -26,6 +28,7 @@ async fn test_stdout_streaming() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_stderr_streaming() {
     let config = make_config("bash", &["-c", "echo err1 >&2; echo err2 >&2"]);
     let output = spawn_and_stream(config).await.unwrap();
@@ -34,6 +37,7 @@ async fn test_stderr_streaming() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_mixed_stdout_stderr() {
     let config = make_config(
         "bash",
@@ -46,6 +50,7 @@ async fn test_mixed_stdout_stderr() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_nonzero_exit_code() {
     let config = make_config("bash", &["-c", "exit 42"]);
     let output = spawn_and_stream(config).await.unwrap();
@@ -55,6 +60,7 @@ async fn test_nonzero_exit_code() {
 }
 
 #[tokio::test]
+#[serial]
 #[cfg(unix)]
 async fn test_signal_killed() {
     // Process kills itself with SIGKILL
@@ -65,6 +71,7 @@ async fn test_signal_killed() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_timeout() {
     let mut config = make_config("sleep", &["30"]);
     config.timeout = Some(Duration::from_millis(200));
@@ -75,6 +82,7 @@ async fn test_timeout() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_spawn_failure() {
     let config = make_config("nonexistent_binary_xyz_123", &[]);
     let result = spawn_and_stream(config).await;
@@ -84,6 +92,7 @@ async fn test_spawn_failure() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_env_vars() {
     let mut config = make_config("bash", &["-c", "echo $RLPH_TEST_VAR"]);
     config.env = vec![("RLPH_TEST_VAR".to_string(), "hello_world".to_string())];
@@ -93,6 +102,7 @@ async fn test_env_vars() {
 }
 
 #[tokio::test]
+#[serial]
 #[cfg(unix)]
 async fn test_sigint_to_child() {
     let pid_file = format!("/tmp/rlph_test_sigint_{}", std::process::id());
@@ -146,6 +156,7 @@ async fn test_sigint_to_child() {
 }
 
 #[tokio::test]
+#[serial]
 #[cfg(unix)]
 async fn test_double_sigint_force_exit() {
     // Spawn a process that traps SIGINT and refuses to die
@@ -184,6 +195,7 @@ async fn test_double_sigint_force_exit() {
 }
 
 #[tokio::test]
+#[serial]
 #[cfg(unix)]
 async fn test_timeout_kills_descendants() {
     let pid_file = format!("/tmp/rlph_timeout_descendant_{}.pid", std::process::id());
@@ -237,6 +249,7 @@ async fn test_timeout_kills_descendants() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_stdout_with_output_before_failure() {
     let config = make_config("bash", &["-c", "echo before_fail; exit 1"]);
     let output = spawn_and_stream(config).await.unwrap();
@@ -246,6 +259,7 @@ async fn test_stdout_with_output_before_failure() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_stdin_data() {
     let config = ProcessConfig {
         command: "bash".to_string(),
@@ -262,6 +276,7 @@ async fn test_stdin_data() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_stdin_data_multiline() {
     let config = ProcessConfig {
         command: "bash".to_string(),
@@ -278,6 +293,7 @@ async fn test_stdin_data_multiline() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_stdin_write_error_propagated() {
     // Child closes stdin immediately without reading, then exits 0.
     // The stdin write should fail and that error must propagate.
@@ -301,6 +317,7 @@ async fn test_stdin_write_error_propagated() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_stdin_blocked_still_times_out() {
     // Child never reads stdin. With large data the write would block forever
     // if done synchronously. The timeout must still fire.
