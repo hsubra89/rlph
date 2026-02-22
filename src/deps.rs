@@ -118,7 +118,8 @@ impl DependencyGraph {
     }
 
     /// Filter tasks, returning only those whose dependencies are all in `done_ids`.
-    /// Tasks involved in cycles are treated as unblocked (with a warning logged).
+    /// Cycle-internal blockers are ignored (with a warning logged), but external blockers
+    /// on cycle tasks are still enforced.
     pub fn filter_eligible(&self, tasks: Vec<Task>, done_ids: &HashSet<u64>) -> Vec<Task> {
         let cycles = self.detect_cycles();
         let cycle_nodes: HashSet<u64> = cycles.iter().flat_map(|c| c.iter().copied()).collect();
@@ -126,7 +127,7 @@ impl DependencyGraph {
         if !cycle_nodes.is_empty() {
             warn!(
                 ?cycles,
-                "dependency cycles detected; treating cycled tasks as unblocked"
+                "dependency cycles detected; ignoring cycle-internal blockers (external blockers still enforced)"
             );
         }
 
@@ -141,7 +142,10 @@ impl DependencyGraph {
                     None => true,
                     Some(deps) => {
                         if cycle_nodes.contains(&id) {
-                            true
+                            // Ignore cycle-internal blockers but still enforce external ones
+                            deps.iter()
+                                .filter(|dep| !cycle_nodes.contains(dep))
+                                .all(|dep| done_ids.contains(dep))
                         } else {
                             deps.iter().all(|dep| done_ids.contains(dep))
                         }
@@ -309,5 +313,100 @@ mod tests {
         assert!(ids.contains(&"1"));
         assert!(ids.contains(&"2"));
         assert!(ids.contains(&"4"));
+    }
+
+    // --- Regression tests for cycle + external blocker (issue #21) ---
+
+    #[test]
+    fn test_cycle_task_with_external_blocker_is_blocked() {
+        // Task 1 and 2 form a cycle, but task 1 also depends on external #99
+        let tasks = vec![
+            make_task(1, "Blocked by #2\nBlocked by #99"),
+            make_task(2, "Blocked by #1"),
+        ];
+        let graph = DependencyGraph::build(&tasks);
+        let done = HashSet::new();
+        let eligible = graph.filter_eligible(tasks, &done);
+        // Task 1: in cycle but blocked by external #99 → blocked
+        // Task 2: in cycle, only cycle-internal dep → eligible
+        assert_eq!(eligible.len(), 1);
+        assert_eq!(eligible[0].id, "2");
+    }
+
+    #[test]
+    fn test_cycle_task_external_blocker_resolved() {
+        // Same as above but #99 is now done
+        let tasks = vec![
+            make_task(1, "Blocked by #2\nBlocked by #99"),
+            make_task(2, "Blocked by #1"),
+        ];
+        let graph = DependencyGraph::build(&tasks);
+        let done: HashSet<u64> = [99].into_iter().collect();
+        let eligible = graph.filter_eligible(tasks, &done);
+        // Both eligible: cycle deps ignored, external #99 is done
+        assert_eq!(eligible.len(), 2);
+    }
+
+    #[test]
+    fn test_cycle_with_multiple_external_blockers() {
+        // 3-node cycle where one node has external deps
+        let tasks = vec![
+            make_task(1, "Blocked by #3\nBlocked by #50"),
+            make_task(2, "Blocked by #1"),
+            make_task(3, "Blocked by #2\nBlocked by #60"),
+        ];
+        let graph = DependencyGraph::build(&tasks);
+
+        // Nothing done: 1 blocked by #50, 3 blocked by #60, 2 only has cycle dep
+        let done = HashSet::new();
+        let eligible = graph.filter_eligible(tasks.clone(), &done);
+        assert_eq!(eligible.len(), 1);
+        assert_eq!(eligible[0].id, "2");
+
+        // #50 done: 1 unblocked, 3 still blocked by #60
+        let done: HashSet<u64> = [50].into_iter().collect();
+        let eligible = graph.filter_eligible(tasks.clone(), &done);
+        assert_eq!(eligible.len(), 2);
+        let ids: Vec<&str> = eligible.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&"1"));
+        assert!(ids.contains(&"2"));
+
+        // Both #50 and #60 done: all unblocked
+        let done: HashSet<u64> = [50, 60].into_iter().collect();
+        let eligible = graph.filter_eligible(tasks, &done);
+        assert_eq!(eligible.len(), 3);
+    }
+
+    #[test]
+    fn test_pure_cycle_no_external_still_eligible() {
+        // Pure cycle with no external deps — existing behavior preserved
+        let tasks = vec![make_task(1, "Blocked by #2"), make_task(2, "Blocked by #1")];
+        let graph = DependencyGraph::build(&tasks);
+        let done = HashSet::new();
+        let eligible = graph.filter_eligible(tasks, &done);
+        assert_eq!(eligible.len(), 2);
+    }
+
+    #[test]
+    fn test_non_cycle_tasks_unaffected_by_fix() {
+        // Non-cycle tasks keep standard blocked/unblocked behavior
+        let tasks = vec![
+            make_task(10, "Blocked by #20"),
+            make_task(20, "No deps"),
+            make_task(30, "Blocked by #10"),
+        ];
+        let graph = DependencyGraph::build(&tasks);
+
+        let done = HashSet::new();
+        let eligible = graph.filter_eligible(tasks.clone(), &done);
+        assert_eq!(eligible.len(), 1);
+        assert_eq!(eligible[0].id, "20");
+
+        let done: HashSet<u64> = [20].into_iter().collect();
+        let eligible = graph.filter_eligible(tasks, &done);
+        assert_eq!(eligible.len(), 2);
+        let ids: Vec<&str> = eligible.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&"10"));
+        assert!(ids.contains(&"20"));
     }
 }
