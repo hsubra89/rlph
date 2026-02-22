@@ -60,63 +60,6 @@ impl DependencyGraph {
         Self { edges }
     }
 
-    /// Detect cycles in the dependency graph. Returns lists of node IDs forming cycles.
-    pub fn detect_cycles(&self) -> Vec<Vec<u64>> {
-        let all_nodes: HashSet<u64> = self
-            .edges
-            .keys()
-            .chain(self.edges.values().flat_map(|deps| deps.iter()))
-            .copied()
-            .collect();
-
-        let mut visited = HashSet::new();
-        let mut on_stack = HashSet::new();
-        let mut cycles = Vec::new();
-        let mut path = Vec::new();
-
-        // Sort for deterministic cycle detection order
-        let mut nodes: Vec<u64> = all_nodes.into_iter().collect();
-        nodes.sort_unstable();
-
-        for node in nodes {
-            if !visited.contains(&node) {
-                self.dfs_cycle(node, &mut visited, &mut on_stack, &mut path, &mut cycles);
-            }
-        }
-
-        cycles
-    }
-
-    fn dfs_cycle(
-        &self,
-        node: u64,
-        visited: &mut HashSet<u64>,
-        on_stack: &mut HashSet<u64>,
-        path: &mut Vec<u64>,
-        cycles: &mut Vec<Vec<u64>>,
-    ) {
-        visited.insert(node);
-        on_stack.insert(node);
-        path.push(node);
-
-        if let Some(deps) = self.edges.get(&node) {
-            let mut sorted_deps: Vec<u64> = deps.iter().copied().collect();
-            sorted_deps.sort_unstable();
-            for dep in sorted_deps {
-                if !visited.contains(&dep) {
-                    self.dfs_cycle(dep, visited, on_stack, path, cycles);
-                } else if on_stack.contains(&dep)
-                    && let Some(pos) = path.iter().position(|&n| n == dep)
-                {
-                    cycles.push(path[pos..].to_vec());
-                }
-            }
-        }
-
-        path.pop();
-        on_stack.remove(&node);
-    }
-
     fn cycle_peers(&self) -> (HashMap<u64, HashSet<u64>>, Vec<Vec<u64>>) {
         let all_nodes: HashSet<u64> = self
             .edges
@@ -372,14 +315,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cycle_detection() {
-        let tasks = vec![make_task(1, "Blocked by #2"), make_task(2, "Blocked by #1")];
-        let graph = DependencyGraph::build(&tasks);
-        let cycles = graph.detect_cycles();
-        assert!(!cycles.is_empty());
-    }
-
-    #[test]
     fn test_cycle_treated_as_unblocked() {
         let tasks = vec![
             make_task(1, "Blocked by #2"),
@@ -393,15 +328,13 @@ mod tests {
     }
 
     #[test]
-    fn test_three_node_cycle() {
+    fn test_three_node_cycle_all_eligible() {
         let tasks = vec![
             make_task(1, "Blocked by #3"),
             make_task(2, "Blocked by #1"),
             make_task(3, "Blocked by #2"),
         ];
         let graph = DependencyGraph::build(&tasks);
-        let cycles = graph.detect_cycles();
-        assert!(!cycles.is_empty());
         let done = HashSet::new();
         let eligible = graph.filter_eligible(tasks, &done);
         assert_eq!(eligible.len(), 3);
