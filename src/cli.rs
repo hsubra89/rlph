@@ -59,6 +59,10 @@ pub struct Cli {
     /// Agent timeout in seconds
     #[arg(long)]
     pub agent_timeout: Option<u64>,
+
+    /// Maximum review rounds per task
+    #[arg(long)]
+    pub max_review_rounds: Option<u32>,
 }
 
 #[cfg(test)]

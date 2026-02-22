@@ -89,11 +89,15 @@ impl GitHubSource {
     }
 
     fn is_todo(issue: &GhIssue) -> bool {
-        let has_todo = issue.labels.iter().any(|l| l.name == "todo");
-        let has_active = issue
+        let has_todo = issue
             .labels
             .iter()
-            .any(|l| l.name == "in-progress" || l.name == "in-review" || l.name == "done");
+            .any(|l| l.name.eq_ignore_ascii_case("todo"));
+        let has_active = issue.labels.iter().any(|l| {
+            l.name.eq_ignore_ascii_case("in-progress")
+                || l.name.eq_ignore_ascii_case("in-review")
+                || l.name.eq_ignore_ascii_case("done")
+        });
         has_todo && !has_active
     }
 }
@@ -314,6 +318,34 @@ mod tests {
         assert_eq!(task.title, "Detail task");
         assert_eq!(task.body, "task body");
         assert_eq!(task.priority, Some(Priority(3)));
+    }
+
+    #[test]
+    fn test_fetch_filters_mixed_case_todo() {
+        let json = mock_issues_json(&[
+            issue_json(1, "Uppercase", &["rlph", "TODO"], "body"),
+            issue_json(2, "Title case", &["rlph", "Todo"], "body"),
+            issue_json(3, "Weird case", &["rlph", "ToDo"], "body"),
+        ]);
+        let client = MockGhClient::new(vec![Ok(json)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let tasks = source.fetch_eligible_tasks().unwrap();
+        assert_eq!(tasks.len(), 3);
+    }
+
+    #[test]
+    fn test_fetch_excludes_mixed_case_active_labels() {
+        let json = mock_issues_json(&[
+            issue_json(1, "In progress", &["rlph", "todo", "In-Progress"], "body"),
+            issue_json(2, "In review", &["rlph", "Todo", "IN-REVIEW"], "body"),
+            issue_json(3, "Done", &["rlph", "TODO", "Done"], "body"),
+            issue_json(4, "Eligible", &["rlph", "Todo"], "body"),
+        ]);
+        let client = MockGhClient::new(vec![Ok(json)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let tasks = source.fetch_eligible_tasks().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "4");
     }
 
     #[test]

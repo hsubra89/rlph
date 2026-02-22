@@ -19,6 +19,7 @@ pub struct ConfigFile {
     pub agent_binary: Option<String>,
     pub agent_model: Option<String>,
     pub agent_timeout: Option<u64>,
+    pub max_review_rounds: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +37,7 @@ pub struct Config {
     pub agent_binary: String,
     pub agent_model: Option<String>,
     pub agent_timeout: Option<u64>,
+    pub max_review_rounds: u32,
 }
 
 const DEFAULT_CONFIG_FILE: &str = ".rlph/config.toml";
@@ -114,6 +116,10 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .unwrap_or_else(|| "claude".to_string()),
         agent_model: cli.agent_model.clone().or(file.agent_model),
         agent_timeout: cli.agent_timeout.or(file.agent_timeout),
+        max_review_rounds: cli
+            .max_review_rounds
+            .or(file.max_review_rounds)
+            .unwrap_or(3),
     };
     validate(&config)?;
     Ok(config)

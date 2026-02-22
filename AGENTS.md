@@ -31,3 +31,6 @@ clap (CLI parsing), serde + toml (config), thiserror (errors), tracing + tracing
 - `prompts` — Template loading and rendering (stub)
 - `state` — Local state management (stub)
 - `process` — Child process lifecycle (stub)
+
+### Design Assumptions
+- **Agent output is trusted.** The orchestrator assumes zero hallucination in structured agent responses (task selection, `REVIEW_COMPLETE` signals, PR numbers). We do not verify agent-reported values against external state. This is a deliberate trade-off — the system is only as reliable as the underlying model.
