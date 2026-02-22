@@ -140,6 +140,20 @@ impl TaskSource for GitHubSource {
         Ok(())
     }
 
+    fn mark_in_review(&self, task_id: &str) -> Result<()> {
+        let _ = self.client.run(&[
+            "issue",
+            "edit",
+            task_id,
+            "--add-label",
+            "in-review",
+            "--remove-label",
+            "in-progress",
+        ]);
+        debug!(task_id, "marked in-review");
+        Ok(())
+    }
+
     fn mark_done(&self, task_id: &str) -> Result<()> {
         self.client.run(&["issue", "close", task_id])?;
         debug!(task_id, "marked done");

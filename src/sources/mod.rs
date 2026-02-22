@@ -44,6 +44,9 @@ pub trait TaskSource {
     /// Mark a task as in-progress in the remote system.
     fn mark_in_progress(&self, task_id: &str) -> Result<()>;
 
+    /// Mark a task as in-review in the remote system.
+    fn mark_in_review(&self, task_id: &str) -> Result<()>;
+
     /// Mark a task as done in the remote system.
     fn mark_done(&self, task_id: &str) -> Result<()>;
 

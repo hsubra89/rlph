@@ -201,7 +201,12 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             info!("[rlph:orchestrator] Dry run — skipping PR submission");
         }
 
-        // 10. Review loop
+        // 10. Mark in-review
+        if !self.config.dry_run {
+            self.source.mark_in_review(&task.id)?;
+        }
+
+        // 11. Review loop
         self.state_mgr.update_phase("review")?;
         let max_reviews = self.config.max_review_rounds;
         let mut review_passed = false;

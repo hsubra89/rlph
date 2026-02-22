@@ -18,6 +18,7 @@ use rlph::worktree::WorktreeManager;
 #[derive(Default)]
 struct SourceTracker {
     marked_in_progress: Vec<String>,
+    marked_in_review: Vec<String>,
     marked_done: Vec<String>,
 }
 
@@ -56,6 +57,15 @@ impl TaskSource for MockSource {
             .lock()
             .unwrap()
             .marked_in_progress
+            .push(task_id.to_string());
+        Ok(())
+    }
+
+    fn mark_in_review(&self, task_id: &str) -> Result<()> {
+        self.tracker
+            .lock()
+            .unwrap()
+            .marked_in_review
             .push(task_id.to_string());
         Ok(())
     }
