@@ -117,25 +117,127 @@ impl DependencyGraph {
         on_stack.remove(&node);
     }
 
+    fn cycle_peers(&self) -> (HashMap<u64, HashSet<u64>>, Vec<Vec<u64>>) {
+        let all_nodes: HashSet<u64> = self
+            .edges
+            .keys()
+            .chain(self.edges.values().flat_map(|deps| deps.iter()))
+            .copied()
+            .collect();
+
+        let mut nodes: Vec<u64> = all_nodes.into_iter().collect();
+        nodes.sort_unstable();
+
+        let mut index = 0usize;
+        let mut indices: HashMap<u64, usize> = HashMap::new();
+        let mut lowlink: HashMap<u64, usize> = HashMap::new();
+        let mut stack = Vec::new();
+        let mut on_stack = HashSet::new();
+        let mut components = Vec::new();
+
+        for node in nodes {
+            if !indices.contains_key(&node) {
+                self.tarjan_strong_connect(
+                    node,
+                    &mut index,
+                    &mut indices,
+                    &mut lowlink,
+                    &mut stack,
+                    &mut on_stack,
+                    &mut components,
+                );
+            }
+        }
+
+        let mut cycle_peers: HashMap<u64, HashSet<u64>> = HashMap::new();
+        let mut cycles_for_log = Vec::new();
+
+        for component in components {
+            let has_self_loop = component
+                .iter()
+                .any(|node| self.edges.get(node).is_some_and(|deps| deps.contains(node)));
+            if component.len() <= 1 && !has_self_loop {
+                continue;
+            }
+
+            let mut component_sorted = component.clone();
+            component_sorted.sort_unstable();
+            cycles_for_log.push(component_sorted);
+
+            let component_set: HashSet<u64> = component.into_iter().collect();
+            for &node in &component_set {
+                cycle_peers
+                    .entry(node)
+                    .or_default()
+                    .extend(component_set.iter().copied());
+            }
+        }
+
+        cycles_for_log.sort_unstable();
+
+        (cycle_peers, cycles_for_log)
+    }
+
+    fn tarjan_strong_connect(
+        &self,
+        node: u64,
+        index: &mut usize,
+        indices: &mut HashMap<u64, usize>,
+        lowlink: &mut HashMap<u64, usize>,
+        stack: &mut Vec<u64>,
+        on_stack: &mut HashSet<u64>,
+        components: &mut Vec<Vec<u64>>,
+    ) {
+        indices.insert(node, *index);
+        lowlink.insert(node, *index);
+        *index += 1;
+        stack.push(node);
+        on_stack.insert(node);
+
+        if let Some(deps) = self.edges.get(&node) {
+            let mut sorted_deps: Vec<u64> = deps.iter().copied().collect();
+            sorted_deps.sort_unstable();
+
+            for dep in sorted_deps {
+                if !indices.contains_key(&dep) {
+                    self.tarjan_strong_connect(
+                        dep, index, indices, lowlink, stack, on_stack, components,
+                    );
+                    let dep_low = lowlink[&dep];
+                    if let Some(node_low) = lowlink.get_mut(&node) {
+                        *node_low = (*node_low).min(dep_low);
+                    }
+                } else if on_stack.contains(&dep) {
+                    let dep_index = indices[&dep];
+                    if let Some(node_low) = lowlink.get_mut(&node) {
+                        *node_low = (*node_low).min(dep_index);
+                    }
+                }
+            }
+        }
+
+        if lowlink[&node] == indices[&node] {
+            let mut component = Vec::new();
+            while let Some(stack_node) = stack.pop() {
+                on_stack.remove(&stack_node);
+                component.push(stack_node);
+                if stack_node == node {
+                    break;
+                }
+            }
+            components.push(component);
+        }
+    }
+
     /// Filter tasks, returning only those whose dependencies are all in `done_ids`.
     /// Cycle-internal blockers are ignored (with a warning logged), but external blockers
     /// on cycle tasks are still enforced.
     pub fn filter_eligible(&self, tasks: Vec<Task>, done_ids: &HashSet<u64>) -> Vec<Task> {
-        let cycles = self.detect_cycles();
+        let (cycle_peers, cycles_for_log) = self.cycle_peers();
 
-        // Build per-node set of cycle peers (nodes sharing any cycle with it).
-        // This correctly distinguishes same-cycle deps from cross-cycle deps.
-        let mut cycle_peers: HashMap<u64, HashSet<u64>> = HashMap::new();
-        for cycle in &cycles {
-            let cycle_set: HashSet<u64> = cycle.iter().copied().collect();
-            for &node in cycle {
-                cycle_peers.entry(node).or_default().extend(&cycle_set);
-            }
-        }
-
-        if !cycle_peers.is_empty() {
+        if !cycles_for_log.is_empty() {
             warn!(
-                ?cycles,
+                cycles = ?cycles_for_log,
                 "dependency cycles detected; ignoring cycle-internal blockers (external blockers still enforced)"
             );
         }
@@ -447,5 +549,25 @@ mod tests {
         let ids: Vec<&str> = eligible.iter().map(|t| t.id.as_str()).collect();
         assert!(ids.contains(&"10"));
         assert!(ids.contains(&"20"));
+    }
+
+    #[test]
+    fn test_scc_cycle_internal_dep_not_misclassified_as_external() {
+        // Single SCC: 1 -> {2,3}, 2 -> {1}, 3 -> {2}
+        // All dependencies are cycle-internal, so all tasks should remain eligible.
+        let tasks = vec![
+            make_task(1, "Blocked by #2\nBlocked by #3"),
+            make_task(2, "Blocked by #1"),
+            make_task(3, "Blocked by #2"),
+        ];
+        let graph = DependencyGraph::build(&tasks);
+        let done = HashSet::new();
+        let eligible = graph.filter_eligible(tasks, &done);
+
+        assert_eq!(eligible.len(), 3);
+        let ids: Vec<&str> = eligible.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&"1"));
+        assert!(ids.contains(&"2"));
+        assert!(ids.contains(&"3"));
     }
 }
