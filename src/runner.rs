@@ -2,6 +2,8 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
+use tracing::{info, warn};
+
 use crate::error::{Error, Result};
 use crate::process::{ProcessConfig, spawn_and_stream};
 
@@ -44,14 +46,21 @@ pub struct BareClaudeRunner {
     agent_binary: String,
     model: Option<String>,
     timeout: Option<Duration>,
+    max_timeout_retries: u32,
 }
 
 impl BareClaudeRunner {
-    pub fn new(agent_binary: String, model: Option<String>, timeout: Option<Duration>) -> Self {
+    pub fn new(
+        agent_binary: String,
+        model: Option<String>,
+        timeout: Option<Duration>,
+        max_timeout_retries: u32,
+    ) -> Self {
         Self {
             agent_binary,
             model,
             timeout,
+            max_timeout_retries,
         }
     }
 
@@ -75,42 +84,136 @@ impl BareClaudeRunner {
 
         (self.agent_binary.clone(), args)
     }
+
+    /// Build a resume command for a timed-out session.
+    pub fn build_resume_command(&self, session_id: &str) -> (String, Vec<String>) {
+        let mut args = vec![
+            "--print".to_string(),
+            "--verbose".to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+        ];
+
+        if let Some(ref model) = self.model {
+            args.push("--model".to_string());
+            args.push(model.clone());
+        }
+
+        args.push("--resume".to_string());
+        args.push(session_id.to_string());
+
+        (self.agent_binary.clone(), args)
+    }
+}
+
+/// Extract session_id from stream-json stdout lines.
+///
+/// Scans lines for JSON objects with a top-level `session_id` field.
+/// Returns the last one found (most recent).
+pub fn extract_session_id(stdout_lines: &[String]) -> Option<String> {
+    let mut last_id = None;
+    for line in stdout_lines {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+            && let Some(id) = val.get("session_id").and_then(|v| v.as_str())
+            && !id.is_empty()
+        {
+            last_id = Some(id.to_string());
+        }
+    }
+    last_id
 }
 
 impl AgentRunner for BareClaudeRunner {
     async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
-        let (command, args) = self.build_command(prompt);
+        let log_prefix = format!("agent:{phase}");
+        let max_attempts = 1 + self.max_timeout_retries;
+        let mut all_stdout: Vec<String> = Vec::new();
+        let mut all_stderr: Vec<String> = Vec::new();
 
-        let config = ProcessConfig {
-            command,
-            args,
-            working_dir: working_dir.to_path_buf(),
-            timeout: self.timeout,
-            log_prefix: format!("agent:{phase}"),
-            env: vec![],
-        };
+        for attempt in 0..max_attempts {
+            let (command, args) = if attempt == 0 {
+                self.build_command(prompt)
+            } else {
+                // On retry, try to resume from session_id in previous output.
+                let session_id = match extract_session_id(&all_stdout) {
+                    Some(id) => id,
+                    None => {
+                        warn!(
+                            "[{log_prefix}] timeout retry {attempt}: no session_id found in output, cannot resume"
+                        );
+                        return Err(Error::AgentRunner(
+                            "agent timed out and no session_id found for resume".to_string(),
+                        ));
+                    }
+                };
+                info!(
+                    "[{log_prefix}] timeout retry {attempt}/{max_attempts}: resuming session {session_id}"
+                );
+                eprintln!(
+                    "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{})",
+                    attempt + 1,
+                    max_attempts
+                );
+                self.build_resume_command(&session_id)
+            };
 
-        let output = spawn_and_stream(config).await?;
+            let config = ProcessConfig {
+                command,
+                args,
+                working_dir: working_dir.to_path_buf(),
+                timeout: self.timeout,
+                log_prefix: log_prefix.clone(),
+                env: vec![],
+            };
 
-        let stdout = output.stdout_lines.join("\n");
-        let stderr = output.stderr_lines.join("\n");
+            match spawn_and_stream(config).await {
+                Ok(output) => {
+                    all_stdout.extend(output.stdout_lines);
+                    all_stderr.extend(output.stderr_lines);
 
-        if let Some(sig) = output.signal {
-            return Err(Error::AgentRunner(format!("agent killed by signal {sig}")));
+                    let stdout = all_stdout.join("\n");
+                    let stderr = all_stderr.join("\n");
+
+                    if let Some(sig) = output.signal {
+                        return Err(Error::AgentRunner(format!("agent killed by signal {sig}")));
+                    }
+
+                    if output.exit_code != 0 {
+                        return Err(Error::AgentRunner(format!(
+                            "agent exited with code {}",
+                            output.exit_code
+                        )));
+                    }
+
+                    return Ok(RunResult {
+                        exit_code: output.exit_code,
+                        stdout,
+                        stderr,
+                    });
+                }
+                Err(Error::ProcessTimeout {
+                    timeout,
+                    stdout_lines,
+                    stderr_lines,
+                }) => {
+                    all_stdout.extend(stdout_lines);
+                    all_stderr.extend(stderr_lines);
+                    warn!(
+                        "[{log_prefix}] attempt {} timed out after {timeout:?} ({} stdout lines buffered)",
+                        attempt + 1,
+                        all_stdout.len()
+                    );
+                    // Continue to next attempt (or fall through if last).
+                }
+                Err(e) => return Err(e),
+            }
         }
 
-        if output.exit_code != 0 {
-            return Err(Error::AgentRunner(format!(
-                "agent exited with code {}",
-                output.exit_code
-            )));
-        }
-
-        Ok(RunResult {
-            exit_code: output.exit_code,
-            stdout,
-            stderr,
-        })
+        // All attempts exhausted.
+        Err(Error::AgentRunner(format!(
+            "agent timed out after {max_attempts} attempts"
+        )))
     }
 }
 
@@ -120,7 +223,7 @@ mod tests {
 
     #[test]
     fn test_build_command_defaults() {
-        let runner = BareClaudeRunner::new("claude".to_string(), None, None);
+        let runner = BareClaudeRunner::new("claude".to_string(), None, None, 2);
         let (cmd, args) = runner.build_command("do something");
         assert_eq!(cmd, "claude");
         assert!(args.contains(&"--print".to_string()));
@@ -135,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_build_command_with_model() {
-        let runner = BareClaudeRunner::new("claude".to_string(), Some("opus".to_string()), None);
+        let runner = BareClaudeRunner::new("claude".to_string(), Some("opus".to_string()), None, 2);
         let (_cmd, args) = runner.build_command("pick a task");
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"opus".to_string()));
@@ -143,9 +246,80 @@ mod tests {
 
     #[test]
     fn test_build_command_custom_binary() {
-        let runner = BareClaudeRunner::new("/usr/local/bin/my-agent".to_string(), None, None);
+        let runner = BareClaudeRunner::new("/usr/local/bin/my-agent".to_string(), None, None, 2);
         let (cmd, _args) = runner.build_command("review code");
         assert_eq!(cmd, "/usr/local/bin/my-agent");
+    }
+
+    #[test]
+    fn test_build_resume_command_has_resume_flag() {
+        let runner = BareClaudeRunner::new("claude".to_string(), None, None, 2);
+        let (_cmd, args) = runner.build_resume_command("sess-abc-123");
+        assert!(args.contains(&"--resume".to_string()));
+        assert!(args.contains(&"sess-abc-123".to_string()));
+        // Must NOT have -p flag
+        assert!(!args.contains(&"-p".to_string()));
+        // Must still have common flags
+        assert!(args.contains(&"--print".to_string()));
+        assert!(args.contains(&"--verbose".to_string()));
+        assert!(args.contains(&"--output-format".to_string()));
+        assert!(args.contains(&"stream-json".to_string()));
+        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn test_build_resume_command_with_model() {
+        let runner = BareClaudeRunner::new("claude".to_string(), Some("opus".to_string()), None, 2);
+        let (_cmd, args) = runner.build_resume_command("sess-xyz");
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"opus".to_string()));
+        assert!(args.contains(&"--resume".to_string()));
+        assert!(args.contains(&"sess-xyz".to_string()));
+    }
+
+    #[test]
+    fn test_extract_session_id_from_stream_json() {
+        let lines = vec![
+            r#"{"type":"user","message":{"role":"user"},"session_id":"abc-123"}"#.to_string(),
+            r#"{"type":"assistant","message":{"role":"assistant"},"session_id":"abc-123"}"#
+                .to_string(),
+        ];
+        assert_eq!(extract_session_id(&lines), Some("abc-123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_session_id_returns_last() {
+        let lines = vec![
+            r#"{"session_id":"first"}"#.to_string(),
+            r#"{"session_id":"second"}"#.to_string(),
+        ];
+        assert_eq!(extract_session_id(&lines), Some("second".to_string()));
+    }
+
+    #[test]
+    fn test_extract_session_id_none_for_empty() {
+        assert_eq!(extract_session_id(&[]), None);
+    }
+
+    #[test]
+    fn test_extract_session_id_none_for_non_json() {
+        let lines = vec!["not json".to_string(), "also not json".to_string()];
+        assert_eq!(extract_session_id(&lines), None);
+    }
+
+    #[test]
+    fn test_extract_session_id_none_for_empty_id() {
+        let lines = vec![r#"{"session_id":""}"#.to_string()];
+        assert_eq!(extract_session_id(&lines), None);
+    }
+
+    #[test]
+    fn test_extract_session_id_skips_missing_field() {
+        let lines = vec![
+            r#"{"type":"system","message":"hello"}"#.to_string(),
+            r#"{"type":"user","session_id":"found-it"}"#.to_string(),
+        ];
+        assert_eq!(extract_session_id(&lines), Some("found-it".to_string()));
     }
 
     #[test]
