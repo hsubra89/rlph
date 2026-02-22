@@ -116,7 +116,13 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
 
         // Run the implement → submit → review pipeline, cleaning up on success
         let result = self
-            .run_implement_review(&task, &task_id, issue_number, &worktree_info, existing_pr_number)
+            .run_implement_review(
+                &task,
+                &task_id,
+                issue_number,
+                &worktree_info,
+                existing_pr_number,
+            )
             .await;
 
         match result {

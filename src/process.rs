@@ -12,6 +12,7 @@ use crate::error::{Error, Result};
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const INTERRUPT_GRACE: Duration = Duration::from_secs(2);
 const TIMEOUT_GRACE: Duration = Duration::from_millis(500);
+const KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Configuration for spawning a child process.
 #[derive(Debug, Clone)]
@@ -231,14 +232,14 @@ async fn wait_for_exit_unix(
             _ = &mut timer => handle_timeout_unix(process_group_id, log_prefix, dur, wait_task).await,
             signal = sigint.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(process_group_id, log_prefix, libc::SIGINT, "SIGINT", wait_task).await
+                    handle_interrupt_unix(process_group_id, log_prefix, libc::SIGINT, "SIGINT", wait_task, &mut sigint, &mut sigterm).await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
             }
             signal = sigterm.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(process_group_id, log_prefix, libc::SIGTERM, "SIGTERM", wait_task).await
+                    handle_interrupt_unix(process_group_id, log_prefix, libc::SIGTERM, "SIGTERM", wait_task, &mut sigint, &mut sigterm).await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
@@ -249,14 +250,14 @@ async fn wait_for_exit_unix(
             result = &mut *wait_task => wait_join_result(result),
             signal = sigint.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(process_group_id, log_prefix, libc::SIGINT, "SIGINT", wait_task).await
+                    handle_interrupt_unix(process_group_id, log_prefix, libc::SIGINT, "SIGINT", wait_task, &mut sigint, &mut sigterm).await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
             }
             signal = sigterm.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(process_group_id, log_prefix, libc::SIGTERM, "SIGTERM", wait_task).await
+                    handle_interrupt_unix(process_group_id, log_prefix, libc::SIGTERM, "SIGTERM", wait_task, &mut sigint, &mut sigterm).await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
@@ -290,19 +291,50 @@ async fn handle_interrupt_unix(
     signal: i32,
     signal_name: &str,
     wait_task: &mut JoinHandle<std::io::Result<ExitStatus>>,
+    sigint: &mut tokio::signal::unix::Signal,
+    sigterm: &mut tokio::signal::unix::Signal,
 ) -> Result<ExitStatus> {
     warn!("[{log_prefix}] received {signal_name}; forwarding to process group {process_group_id}");
-    eprintln!("[{log_prefix}] received {signal_name}; stopping child process...");
+    eprintln!("[{log_prefix}] received {signal_name}; press Ctrl-C again to force exit");
     send_signal_to_process_group(process_group_id, signal, log_prefix, signal_name);
 
-    match tokio::time::timeout(INTERRUPT_GRACE, &mut *wait_task).await {
+    tokio::select! {
+        result = tokio::time::timeout(INTERRUPT_GRACE, &mut *wait_task) => {
+            match result {
+                Ok(join_result) => wait_join_result(join_result),
+                Err(_) => {
+                    warn!(
+                        "[{log_prefix}] process group {process_group_id} ignored {signal_name}; sending SIGKILL"
+                    );
+                    send_signal_to_process_group(process_group_id, libc::SIGKILL, log_prefix, "SIGKILL");
+                    force_wait_or_abort(wait_task).await
+                }
+            }
+        }
+        _ = sigint.recv() => {
+            eprintln!("[{log_prefix}] force exit");
+            send_signal_to_process_group(process_group_id, libc::SIGKILL, log_prefix, "SIGKILL");
+            wait_task.abort();
+            Err(Error::Interrupted)
+        }
+        _ = sigterm.recv() => {
+            eprintln!("[{log_prefix}] force exit");
+            send_signal_to_process_group(process_group_id, libc::SIGKILL, log_prefix, "SIGKILL");
+            wait_task.abort();
+            Err(Error::Interrupted)
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn force_wait_or_abort(
+    wait_task: &mut JoinHandle<std::io::Result<ExitStatus>>,
+) -> Result<ExitStatus> {
+    match tokio::time::timeout(KILL_TIMEOUT, &mut *wait_task).await {
         Ok(result) => wait_join_result(result),
         Err(_) => {
-            warn!(
-                "[{log_prefix}] process group {process_group_id} ignored {signal_name}; sending SIGKILL"
-            );
-            send_signal_to_process_group(process_group_id, libc::SIGKILL, log_prefix, "SIGKILL");
-            wait_join_result((&mut *wait_task).await)
+            wait_task.abort();
+            Err(Error::Interrupted)
         }
     }
 }
@@ -326,7 +358,7 @@ async fn handle_timeout_unix(
                 "[{log_prefix}] process group {process_group_id} ignored SIGTERM; sending SIGKILL"
             );
             send_signal_to_process_group(process_group_id, libc::SIGKILL, log_prefix, "SIGKILL");
-            let _ = wait_join_result((&mut *wait_task).await)?;
+            let _ = force_wait_or_abort(wait_task).await?;
         }
     }
 

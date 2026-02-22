@@ -144,6 +144,42 @@ async fn test_sigint_to_process_group() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
+async fn test_double_sigint_force_exit() {
+    // Spawn a process that traps SIGINT and refuses to die
+    let config = ProcessConfig {
+        command: "bash".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "trap '' INT TERM; sleep 60".to_string(),
+        ],
+        working_dir: PathBuf::from("."),
+        timeout: None,
+        log_prefix: "test:double-sigint".to_string(),
+        env: vec![],
+    };
+
+    let handle = tokio::spawn(spawn_and_stream(config));
+
+    // Give child time to start and install trap
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Send SIGINT to ourselves (triggers first Ctrl-C path)
+    unsafe { libc::kill(libc::getpid(), libc::SIGINT); }
+
+    // Brief pause then second SIGINT (force exit path)
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    unsafe { libc::kill(libc::getpid(), libc::SIGINT); }
+
+    let result = tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("should complete within 5s")
+        .expect("task should not panic");
+
+    assert!(result.is_err(), "double SIGINT should return Err");
+}
+
+#[tokio::test]
 async fn test_stdout_with_output_before_failure() {
     let config = make_config("bash", &["-c", "echo before_fail; exit 1"]);
     let output = spawn_and_stream(config).await.unwrap();

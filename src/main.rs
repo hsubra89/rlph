@@ -70,6 +70,9 @@ async fn main() {
 
     if cli.once {
         if let Err(e) = orchestrator.run_once().await {
+            if matches!(&e, rlph::error::Error::Interrupted) {
+                std::process::exit(130);
+            }
             eprintln!("error: {e}");
             std::process::exit(1);
         }
