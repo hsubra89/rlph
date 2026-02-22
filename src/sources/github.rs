@@ -88,7 +88,7 @@ impl GitHubSource {
         }
     }
 
-    fn is_todo(issue: &GhIssue) -> bool {
+    fn is_eligible(issue: &GhIssue) -> bool {
         !issue.labels.iter().any(|l| {
             l.name.eq_ignore_ascii_case("in-progress")
                 || l.name.eq_ignore_ascii_case("in-review")
@@ -117,7 +117,7 @@ impl TaskSource for GitHubSource {
 
         let tasks: Vec<Task> = issues
             .into_iter()
-            .filter(Self::is_todo)
+            .filter(Self::is_eligible)
             .map(Self::parse_issue)
             .collect();
 
@@ -126,8 +126,10 @@ impl TaskSource for GitHubSource {
     }
 
     fn mark_in_progress(&self, task_id: &str) -> Result<()> {
-        let _ = self.client.run(&["issue", "reopen", task_id]);
-        let _ = self.client.run(&[
+        if let Err(e) = self.client.run(&["issue", "reopen", task_id]) {
+            warn!(task_id, error = %e, "failed to reopen issue");
+        }
+        if let Err(e) = self.client.run(&[
             "issue",
             "edit",
             task_id,
@@ -135,13 +137,15 @@ impl TaskSource for GitHubSource {
             "in-progress",
             "--remove-label",
             "in-review",
-        ]);
+        ]) {
+            warn!(task_id, error = %e, "failed to update labels for in-progress");
+        }
         debug!(task_id, "marked in-progress");
         Ok(())
     }
 
     fn mark_in_review(&self, task_id: &str) -> Result<()> {
-        let _ = self.client.run(&[
+        if let Err(e) = self.client.run(&[
             "issue",
             "edit",
             task_id,
@@ -149,7 +153,9 @@ impl TaskSource for GitHubSource {
             "in-review",
             "--remove-label",
             "in-progress",
-        ]);
+        ]) {
+            warn!(task_id, error = %e, "failed to update labels for in-review");
+        }
         debug!(task_id, "marked in-review");
         Ok(())
     }
@@ -247,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fetch_filters_todo_only() {
+    fn test_fetch_filters_eligible_only() {
         let json = mock_issues_json(&[
             issue_json(1, "Task 1", &["rlph"], "body 1"),
             issue_json(2, "Task 2", &["rlph", "in-progress"], "body 2"),
