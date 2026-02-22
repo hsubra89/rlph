@@ -16,6 +16,9 @@ pub struct ConfigFile {
     pub worktree_dir: Option<String>,
     pub max_iterations: Option<u32>,
     pub dry_run: Option<bool>,
+    pub agent_binary: Option<String>,
+    pub agent_model: Option<String>,
+    pub agent_timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +33,9 @@ pub struct Config {
     pub dry_run: bool,
     pub once: bool,
     pub continuous: bool,
+    pub agent_binary: String,
+    pub agent_model: Option<String>,
+    pub agent_timeout: Option<u64>,
 }
 
 impl Config {
@@ -125,6 +131,13 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Config {
         dry_run: cli.dry_run || file.dry_run.unwrap_or(false),
         once: cli.once,
         continuous: cli.continuous,
+        agent_binary: cli
+            .agent_binary
+            .clone()
+            .or(file.agent_binary)
+            .unwrap_or_else(|| "claude".to_string()),
+        agent_model: cli.agent_model.clone().or(file.agent_model),
+        agent_timeout: cli.agent_timeout.or(file.agent_timeout),
     }
 }
 

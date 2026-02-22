@@ -47,6 +47,18 @@ pub struct Cli {
     /// Worktree base directory
     #[arg(long)]
     pub worktree_dir: Option<String>,
+
+    /// Agent binary to use (default: claude)
+    #[arg(long)]
+    pub agent_binary: Option<String>,
+
+    /// Model for the agent to use
+    #[arg(long)]
+    pub agent_model: Option<String>,
+
+    /// Agent timeout in seconds
+    #[arg(long)]
+    pub agent_timeout: Option<u64>,
 }
 
 #[cfg(test)]
