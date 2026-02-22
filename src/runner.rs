@@ -41,15 +41,15 @@ pub trait AgentRunner {
     ) -> impl std::future::Future<Output = Result<RunResult>> + Send;
 }
 
-/// Bare Claude runner — invokes the claude CLI directly.
-pub struct BareClaudeRunner {
+/// Claude runner — invokes the claude CLI directly.
+pub struct ClaudeRunner {
     agent_binary: String,
     model: Option<String>,
     timeout: Option<Duration>,
     max_timeout_retries: u32,
 }
 
-impl BareClaudeRunner {
+impl ClaudeRunner {
     pub fn new(
         agent_binary: String,
         model: Option<String>,
@@ -124,7 +124,7 @@ pub fn extract_session_id(stdout_lines: &[String]) -> Option<String> {
     last_id
 }
 
-impl AgentRunner for BareClaudeRunner {
+impl AgentRunner for ClaudeRunner {
     async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
         let log_prefix = format!("agent:{phase}");
         let max_attempts = 1 + self.max_timeout_retries;
@@ -220,7 +220,7 @@ impl AgentRunner for BareClaudeRunner {
 
 /// Enum dispatching to either Claude or Codex runner.
 pub enum AnyRunner {
-    Claude(BareClaudeRunner),
+    Claude(ClaudeRunner),
     Codex(CodexRunner),
 }
 
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn test_build_command_defaults() {
-        let runner = BareClaudeRunner::new("claude".to_string(), None, None, 2);
+        let runner = ClaudeRunner::new("claude".to_string(), None, None, 2);
         let (cmd, args) = runner.build_command("do something");
         assert_eq!(cmd, "claude");
         assert!(args.contains(&"--print".to_string()));
@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn test_build_command_with_model() {
-        let runner = BareClaudeRunner::new("claude".to_string(), Some("opus".to_string()), None, 2);
+        let runner = ClaudeRunner::new("claude".to_string(), Some("opus".to_string()), None, 2);
         let (_cmd, args) = runner.build_command("pick a task");
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"opus".to_string()));
@@ -404,14 +404,14 @@ mod tests {
 
     #[test]
     fn test_build_command_custom_binary() {
-        let runner = BareClaudeRunner::new("/usr/local/bin/my-agent".to_string(), None, None, 2);
+        let runner = ClaudeRunner::new("/usr/local/bin/my-agent".to_string(), None, None, 2);
         let (cmd, _args) = runner.build_command("review code");
         assert_eq!(cmd, "/usr/local/bin/my-agent");
     }
 
     #[test]
     fn test_build_resume_command_has_resume_flag() {
-        let runner = BareClaudeRunner::new("claude".to_string(), None, None, 2);
+        let runner = ClaudeRunner::new("claude".to_string(), None, None, 2);
         let (_cmd, args) = runner.build_resume_command("sess-abc-123");
         assert!(args.contains(&"--resume".to_string()));
         assert!(args.contains(&"sess-abc-123".to_string()));
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_build_resume_command_with_model() {
-        let runner = BareClaudeRunner::new("claude".to_string(), Some("opus".to_string()), None, 2);
+        let runner = ClaudeRunner::new("claude".to_string(), Some("opus".to_string()), None, 2);
         let (_cmd, args) = runner.build_resume_command("sess-xyz");
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"opus".to_string()));

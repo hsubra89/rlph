@@ -52,7 +52,7 @@ pub struct Cli {
     #[arg(long)]
     pub base_branch: Option<String>,
 
-    /// Agent binary to use (default: codex)
+    /// Agent binary to use (default: claude, or codex when --runner codex)
     #[arg(long)]
     pub agent_binary: Option<String>,
 
@@ -105,7 +105,7 @@ mod tests {
             "rlph",
             "--once",
             "--runner",
-            "codex",
+            "claude",
             "--source",
             "linear",
             "--submission",
@@ -117,7 +117,7 @@ mod tests {
             "--worktree-dir",
             "/tmp/wt",
         ]);
-        assert_eq!(cli.runner.as_deref(), Some("codex"));
+        assert_eq!(cli.runner.as_deref(), Some("claude"));
         assert_eq!(cli.source.as_deref(), Some("linear"));
         assert_eq!(cli.submission.as_deref(), Some("graphite"));
         assert_eq!(cli.label.as_deref(), Some("auto"));

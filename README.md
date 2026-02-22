@@ -24,15 +24,15 @@ Configuration is read from `.rlph/config.toml` in the project root. CLI flags ov
 
 ```toml
 source = "github"              # Task source: github, linear
-runner = "codex"               # Agent runner: claude, codex
+runner = "claude"              # Agent runner: claude, codex
 submission = "github"          # Submission backend: github, graphite
 label = "rlph"                 # Label to filter eligible tasks
 poll_interval = 60             # Poll interval in seconds (continuous mode)
 worktree_dir = "../rlph-worktrees"  # Base directory for git worktrees
 max_iterations = 10            # Max iterations before stopping (continuous mode)
 dry_run = false                # Full loop without pushing or marking issues
-agent_binary = "codex"         # Agent binary name
-agent_model = "gpt-5.3-codex"  # Model for the agent (GPT 5.3)
+agent_binary = "claude"        # Agent binary name
+# agent_model = "gpt-5.3-codex" # Optional model override (codex default)
 agent_timeout = 300            # Agent timeout in seconds
 max_review_rounds = 3          # Max review rounds per task
 ```
@@ -56,7 +56,7 @@ Options:
       --poll-interval <SECONDS>    Poll interval in seconds (continuous mode)
       --config <PATH>              Path to config file
       --worktree-dir <DIR>         Worktree base directory
-      --agent-binary <NAME>        Agent binary name (default: codex)
+      --agent-binary <NAME>        Agent binary name (default: claude; codex when --runner codex)
       --agent-model <MODEL>        Model for the agent (default for codex: gpt-5.3-codex)
       --agent-timeout <SECONDS>    Agent timeout in seconds
       --max-review-rounds <N>      Max review rounds per task
