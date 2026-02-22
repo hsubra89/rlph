@@ -43,8 +43,10 @@ impl ProcessOutput {
 /// Spawn a child process, stream its output line-by-line, and handle signals.
 ///
 /// On Unix, SIGINT and SIGTERM received by the parent are forwarded to the
-/// child's process group. The child is placed in its own process group so
+/// child process. For most commands we create a dedicated process group so
 /// timeout and interrupt handling can terminate the full subprocess tree.
+/// Some commands (e.g. Claude CLI) rely on terminal job-control behavior and
+/// should run in the parent's process group.
 pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let started_at = Instant::now();
     let mut cmd = Command::new(&config.command);
@@ -60,7 +62,11 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     }
 
     #[cfg(unix)]
-    cmd.process_group(0);
+    let use_process_group = should_use_process_group(&config.command);
+    #[cfg(unix)]
+    if use_process_group {
+        cmd.process_group(0);
+    }
 
     // Allow nested Claude CLI invocations (parent sets CLAUDECODE=1).
     cmd.env_remove("CLAUDECODE");
@@ -140,8 +146,14 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let mut wait_task = tokio::spawn(async move { child.wait().await });
 
     #[cfg(unix)]
-    let status_result =
-        wait_for_exit_unix(config.timeout, pid as i32, &log_prefix, &mut wait_task).await;
+    let status_result = wait_for_exit_unix(
+        config.timeout,
+        pid as i32,
+        &log_prefix,
+        use_process_group,
+        &mut wait_task,
+    )
+    .await;
     #[cfg(not(unix))]
     let status_result = wait_for_exit_non_unix(config.timeout, &mut wait_task).await;
 
@@ -222,6 +234,7 @@ async fn wait_for_exit_unix(
     timeout: Option<Duration>,
     child_pid: i32,
     log_prefix: &str,
+    use_process_group: bool,
     wait_task: &mut JoinHandle<std::io::Result<ExitStatus>>,
 ) -> Result<ExitStatus> {
     use tokio::signal::unix::{SignalKind, signal};
@@ -237,17 +250,17 @@ async fn wait_for_exit_unix(
 
         tokio::select! {
             result = &mut *wait_task => wait_join_result(result),
-            _ = &mut timer => handle_timeout_unix(child_pid, log_prefix, dur, wait_task).await,
+            _ = &mut timer => handle_timeout_unix(child_pid, log_prefix, dur, use_process_group, wait_task).await,
             signal = sigint.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGINT, "SIGINT", wait_task, &mut sigint, &mut sigterm).await
+                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGINT, "SIGINT", use_process_group, wait_task, &mut sigint, &mut sigterm).await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
             }
             signal = sigterm.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGTERM, "SIGTERM", wait_task, &mut sigint, &mut sigterm).await
+                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGTERM, "SIGTERM", use_process_group, wait_task, &mut sigint, &mut sigterm).await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
@@ -258,14 +271,14 @@ async fn wait_for_exit_unix(
             result = &mut *wait_task => wait_join_result(result),
             signal = sigint.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGINT, "SIGINT", wait_task, &mut sigint, &mut sigterm).await
+                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGINT, "SIGINT", use_process_group, wait_task, &mut sigint, &mut sigterm).await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
             }
             signal = sigterm.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGTERM, "SIGTERM", wait_task, &mut sigint, &mut sigterm).await
+                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGTERM, "SIGTERM", use_process_group, wait_task, &mut sigint, &mut sigterm).await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
@@ -298,13 +311,14 @@ async fn handle_interrupt_unix(
     log_prefix: &str,
     signal: i32,
     signal_name: &str,
+    use_process_group: bool,
     wait_task: &mut JoinHandle<std::io::Result<ExitStatus>>,
     sigint: &mut tokio::signal::unix::Signal,
     sigterm: &mut tokio::signal::unix::Signal,
 ) -> Result<ExitStatus> {
     warn!("[{log_prefix}] received {signal_name}; forwarding to child pid {child_pid}");
     eprintln!("[{log_prefix}] received {signal_name}; press Ctrl-C again to force exit");
-    send_signal_to_child_group(child_pid, signal, log_prefix, signal_name);
+    send_signal_unix(child_pid, signal, log_prefix, signal_name, use_process_group);
 
     tokio::select! {
         result = tokio::time::timeout(INTERRUPT_GRACE, &mut *wait_task) => {
@@ -314,20 +328,38 @@ async fn handle_interrupt_unix(
                     warn!(
                         "[{log_prefix}] child pid {child_pid} ignored {signal_name}; sending SIGKILL"
                     );
-                    send_signal_to_child_group(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
+                    send_signal_unix(
+                        child_pid,
+                        libc::SIGKILL,
+                        log_prefix,
+                        "SIGKILL",
+                        use_process_group,
+                    );
                     force_wait_or_abort(wait_task).await
                 }
             }
         }
         _ = sigint.recv() => {
             eprintln!("[{log_prefix}] force exit");
-            send_signal_to_child_group(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
+            send_signal_unix(
+                child_pid,
+                libc::SIGKILL,
+                log_prefix,
+                "SIGKILL",
+                use_process_group,
+            );
             wait_task.abort();
             Err(Error::Interrupted)
         }
         _ = sigterm.recv() => {
             eprintln!("[{log_prefix}] force exit");
-            send_signal_to_child_group(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
+            send_signal_unix(
+                child_pid,
+                libc::SIGKILL,
+                log_prefix,
+                "SIGKILL",
+                use_process_group,
+            );
             wait_task.abort();
             Err(Error::Interrupted)
         }
@@ -352,10 +384,17 @@ async fn handle_timeout_unix(
     child_pid: i32,
     log_prefix: &str,
     timeout: Duration,
+    use_process_group: bool,
     wait_task: &mut JoinHandle<std::io::Result<ExitStatus>>,
 ) -> Result<ExitStatus> {
     warn!("[{log_prefix}] process timed out after {timeout:?}; sending SIGTERM");
-    send_signal_to_child_group(child_pid, libc::SIGTERM, log_prefix, "SIGTERM");
+    send_signal_unix(
+        child_pid,
+        libc::SIGTERM,
+        log_prefix,
+        "SIGTERM",
+        use_process_group,
+    );
 
     match tokio::time::timeout(TIMEOUT_GRACE, &mut *wait_task).await {
         Ok(result) => {
@@ -363,7 +402,13 @@ async fn handle_timeout_unix(
         }
         Err(_) => {
             warn!("[{log_prefix}] child pid {child_pid} ignored SIGTERM; sending SIGKILL");
-            send_signal_to_child_group(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
+            send_signal_unix(
+                child_pid,
+                libc::SIGKILL,
+                log_prefix,
+                "SIGKILL",
+                use_process_group,
+            );
             let _ = force_wait_or_abort(wait_task).await?;
         }
     }
@@ -374,14 +419,21 @@ async fn handle_timeout_unix(
 }
 
 #[cfg(unix)]
-fn send_signal_to_child_group(
+fn send_signal_unix(
     child_pid: i32,
     signal: i32,
     log_prefix: &str,
     signal_name: &str,
+    use_process_group: bool,
 ) {
-    // SAFETY: libc::killpg is an FFI call that does not dereference pointers.
-    let rc = unsafe { libc::killpg(child_pid, signal) };
+    // SAFETY: libc::kill/killpg are FFI calls that do not dereference pointers.
+    let rc = unsafe {
+        if use_process_group {
+            libc::killpg(child_pid, signal)
+        } else {
+            libc::kill(child_pid, signal)
+        }
+    };
     if rc == 0 {
         return;
     }
@@ -392,4 +444,42 @@ fn send_signal_to_child_group(
     }
 
     warn!("[{log_prefix}] failed to send {signal_name} to child pid {child_pid}: {err}");
+}
+
+#[cfg(unix)]
+fn should_use_process_group(command: &str) -> bool {
+    // Claude CLI runs nested tool commands that may depend on foreground
+    // terminal behavior, so keep it in the parent's process group.
+    !is_claude_binary(command)
+}
+
+fn is_claude_binary(command: &str) -> bool {
+    let name = command
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(command)
+        .trim();
+    name.eq_ignore_ascii_case("claude") || name.eq_ignore_ascii_case("claude.exe")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_claude_binary() {
+        assert!(is_claude_binary("claude"));
+        assert!(is_claude_binary("/usr/local/bin/claude"));
+        assert!(is_claude_binary("CLAUDE"));
+        assert!(is_claude_binary("C:\\tools\\claude.exe"));
+        assert!(!is_claude_binary("bash"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_should_use_process_group() {
+        assert!(!should_use_process_group("claude"));
+        assert!(!should_use_process_group("/usr/local/bin/claude"));
+        assert!(should_use_process_group("bash"));
+    }
 }
