@@ -287,6 +287,7 @@ fn make_config(dry_run: bool) -> Config {
         agent_model: None,
         agent_timeout: None,
         max_review_rounds: 3,
+        agent_timeout_retries: 2,
     }
 }
 

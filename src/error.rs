@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 #[allow(dead_code)]
@@ -29,6 +30,13 @@ pub enum Error {
 
     #[error("process error: {0}")]
     Process(String),
+
+    #[error("process timed out after {timeout:?}")]
+    ProcessTimeout {
+        timeout: Duration,
+        stdout_lines: Vec<String>,
+        stderr_lines: Vec<String>,
+    },
 
     #[error("state error: {0}")]
     State(String),

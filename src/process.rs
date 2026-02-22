@@ -13,6 +13,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const INTERRUPT_GRACE: Duration = Duration::from_secs(2);
 const TIMEOUT_GRACE: Duration = Duration::from_millis(500);
 const KILL_TIMEOUT: Duration = Duration::from_secs(5);
+const READER_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Configuration for spawning a child process.
 #[derive(Debug, Clone)]
@@ -180,6 +181,22 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
 
     let status = match status_result {
         Ok(status) => status,
+        Err(Error::ProcessTimeout { timeout, .. }) => {
+            // Wait briefly for reader tasks to drain buffered output.
+            let stdout_lines = match tokio::time::timeout(READER_DRAIN_TIMEOUT, stdout_task).await {
+                Ok(Ok(lines)) => lines,
+                _ => vec![],
+            };
+            let stderr_lines = match tokio::time::timeout(READER_DRAIN_TIMEOUT, stderr_task).await {
+                Ok(Ok(lines)) => lines,
+                _ => vec![],
+            };
+            return Err(Error::ProcessTimeout {
+                timeout,
+                stdout_lines,
+                stderr_lines,
+            });
+        }
         Err(e) => {
             stdout_task.abort();
             stderr_task.abort();
@@ -316,7 +333,11 @@ async fn wait_for_exit_non_unix(
             Ok(result) => wait_join_result(result),
             Err(_) => {
                 wait_task.abort();
-                Err(Error::Process(format!("process timed out after {dur:?}")))
+                Err(Error::ProcessTimeout {
+                    timeout: dur,
+                    stdout_lines: vec![],
+                    stderr_lines: vec![],
+                })
             }
         }
     } else {
@@ -438,9 +459,11 @@ async fn handle_timeout_unix(
         }
     }
 
-    Err(Error::Process(format!(
-        "process timed out after {timeout:?}"
-    )))
+    Err(Error::ProcessTimeout {
+        timeout,
+        stdout_lines: vec![],
+        stderr_lines: vec![],
+    })
 }
 
 #[cfg(unix)]
