@@ -52,11 +52,11 @@ pub struct Cli {
     #[arg(long)]
     pub base_branch: Option<String>,
 
-    /// Agent binary to use (default: claude)
+    /// Agent binary to use (default: codex)
     #[arg(long)]
     pub agent_binary: Option<String>,
 
-    /// Model for the agent to use
+    /// Model for the agent to use (default for codex: gpt-5.3-codex)
     #[arg(long)]
     pub agent_model: Option<String>,
 

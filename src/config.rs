@@ -86,11 +86,15 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         .runner
         .clone()
         .or(file.runner)
-        .unwrap_or_else(|| "claude".to_string());
+        .unwrap_or_else(|| "codex".to_string());
 
     let default_binary = match runner.as_str() {
         "codex" => "codex",
         _ => "claude",
+    };
+    let default_model = match runner.as_str() {
+        "codex" => Some("gpt-5.3-codex"),
+        _ => None,
     };
 
     let config = Config {
@@ -130,7 +134,11 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .clone()
             .or(file.agent_binary)
             .unwrap_or_else(|| default_binary.to_string()),
-        agent_model: cli.agent_model.clone().or(file.agent_model),
+        agent_model: cli
+            .agent_model
+            .clone()
+            .or(file.agent_model)
+            .or_else(|| default_model.map(str::to_string)),
         agent_timeout: cli.agent_timeout.or(file.agent_timeout).or(Some(600)),
         max_review_rounds: cli
             .max_review_rounds
@@ -287,10 +295,12 @@ worktree_dir = "/tmp/wt"
         let cli = Cli::parse_from(["rlph", "--once"]);
         let config = merge(file, &cli).unwrap();
         assert_eq!(config.source, "github");
-        assert_eq!(config.runner, "claude");
+        assert_eq!(config.runner, "codex");
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
         assert_eq!(config.poll_interval, 60);
+        assert_eq!(config.agent_binary, "codex");
+        assert_eq!(config.agent_model.as_deref(), Some("gpt-5.3-codex"));
         assert_eq!(config.agent_timeout, Some(600));
         assert_eq!(config.agent_timeout_retries, 2);
     }
@@ -314,10 +324,12 @@ worktree_dir = "/tmp/wt"
         let cli = Cli::parse_from(["rlph", "--once"]);
         let config = Config::load_from(&cli, tmp.path()).unwrap();
         assert_eq!(config.source, "github");
-        assert_eq!(config.runner, "claude");
+        assert_eq!(config.runner, "codex");
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
         assert_eq!(config.poll_interval, 60);
+        assert_eq!(config.agent_binary, "codex");
+        assert_eq!(config.agent_model.as_deref(), Some("gpt-5.3-codex"));
         assert!(config.once);
     }
 
@@ -386,6 +398,7 @@ worktree_dir = "/tmp/wt"
         let cli = Cli::parse_from(["rlph", "--once", "--runner", "codex"]);
         let config = Config::load_from(&cli, tmp.path()).unwrap();
         assert_eq!(config.agent_binary, "codex");
+        assert_eq!(config.agent_model.as_deref(), Some("gpt-5.3-codex"));
     }
 
     #[test]
