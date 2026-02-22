@@ -29,10 +29,11 @@ async fn test_codex_command_construction() {
     let runner = CodexRunner::new("codex".to_string(), Some("o3".to_string()), None);
     let (cmd, args) = runner.build_command();
     assert_eq!(cmd, "codex");
-    assert_eq!(args[0], "--quiet");
-    assert_eq!(args[1], "--full-auto");
+    assert_eq!(args[0], "exec");
+    assert_eq!(args[1], "--dangerously-bypass-approvals-and-sandbox");
     assert_eq!(args[2], "--model");
     assert_eq!(args[3], "o3");
+    assert_eq!(args[4], "-");
 }
 
 #[tokio::test]
@@ -40,7 +41,10 @@ async fn test_codex_command_no_model() {
     let runner = CodexRunner::new("codex".to_string(), None, None);
     let (cmd, args) = runner.build_command();
     assert_eq!(cmd, "codex");
-    assert_eq!(args, vec!["--quiet", "--full-auto"]);
+    assert_eq!(
+        args,
+        vec!["exec", "--dangerously-bypass-approvals-and-sandbox", "-"]
+    );
 }
 
 #[tokio::test]
@@ -56,7 +60,7 @@ async fn test_codex_prompt_via_stdin() {
 }
 
 #[tokio::test]
-async fn test_codex_quiet_full_auto_flags() {
+async fn test_codex_exec_bypass_flags() {
     // Mock script prints its arguments to stdout
     let (runner, tmp) = mock_codex_runner(r#"echo "$@""#);
     let result = runner
@@ -64,8 +68,9 @@ async fn test_codex_quiet_full_auto_flags() {
         .await
         .unwrap();
     assert_eq!(result.exit_code, 0);
-    assert!(result.stdout.contains("--quiet"));
-    assert!(result.stdout.contains("--full-auto"));
+    assert!(result.stdout.contains("exec"));
+    assert!(result.stdout.contains("--dangerously-bypass-approvals-and-sandbox"));
+    assert!(result.stdout.contains("-"));
 }
 
 #[tokio::test]

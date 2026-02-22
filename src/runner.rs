@@ -251,12 +251,16 @@ impl CodexRunner {
 
     /// Build the command and arguments for codex invocation.
     pub fn build_command(&self) -> (String, Vec<String>) {
-        let mut args = vec!["--quiet".to_string(), "--full-auto".to_string()];
+        let mut args = vec![
+            "exec".to_string(),
+            "--dangerously-bypass-approvals-and-sandbox".to_string(),
+        ];
 
         if let Some(ref model) = self.model {
             args.push("--model".to_string());
             args.push(model.clone());
         }
+        args.push("-".to_string());
 
         (self.agent_binary.clone(), args)
     }
@@ -417,8 +421,9 @@ mod tests {
         let runner = CodexRunner::new("codex".to_string(), None, None);
         let (cmd, args) = runner.build_command();
         assert_eq!(cmd, "codex");
-        assert!(args.contains(&"--quiet".to_string()));
-        assert!(args.contains(&"--full-auto".to_string()));
+        assert!(args.contains(&"exec".to_string()));
+        assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(args.contains(&"-".to_string()));
         assert!(!args.contains(&"--model".to_string()));
     }
 
