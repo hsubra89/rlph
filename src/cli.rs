@@ -48,6 +48,10 @@ pub struct Cli {
     #[arg(long)]
     pub worktree_dir: Option<String>,
 
+    /// Base branch for worktrees and PRs (default: main)
+    #[arg(long)]
+    pub base_branch: Option<String>,
+
     /// Agent binary to use (default: claude)
     #[arg(long)]
     pub agent_binary: Option<String>,

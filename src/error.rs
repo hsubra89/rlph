@@ -38,6 +38,9 @@ pub enum Error {
 
     #[error("orchestrator error: {0}")]
     Orchestrator(String),
+
+    #[error("interrupted by signal")]
+    Interrupted,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

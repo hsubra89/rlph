@@ -53,7 +53,7 @@ async fn main() {
     );
     let submission = GitHubSubmission::new();
     let worktree_base = PathBuf::from(&config.worktree_dir);
-    let worktree_mgr = WorktreeManager::new(repo_root.clone(), worktree_base);
+    let worktree_mgr = WorktreeManager::new(repo_root.clone(), worktree_base, config.base_branch.clone());
     let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
     let prompt_engine = PromptEngine::new(None);
 
@@ -70,6 +70,9 @@ async fn main() {
 
     if cli.once {
         if let Err(e) = orchestrator.run_once().await {
+            if matches!(&e, rlph::error::Error::Interrupted) {
+                std::process::exit(130);
+            }
             eprintln!("error: {e}");
             std::process::exit(1);
         }

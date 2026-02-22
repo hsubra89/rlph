@@ -93,7 +93,7 @@ async fn test_env_vars() {
 
 #[tokio::test]
 #[cfg(unix)]
-async fn test_sigint_to_process_group() {
+async fn test_sigint_to_child() {
     let pid_file = format!("/tmp/rlph_test_sigint_{}", std::process::id());
     let pid_file_clone = pid_file.clone();
 
@@ -126,9 +126,9 @@ async fn test_sigint_to_process_group() {
         pid.expect("child should write PID file")
     };
 
-    // Send SIGINT to child's process group
+    // Send SIGINT to child process
     unsafe {
-        libc::killpg(child_pid, libc::SIGINT);
+        libc::kill(child_pid, libc::SIGINT);
     }
 
     let output = tokio::time::timeout(Duration::from_secs(5), handle)
@@ -141,6 +141,95 @@ async fn test_sigint_to_process_group() {
     assert_eq!(output.signal, Some(libc::SIGINT));
 
     let _ = std::fs::remove_file(&pid_file);
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn test_double_sigint_force_exit() {
+    // Spawn a process that traps SIGINT and refuses to die
+    let config = ProcessConfig {
+        command: "bash".to_string(),
+        args: vec!["-c".to_string(), "trap '' INT TERM; sleep 60".to_string()],
+        working_dir: PathBuf::from("."),
+        timeout: None,
+        log_prefix: "test:double-sigint".to_string(),
+        env: vec![],
+    };
+
+    let handle = tokio::spawn(spawn_and_stream(config));
+
+    // Give child time to start and install trap
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Send SIGINT to ourselves (triggers first Ctrl-C path)
+    unsafe {
+        libc::kill(libc::getpid(), libc::SIGINT);
+    }
+
+    // Brief pause then second SIGINT (force exit path)
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    unsafe {
+        libc::kill(libc::getpid(), libc::SIGINT);
+    }
+
+    let result = tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("should complete within 5s")
+        .expect("task should not panic");
+
+    assert!(result.is_err(), "double SIGINT should return Err");
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn test_timeout_kills_descendants() {
+    let pid_file = format!("/tmp/rlph_timeout_descendant_{}.pid", std::process::id());
+    let pid_file_clone = pid_file.clone();
+
+    // Child shell ignores TERM and waits; its background child should not survive timeout cleanup.
+    let config = ProcessConfig {
+        command: "bash".to_string(),
+        args: vec![
+            "-c".to_string(),
+            format!("sleep 30 & echo $! > {pid_file_clone}; trap '' TERM; wait"),
+        ],
+        working_dir: PathBuf::from("."),
+        timeout: Some(Duration::from_millis(200)),
+        log_prefix: "test:timeout-descendants".to_string(),
+        env: vec![],
+    };
+
+    let result = spawn_and_stream(config).await;
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("timed out"), "unexpected error: {err}");
+
+    let mut descendant_pid = None;
+    for _ in 0..50 {
+        if let Ok(content) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = content.trim().parse::<i32>()
+        {
+            descendant_pid = Some(pid);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let descendant_pid = descendant_pid.expect("child should write descendant pid file");
+
+    // SAFETY: kill(pid, 0) only checks for process existence.
+    let still_alive = unsafe { libc::kill(descendant_pid, 0) == 0 };
+    if still_alive {
+        // SAFETY: best-effort cleanup for leaked process from the test.
+        unsafe {
+            libc::kill(descendant_pid, libc::SIGKILL);
+        }
+    }
+    let _ = std::fs::remove_file(&pid_file);
+
+    assert!(
+        !still_alive,
+        "descendant process {descendant_pid} survived timeout cleanup"
+    );
 }
 
 #[tokio::test]

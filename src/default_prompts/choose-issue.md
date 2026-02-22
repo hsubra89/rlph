@@ -11,14 +11,13 @@ Do NOT implement the task yet.
    - Do not select issues blocked by other open issues. Look for patterns in the issue
      body: `blocked by #N`, `depends on #N`, `blockedBy: [N, M]`.
    - Prefer higher-priority issues (labels: `p1`-`p9`, `priority-high/medium/low`).
-3. Check if there is an open GitHub PR for the chosen issue.
+3. Do not run external commands or tools for this phase.
 4. Save the chosen issue in `.ralph/task.toml` as a TOML object:
 
 ```toml
 id = "gh-<issue number>"
-# Include githubPrNumber only when an open PR exists:
-# githubPrNumber = 123
 ```
 
-If an open PR exists, set `githubPrNumber` to that PR number.
-If no open PR exists, omit `githubPrNumber`.
+## Open Issues (GitHub JSON)
+
+{{issues_json}}

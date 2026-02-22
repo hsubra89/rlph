@@ -16,6 +16,7 @@ pub struct ConfigFile {
     pub worktree_dir: Option<String>,
     pub max_iterations: Option<u32>,
     pub dry_run: Option<bool>,
+    pub base_branch: Option<String>,
     pub agent_binary: Option<String>,
     pub agent_model: Option<String>,
     pub agent_timeout: Option<u64>,
@@ -30,6 +31,7 @@ pub struct Config {
     pub label: String,
     pub poll_interval: u64,
     pub worktree_dir: String,
+    pub base_branch: String,
     pub max_iterations: Option<u32>,
     pub dry_run: bool,
     pub once: bool,
@@ -105,6 +107,11 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .clone()
             .or(file.worktree_dir)
             .unwrap_or_else(|| "../rlph-worktrees".to_string()),
+        base_branch: cli
+            .base_branch
+            .clone()
+            .or(file.base_branch)
+            .unwrap_or_else(|| "main".to_string()),
         max_iterations: cli.max_iterations.or(file.max_iterations),
         dry_run: cli.dry_run || file.dry_run.unwrap_or(false),
         once: cli.once,
@@ -115,7 +122,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .or(file.agent_binary)
             .unwrap_or_else(|| "claude".to_string()),
         agent_model: cli.agent_model.clone().or(file.agent_model),
-        agent_timeout: cli.agent_timeout.or(file.agent_timeout),
+        agent_timeout: cli.agent_timeout.or(file.agent_timeout).or(Some(300)),
         max_review_rounds: cli
             .max_review_rounds
             .or(file.max_review_rounds)
@@ -271,6 +278,18 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
         assert_eq!(config.poll_interval, 60);
+        assert_eq!(config.agent_timeout, Some(300));
+    }
+
+    #[test]
+    fn test_agent_timeout_overrides_default() {
+        let file = ConfigFile {
+            agent_timeout: Some(120),
+            ..Default::default()
+        };
+        let cli = Cli::parse_from(["rlph", "--once", "--agent-timeout", "45"]);
+        let config = merge(file, &cli).unwrap();
+        assert_eq!(config.agent_timeout, Some(45));
     }
 
     #[test]

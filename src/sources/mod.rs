@@ -1,9 +1,11 @@
 pub mod github;
 
+use serde::Serialize;
+
 use crate::error::Result;
 
 /// Task priority (1 = highest, 9 = lowest).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Priority(pub u8);
 
 impl Priority {
@@ -25,7 +27,7 @@ impl Priority {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Task {
     pub id: String,
     pub title: String,
@@ -42,7 +44,13 @@ pub trait TaskSource {
     /// Mark a task as in-progress in the remote system.
     fn mark_in_progress(&self, task_id: &str) -> Result<()>;
 
+    /// Mark a task as in-review in the remote system.
+    fn mark_in_review(&self, task_id: &str) -> Result<()>;
+
     /// Mark a task as done in the remote system.
+    ///
+    /// Currently unused in the happy path — GitHub auto-closes issues when the
+    /// PR containing "Resolves #N" is merged. Kept for manual / fallback use.
     fn mark_done(&self, task_id: &str) -> Result<()>;
 
     /// Get full details for a task.
