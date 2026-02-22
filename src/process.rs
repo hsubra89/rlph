@@ -43,9 +43,8 @@ impl ProcessOutput {
 /// Spawn a child process, stream its output line-by-line, and handle signals.
 ///
 /// On Unix, SIGINT and SIGTERM received by the parent are forwarded to the
-/// child. The child shares the parent's process group so that terminal
-/// signals (Ctrl-C) reach it directly; explicit forwarding covers the
-/// timeout and programmatic-shutdown paths.
+/// child's process group. The child is placed in its own process group so
+/// timeout and interrupt handling can terminate the full subprocess tree.
 pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let started_at = Instant::now();
     let mut cmd = Command::new(&config.command);
@@ -59,6 +58,9 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     for (key, value) in &config.env {
         cmd.env(key, value);
     }
+
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     // Allow nested Claude CLI invocations (parent sets CLAUDECODE=1).
     cmd.env_remove("CLAUDECODE");
@@ -302,7 +304,7 @@ async fn handle_interrupt_unix(
 ) -> Result<ExitStatus> {
     warn!("[{log_prefix}] received {signal_name}; forwarding to child pid {child_pid}");
     eprintln!("[{log_prefix}] received {signal_name}; press Ctrl-C again to force exit");
-    send_signal_to_child(child_pid, signal, log_prefix, signal_name);
+    send_signal_to_child_group(child_pid, signal, log_prefix, signal_name);
 
     tokio::select! {
         result = tokio::time::timeout(INTERRUPT_GRACE, &mut *wait_task) => {
@@ -312,20 +314,20 @@ async fn handle_interrupt_unix(
                     warn!(
                         "[{log_prefix}] child pid {child_pid} ignored {signal_name}; sending SIGKILL"
                     );
-                    send_signal_to_child(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
+                    send_signal_to_child_group(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
                     force_wait_or_abort(wait_task).await
                 }
             }
         }
         _ = sigint.recv() => {
             eprintln!("[{log_prefix}] force exit");
-            send_signal_to_child(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
+            send_signal_to_child_group(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
             wait_task.abort();
             Err(Error::Interrupted)
         }
         _ = sigterm.recv() => {
             eprintln!("[{log_prefix}] force exit");
-            send_signal_to_child(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
+            send_signal_to_child_group(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
             wait_task.abort();
             Err(Error::Interrupted)
         }
@@ -353,7 +355,7 @@ async fn handle_timeout_unix(
     wait_task: &mut JoinHandle<std::io::Result<ExitStatus>>,
 ) -> Result<ExitStatus> {
     warn!("[{log_prefix}] process timed out after {timeout:?}; sending SIGTERM");
-    send_signal_to_child(child_pid, libc::SIGTERM, log_prefix, "SIGTERM");
+    send_signal_to_child_group(child_pid, libc::SIGTERM, log_prefix, "SIGTERM");
 
     match tokio::time::timeout(TIMEOUT_GRACE, &mut *wait_task).await {
         Ok(result) => {
@@ -361,7 +363,7 @@ async fn handle_timeout_unix(
         }
         Err(_) => {
             warn!("[{log_prefix}] child pid {child_pid} ignored SIGTERM; sending SIGKILL");
-            send_signal_to_child(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
+            send_signal_to_child_group(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
             let _ = force_wait_or_abort(wait_task).await?;
         }
     }
@@ -372,9 +374,14 @@ async fn handle_timeout_unix(
 }
 
 #[cfg(unix)]
-fn send_signal_to_child(child_pid: i32, signal: i32, log_prefix: &str, signal_name: &str) {
-    // SAFETY: libc::kill is an FFI call that does not dereference pointers.
-    let rc = unsafe { libc::kill(child_pid, signal) };
+fn send_signal_to_child_group(
+    child_pid: i32,
+    signal: i32,
+    log_prefix: &str,
+    signal_name: &str,
+) {
+    // SAFETY: libc::killpg is an FFI call that does not dereference pointers.
+    let rc = unsafe { libc::killpg(child_pid, signal) };
     if rc == 0 {
         return;
     }

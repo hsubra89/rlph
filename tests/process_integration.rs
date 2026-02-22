@@ -181,6 +181,58 @@ async fn test_double_sigint_force_exit() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
+async fn test_timeout_kills_descendants() {
+    let pid_file = format!("/tmp/rlph_timeout_descendant_{}.pid", std::process::id());
+    let pid_file_clone = pid_file.clone();
+
+    // Child shell ignores TERM and waits; its background child should not survive timeout cleanup.
+    let config = ProcessConfig {
+        command: "bash".to_string(),
+        args: vec![
+            "-c".to_string(),
+            format!("sleep 30 & echo $! > {pid_file_clone}; trap '' TERM; wait"),
+        ],
+        working_dir: PathBuf::from("."),
+        timeout: Some(Duration::from_millis(200)),
+        log_prefix: "test:timeout-descendants".to_string(),
+        env: vec![],
+    };
+
+    let result = spawn_and_stream(config).await;
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("timed out"), "unexpected error: {err}");
+
+    let mut descendant_pid = None;
+    for _ in 0..50 {
+        if let Ok(content) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = content.trim().parse::<i32>()
+        {
+            descendant_pid = Some(pid);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let descendant_pid = descendant_pid.expect("child should write descendant pid file");
+
+    // SAFETY: kill(pid, 0) only checks for process existence.
+    let still_alive = unsafe { libc::kill(descendant_pid, 0) == 0 };
+    if still_alive {
+        // SAFETY: best-effort cleanup for leaked process from the test.
+        unsafe {
+            libc::kill(descendant_pid, libc::SIGKILL);
+        }
+    }
+    let _ = std::fs::remove_file(&pid_file);
+
+    assert!(
+        !still_alive,
+        "descendant process {descendant_pid} survived timeout cleanup"
+    );
+}
+
+#[tokio::test]
 async fn test_stdout_with_output_before_failure() {
     let config = make_config("bash", &["-c", "echo before_fail; exit 1"]);
     let output = spawn_and_stream(config).await.unwrap();
