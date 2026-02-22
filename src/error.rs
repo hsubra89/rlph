@@ -32,6 +32,9 @@ pub enum Error {
 
     #[error("state error: {0}")]
     State(String),
+
+    #[error("prompt error: {0}")]
+    Prompt(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
