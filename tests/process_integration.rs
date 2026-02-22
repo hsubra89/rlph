@@ -116,11 +116,11 @@ async fn test_sigint_to_process_group() {
         let mut pid = None;
         for _ in 0..50 {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            if let Ok(content) = std::fs::read_to_string(&pid_file) {
-                if let Ok(p) = content.trim().parse::<i32>() {
-                    pid = Some(p);
-                    break;
-                }
+            if let Ok(content) = std::fs::read_to_string(&pid_file)
+                && let Ok(p) = content.trim().parse::<i32>()
+            {
+                pid = Some(p);
+                break;
             }
         }
         pid.expect("child should write PID file")

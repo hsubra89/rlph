@@ -1,6 +1,7 @@
 # Task Selection Agent
 
 You are selecting the next task to work on from the repository at `{{repo_path}}`.
+Do NOT implement the task yet.
 
 ## Instructions
 
@@ -11,13 +12,13 @@ You are selecting the next task to work on from the repository at `{{repo_path}}
      body: `blocked by #N`, `depends on #N`, `blockedBy: [N, M]`.
    - Prefer higher-priority issues (labels: `p1`-`p9`, `priority-high/medium/low`).
 3. Check if there is an open GitHub PR for the chosen issue.
-4. Save the chosen issue as a JSON object:
+4. Save the chosen issue in `.ralph/task.toml` as a TOML object:
 
-```json
-{
-  "id": "gh-<issue number>",
-  "githubPrNumber": null
-}
+```toml
+id = "gh-<issue number>"
+# Include githubPrNumber only when an open PR exists:
+# githubPrNumber = 123
 ```
 
-Set `githubPrNumber` to the PR number if one exists, otherwise use `null`.
+If an open PR exists, set `githubPrNumber` to that PR number.
+If no open PR exists, omit `githubPrNumber`.

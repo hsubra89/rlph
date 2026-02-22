@@ -278,7 +278,7 @@ mod tests {
         mgr.remove_worktree_mapping("gh-7").unwrap();
 
         let state = mgr.load();
-        assert!(state.worktree_mappings.get("gh-7").is_none());
+        assert!(!state.worktree_mappings.contains_key("gh-7"));
     }
 
     #[test]
