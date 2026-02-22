@@ -52,6 +52,7 @@ async fn main() {
             config.agent_binary.clone(),
             config.agent_model.clone(),
             timeout,
+            config.agent_timeout_retries,
         )),
         _ => AnyRunner::Claude(BareClaudeRunner::new(
             config.agent_binary.clone(),

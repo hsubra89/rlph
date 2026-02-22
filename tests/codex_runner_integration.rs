@@ -5,6 +5,10 @@ use rlph::runner::{AgentRunner, CodexRunner, Phase};
 
 /// Helper: creates a CodexRunner that invokes a bash script echoing its args and stdin.
 fn mock_codex_runner(script: &str) -> (CodexRunner, PathBuf) {
+    mock_codex_runner_with_retries(script, 0)
+}
+
+fn mock_codex_runner_with_retries(script: &str, retries: u32) -> (CodexRunner, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let script_path = tmp.path().join("mock_codex");
     std::fs::write(&script_path, format!("#!/bin/bash\n{script}")).unwrap();
@@ -17,6 +21,7 @@ fn mock_codex_runner(script: &str) -> (CodexRunner, PathBuf) {
         script_path.to_string_lossy().to_string(),
         None,
         Some(Duration::from_secs(10)),
+        retries,
     );
     let path = tmp.path().to_path_buf();
     // Keep the tempdir alive so the mock script stays on disk.
@@ -26,7 +31,7 @@ fn mock_codex_runner(script: &str) -> (CodexRunner, PathBuf) {
 
 #[tokio::test]
 async fn test_codex_command_construction() {
-    let runner = CodexRunner::new("codex".to_string(), Some("o3".to_string()), None);
+    let runner = CodexRunner::new("codex".to_string(), Some("o3".to_string()), None, 0);
     let (cmd, args) = runner.build_command();
     assert_eq!(cmd, "codex");
     assert_eq!(args[0], "exec");
@@ -38,7 +43,7 @@ async fn test_codex_command_construction() {
 
 #[tokio::test]
 async fn test_codex_command_no_model() {
-    let runner = CodexRunner::new("codex".to_string(), None, None);
+    let runner = CodexRunner::new("codex".to_string(), None, None, 0);
     let (cmd, args) = runner.build_command();
     assert_eq!(cmd, "codex");
     assert_eq!(
@@ -87,6 +92,7 @@ async fn test_codex_model_flag_passed() {
         script_path.to_string_lossy().to_string(),
         Some("gpt-4o".to_string()),
         Some(Duration::from_secs(10)),
+        0,
     );
     let result = runner
         .run(Phase::Implement, "do stuff", tmp.path())
@@ -112,6 +118,7 @@ async fn test_codex_binary_not_found() {
         "/nonexistent/codex_xyz".to_string(),
         None,
         Some(Duration::from_secs(5)),
+        0,
     );
     let err = runner
         .run(Phase::Implement, "test", std::path::Path::new("."))
@@ -130,4 +137,53 @@ async fn test_codex_signal_propagation() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("agent killed by signal"));
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn test_codex_timeout_retries_with_resume() {
+    // Script: first invocation (has `-` in args) sleeps forever to trigger timeout.
+    // Resume invocation (has `resume` in args) succeeds immediately.
+    let script = r#"
+if echo "$@" | grep -q "resume"; then
+    echo "resumed ok"
+    exit 0
+fi
+# First attempt: sleep to trigger timeout
+sleep 60
+"#;
+    let tmp = tempfile::tempdir().unwrap();
+    let script_path = tmp.path().join("mock_codex");
+    std::fs::write(&script_path, format!("#!/bin/bash\n{script}")).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let runner = CodexRunner::new(
+        script_path.to_string_lossy().to_string(),
+        None,
+        Some(Duration::from_secs(2)),
+        2,
+    );
+    let work_dir = tmp.path().to_path_buf();
+    std::mem::forget(tmp);
+
+    let result = runner
+        .run(Phase::Implement, "do work", work_dir.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(result.exit_code, 0);
+    assert!(result.stdout.contains("resumed ok"));
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn test_codex_timeout_exhausts_retries() {
+    // Script always sleeps — all attempts will timeout.
+    let (runner, tmp) = mock_codex_runner_with_retries("sleep 60", 2);
+    let err = runner
+        .run(Phase::Implement, "never finish", tmp.as_ref())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("agent timed out after 3 attempts"));
 }

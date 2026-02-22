@@ -238,14 +238,21 @@ pub struct CodexRunner {
     agent_binary: String,
     model: Option<String>,
     timeout: Option<Duration>,
+    max_timeout_retries: u32,
 }
 
 impl CodexRunner {
-    pub fn new(agent_binary: String, model: Option<String>, timeout: Option<Duration>) -> Self {
+    pub fn new(
+        agent_binary: String,
+        model: Option<String>,
+        timeout: Option<Duration>,
+        max_timeout_retries: u32,
+    ) -> Self {
         Self {
             agent_binary,
             model,
             timeout,
+            max_timeout_retries,
         }
     }
 
@@ -264,43 +271,107 @@ impl CodexRunner {
 
         (self.agent_binary.clone(), args)
     }
+
+    /// Build a resume command for a timed-out session.
+    /// Uses `codex exec resume --last` which resumes the most recent session
+    /// scoped to the current working directory.
+    pub fn build_resume_command(&self) -> (String, Vec<String>) {
+        let mut args = vec![
+            "exec".to_string(),
+            "--dangerously-bypass-approvals-and-sandbox".to_string(),
+        ];
+
+        if let Some(ref model) = self.model {
+            args.push("--model".to_string());
+            args.push(model.clone());
+        }
+
+        args.push("resume".to_string());
+        args.push("--last".to_string());
+
+        (self.agent_binary.clone(), args)
+    }
 }
 
 impl AgentRunner for CodexRunner {
     async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
-        let (command, args) = self.build_command();
+        let log_prefix = format!("agent:{phase}");
+        let max_attempts = 1 + self.max_timeout_retries;
+        let mut all_stdout: Vec<String> = Vec::new();
+        let mut all_stderr: Vec<String> = Vec::new();
 
-        let config = ProcessConfig {
-            command,
-            args,
-            working_dir: working_dir.to_path_buf(),
-            timeout: self.timeout,
-            log_prefix: format!("agent:{phase}"),
-            env: vec![],
-            stdin_data: Some(prompt.to_string()),
-        };
+        for attempt in 0..max_attempts {
+            let (command, args, stdin_data) = if attempt == 0 {
+                let (cmd, a) = self.build_command();
+                (cmd, a, Some(prompt.to_string()))
+            } else {
+                info!(
+                    "[{log_prefix}] timeout retry {attempt}/{max_attempts}: resuming last session"
+                );
+                eprintln!(
+                    "[{log_prefix}] resuming timed-out session (attempt {}/{})",
+                    attempt + 1,
+                    max_attempts
+                );
+                let (cmd, a) = self.build_resume_command();
+                (cmd, a, None)
+            };
 
-        let output = spawn_and_stream(config).await?;
+            let config = ProcessConfig {
+                command,
+                args,
+                working_dir: working_dir.to_path_buf(),
+                timeout: self.timeout,
+                log_prefix: log_prefix.clone(),
+                env: vec![],
+                stdin_data,
+            };
 
-        let stdout = output.stdout_lines.join("\n");
-        let stderr = output.stderr_lines.join("\n");
+            match spawn_and_stream(config).await {
+                Ok(output) => {
+                    all_stdout.extend(output.stdout_lines);
+                    all_stderr.extend(output.stderr_lines);
 
-        if let Some(sig) = output.signal {
-            return Err(Error::AgentRunner(format!("agent killed by signal {sig}")));
+                    let stdout = all_stdout.join("\n");
+                    let stderr = all_stderr.join("\n");
+
+                    if let Some(sig) = output.signal {
+                        return Err(Error::AgentRunner(format!("agent killed by signal {sig}")));
+                    }
+
+                    if output.exit_code != 0 {
+                        return Err(Error::AgentRunner(format!(
+                            "agent exited with code {}",
+                            output.exit_code
+                        )));
+                    }
+
+                    return Ok(RunResult {
+                        exit_code: output.exit_code,
+                        stdout,
+                        stderr,
+                    });
+                }
+                Err(Error::ProcessTimeout {
+                    timeout,
+                    stdout_lines,
+                    stderr_lines,
+                }) => {
+                    all_stdout.extend(stdout_lines);
+                    all_stderr.extend(stderr_lines);
+                    warn!(
+                        "[{log_prefix}] attempt {} timed out after {timeout:?} ({} stdout lines buffered)",
+                        attempt + 1,
+                        all_stdout.len()
+                    );
+                }
+                Err(e) => return Err(e),
+            }
         }
 
-        if output.exit_code != 0 {
-            return Err(Error::AgentRunner(format!(
-                "agent exited with code {}",
-                output.exit_code
-            )));
-        }
-
-        Ok(RunResult {
-            exit_code: output.exit_code,
-            stdout,
-            stderr,
-        })
+        Err(Error::AgentRunner(format!(
+            "agent timed out after {max_attempts} attempts"
+        )))
     }
 }
 
@@ -418,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_codex_build_command_defaults() {
-        let runner = CodexRunner::new("codex".to_string(), None, None);
+        let runner = CodexRunner::new("codex".to_string(), None, None, 2);
         let (cmd, args) = runner.build_command();
         assert_eq!(cmd, "codex");
         assert!(args.contains(&"exec".to_string()));
@@ -429,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_codex_build_command_with_model() {
-        let runner = CodexRunner::new("codex".to_string(), Some("o3".to_string()), None);
+        let runner = CodexRunner::new("codex".to_string(), Some("o3".to_string()), None, 2);
         let (_cmd, args) = runner.build_command();
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"o3".to_string()));
@@ -437,8 +508,32 @@ mod tests {
 
     #[test]
     fn test_codex_build_command_custom_binary() {
-        let runner = CodexRunner::new("/usr/local/bin/codex".to_string(), None, None);
+        let runner = CodexRunner::new("/usr/local/bin/codex".to_string(), None, None, 2);
         let (cmd, _args) = runner.build_command();
         assert_eq!(cmd, "/usr/local/bin/codex");
+    }
+
+    #[test]
+    fn test_codex_build_resume_command() {
+        let runner = CodexRunner::new("codex".to_string(), None, None, 2);
+        let (cmd, args) = runner.build_resume_command();
+        assert_eq!(cmd, "codex");
+        assert!(args.contains(&"exec".to_string()));
+        assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(args.contains(&"resume".to_string()));
+        assert!(args.contains(&"--last".to_string()));
+        // Must NOT have `-` stdin marker
+        assert!(!args.contains(&"-".to_string()));
+    }
+
+    #[test]
+    fn test_codex_build_resume_command_with_model() {
+        let runner =
+            CodexRunner::new("codex".to_string(), Some("gpt-5.3".to_string()), None, 2);
+        let (_cmd, args) = runner.build_resume_command();
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"gpt-5.3".to_string()));
+        assert!(args.contains(&"resume".to_string()));
+        assert!(args.contains(&"--last".to_string()));
     }
 }
