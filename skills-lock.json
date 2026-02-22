@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "prd-to-issues": {
+      "source": "yektas/skills",
+      "sourceType": "github",
+      "computedHash": "5d630150322d257c1b092be8ba7b8f89e464eb3701e0decfe835c212fc3eb62f"
+    },
+    "write-a-prd": {
+      "source": "yektas/skills",
+      "sourceType": "github",
+      "computedHash": "c42ab2c341685cb8404b4894fed1ac4671f62cd34ab3126b30a9c2fd2f33158c"
+    }
+  }
+}
