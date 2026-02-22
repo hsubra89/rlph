@@ -66,7 +66,7 @@ impl Config {
             }
         };
 
-        Ok(merge(file_config, cli))
+        merge(file_config, cli)
     }
 }
 
@@ -117,8 +117,8 @@ fn validate(config: &ConfigFile) -> Result<()> {
     Ok(())
 }
 
-pub fn merge(file: ConfigFile, cli: &Cli) -> Config {
-    Config {
+pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
+    let config = Config {
         source: cli
             .source
             .clone()
@@ -156,7 +156,42 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Config {
             .unwrap_or_else(|| "claude".to_string()),
         agent_model: cli.agent_model.clone().or(file.agent_model),
         agent_timeout: cli.agent_timeout.or(file.agent_timeout),
+    };
+    validate_effective(&config)?;
+    Ok(config)
+}
+
+fn validate_effective(config: &Config) -> Result<()> {
+    match config.source.as_str() {
+        "github" | "linear" => {}
+        other => {
+            return Err(Error::ConfigValidation(format!(
+                "unknown source: {other} (expected: github, linear)"
+            )));
+        }
     }
+    match config.runner.as_str() {
+        "bare" | "docker" => {}
+        other => {
+            return Err(Error::ConfigValidation(format!(
+                "unknown runner: {other} (expected: bare, docker)"
+            )));
+        }
+    }
+    match config.submission.as_str() {
+        "github" | "graphite" => {}
+        other => {
+            return Err(Error::ConfigValidation(format!(
+                "unknown submission: {other} (expected: github, graphite)"
+            )));
+        }
+    }
+    if config.poll_interval == 0 {
+        return Err(Error::ConfigValidation(
+            "poll_interval must be > 0".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -238,7 +273,7 @@ worktree_dir = "/tmp/wt"
             "--label",
             "cli-label",
         ]);
-        let config = merge(file, &cli);
+        let config = merge(file, &cli).unwrap();
         assert_eq!(config.source, "linear"); // CLI wins
         assert_eq!(config.label, "cli-label"); // CLI wins
         assert_eq!(config.runner, "bare"); // file value kept
@@ -250,7 +285,7 @@ worktree_dir = "/tmp/wt"
     fn test_defaults_applied() {
         let file = ConfigFile::default();
         let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = merge(file, &cli);
+        let config = merge(file, &cli).unwrap();
         assert_eq!(config.source, "github");
         assert_eq!(config.runner, "bare");
         assert_eq!(config.submission, "github");
@@ -290,5 +325,37 @@ worktree_dir = "/tmp/wt"
         let cli = Cli::parse_from(["rlph", "--once", "--config", "/nonexistent/config.toml"]);
         let err = Config::load(&cli).unwrap_err();
         assert!(err.to_string().contains("config file not found"));
+    }
+
+    #[test]
+    fn test_cli_invalid_source_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once", "--source", "jira"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("unknown source: jira"));
+    }
+
+    #[test]
+    fn test_cli_invalid_runner_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once", "--runner", "bogus"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("unknown runner: bogus"));
+    }
+
+    #[test]
+    fn test_cli_invalid_submission_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once", "--submission", "gitlab"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("unknown submission: gitlab"));
+    }
+
+    #[test]
+    fn test_cli_zero_poll_interval_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once", "--poll-interval", "0"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("poll_interval must be > 0"));
     }
 }
