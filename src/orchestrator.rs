@@ -143,11 +143,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
 
         match result {
             Ok(()) => {
-                // 11. Mark done
-                if !self.config.dry_run {
-                    info!("[rlph:orchestrator] Marking task done...");
-                    self.source.mark_done(&task.id)?;
-                }
+                // 11. Mark done — skipped; GitHub auto-closes the issue when the PR merges
                 self.state_mgr.complete_current_task()?;
 
                 // 12. Clean up worktree

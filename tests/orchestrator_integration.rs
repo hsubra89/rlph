@@ -390,10 +390,10 @@ async fn test_full_loop_with_push() {
 
     orchestrator.run_once().await.unwrap();
 
-    // Source should be marked in-progress and done
+    // Source should be marked in-progress (done is handled by GitHub on PR merge)
     let tracker = source_tracker.lock().unwrap();
     assert_eq!(tracker.marked_in_progress, vec!["42".to_string()]);
-    assert_eq!(tracker.marked_done, vec!["42".to_string()]);
+    assert!(tracker.marked_done.is_empty());
     drop(tracker);
 
     // Submission should have been called
