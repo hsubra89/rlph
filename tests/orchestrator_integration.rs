@@ -186,6 +186,43 @@ impl SubmissionBackend for MockSubmission {
     }
 }
 
+/// Runner whose review phase never emits REVIEW_COMPLETE.
+struct ReviewNeverCompleteRunner {
+    task_id: String,
+}
+
+impl AgentRunner for ReviewNeverCompleteRunner {
+    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        match phase {
+            Phase::Choose => {
+                let ralph_dir = working_dir.join(".ralph");
+                std::fs::create_dir_all(&ralph_dir)
+                    .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                std::fs::write(
+                    ralph_dir.join("task.toml"),
+                    format!("id = \"{}\"", self.task_id),
+                )
+                .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "Selected task".into(),
+                    stderr: String::new(),
+                })
+            }
+            Phase::Implement => Ok(RunResult {
+                exit_code: 0,
+                stdout: "IMPLEMENTATION_COMPLETE: done".into(),
+                stderr: String::new(),
+            }),
+            Phase::Review => Ok(RunResult {
+                exit_code: 0,
+                stdout: "Some review feedback but not complete".into(),
+                stderr: String::new(),
+            }),
+        }
+    }
+}
+
 struct FailSubmission;
 
 impl SubmissionBackend for FailSubmission {
@@ -570,4 +607,48 @@ async fn test_worktree_cleaned_up_after_success() {
         "worktree should be cleaned up: {}",
         wt_path.display()
     );
+}
+
+#[tokio::test]
+async fn test_review_exhaustion_does_not_mark_done() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let mut config = make_config(true);
+    config.max_review_rounds = 2;
+
+    let orchestrator = Orchestrator::new(
+        MockSource::new(vec![task], Arc::clone(&source_tracker)),
+        ReviewNeverCompleteRunner {
+            task_id: "gh-42".to_string(),
+        },
+        MockSubmission::new(Arc::clone(&sub_tracker)),
+        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf()),
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    );
+
+    let err = orchestrator.run_once().await.unwrap_err();
+    assert!(
+        err.to_string().contains("review did not complete"),
+        "unexpected error: {err}"
+    );
+
+    // Task must NOT be marked done
+    let tracker = source_tracker.lock().unwrap();
+    assert!(tracker.marked_done.is_empty());
+    drop(tracker);
+
+    // State should still show current task in review phase (resumable)
+    let state_mgr = StateManager::new(&state_dir);
+    let state = state_mgr.load();
+    assert!(state.current_task.is_some());
+    assert_eq!(state.current_task.unwrap().phase, "review");
+    assert!(state.history.is_empty());
 }
