@@ -1,8 +1,18 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
 use clap::Parser;
 use tracing::info;
 
 use rlph::cli::Cli;
 use rlph::config::Config;
+use rlph::orchestrator::Orchestrator;
+use rlph::prompts::PromptEngine;
+use rlph::runner::BareClaudeRunner;
+use rlph::sources::github::GitHubSource;
+use rlph::state::StateManager;
+use rlph::submission::GitHubSubmission;
+use rlph::worktree::WorktreeManager;
 
 fn init_logging() {
     tracing_subscriber::fmt()
@@ -33,5 +43,38 @@ async fn main() {
         std::process::exit(1);
     }
 
-    info!("no source configured — exiting");
+    let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    let source = GitHubSource::new(&config);
+    let runner = BareClaudeRunner::new(
+        config.agent_binary.clone(),
+        config.agent_model.clone(),
+        config.agent_timeout.map(Duration::from_secs),
+    );
+    let submission = GitHubSubmission::new();
+    let worktree_base = PathBuf::from(&config.worktree_dir);
+    let worktree_mgr = WorktreeManager::new(repo_root.clone(), worktree_base);
+    let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
+    let prompt_engine = PromptEngine::new(None);
+
+    let orchestrator = Orchestrator::new(
+        source,
+        runner,
+        submission,
+        worktree_mgr,
+        state_mgr,
+        prompt_engine,
+        config,
+        repo_root,
+    );
+
+    if cli.once {
+        if let Err(e) = orchestrator.run_once().await {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    } else {
+        eprintln!("error: continuous mode not yet implemented");
+        std::process::exit(1);
+    }
 }
