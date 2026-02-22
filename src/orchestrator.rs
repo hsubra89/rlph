@@ -189,8 +189,10 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
                 .await?;
 
             // Push any review fixes
-            if !self.config.dry_run {
-                let _ = self.push_branch(worktree_info);
+            if !self.config.dry_run
+                && let Err(e) = self.push_branch(worktree_info)
+            {
+                warn!("[rlph:orchestrator] Failed to push review fixes: {e}");
             }
 
             if review_result.stdout.contains("REVIEW_COMPLETE:") {
