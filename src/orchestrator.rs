@@ -180,6 +180,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
         // 10. Review loop
         self.state_mgr.update_phase("review")?;
         let max_reviews = self.config.max_review_rounds;
+        let mut review_passed = false;
         for round in 1..=max_reviews {
             info!("[rlph:orchestrator] Review round {round}/{max_reviews}...");
             let review_prompt = self.prompt_engine.render_phase("review", &vars)?;
@@ -197,8 +198,15 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
 
             if review_result.stdout.contains("REVIEW_COMPLETE:") {
                 info!("[rlph:orchestrator] Review complete at round {round}");
+                review_passed = true;
                 break;
             }
+        }
+
+        if !review_passed {
+            return Err(Error::Orchestrator(format!(
+                "review did not complete after {max_reviews} round(s)"
+            )));
         }
 
         Ok(())
