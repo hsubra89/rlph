@@ -74,8 +74,8 @@ async fn test_codex_prompt_via_stdin() {
 
 #[tokio::test]
 async fn test_codex_exec_bypass_flags() {
-    // Mock script prints its arguments to stdout
-    let (runner, tmp) = mock_codex_runner(r#"echo "$@""#);
+    // Consume stdin first so prompt write does not race with early process exit.
+    let (runner, tmp) = mock_codex_runner(r#"cat >/dev/null; echo "$@""#);
     let result = runner
         .run(Phase::Choose, "pick a task", tmp.as_ref())
         .await
@@ -94,7 +94,7 @@ async fn test_codex_exec_bypass_flags() {
 async fn test_codex_model_flag_passed() {
     let tmp = tempfile::tempdir().unwrap();
     let script_path = tmp.path().join("mock_codex");
-    std::fs::write(&script_path, "#!/bin/bash\necho \"$@\"").unwrap();
+    std::fs::write(&script_path, "#!/bin/bash\ncat >/dev/null\necho \"$@\"").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
