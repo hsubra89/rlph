@@ -273,7 +273,7 @@ fn make_task(number: u64, title: &str) -> Task {
 fn make_config(dry_run: bool) -> Config {
     Config {
         source: "github".to_string(),
-        runner: "bare".to_string(),
+        runner: "claude".to_string(),
         submission: "github".to_string(),
         label: "rlph".to_string(),
         poll_interval: 60,
@@ -339,8 +339,11 @@ async fn test_full_loop_dry_run() {
     let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
     let runner = MockRunner::new("gh-42");
     let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
-    let worktree_mgr =
-        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf(), "main".to_string());
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
     let state_dir = repo_dir.path().join(".rlph-test-state");
     let state_mgr = StateManager::new(&state_dir);
     let prompt_engine = PromptEngine::new(None);
@@ -386,8 +389,11 @@ async fn test_full_loop_with_push() {
     let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
     let runner = MockRunner::new("gh-42");
     let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
-    let worktree_mgr =
-        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf(), "main".to_string());
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
     let state_dir = repo_dir.path().join(".rlph-test-state");
     let state_mgr = StateManager::new(&state_dir);
     let prompt_engine = PromptEngine::new(None);
@@ -445,7 +451,11 @@ async fn test_no_eligible_tasks() {
         source,
         MockRunner::new("gh-1"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
-        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf(), "main".to_string()),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
         StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         make_config(true),
@@ -473,7 +483,11 @@ async fn test_error_at_choose_phase() {
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         runner,
         MockSubmission::new(Arc::clone(&sub_tracker), None),
-        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf(), "main".to_string()),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
         StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         make_config(true),
@@ -502,7 +516,11 @@ async fn test_error_at_implement_phase() {
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         runner,
         MockSubmission::new(Arc::clone(&sub_tracker), None),
-        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf(), "main".to_string()),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
         StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(true),
@@ -537,7 +555,11 @@ async fn test_error_at_review_phase() {
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         runner,
         MockSubmission::new(Arc::clone(&sub_tracker), None),
-        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf(), "main".to_string()),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
         StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(true),
@@ -565,7 +587,11 @@ async fn test_error_at_submission() {
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         FailSubmission,
-        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf(), "main".to_string()),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
         StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         make_config(false), // need non-dry-run to trigger submission
@@ -589,7 +615,11 @@ async fn test_state_transitions_through_phases() {
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-7"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
-        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf(), "main".to_string()),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
         StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(true),
@@ -618,7 +648,11 @@ async fn test_worktree_cleaned_up_after_success() {
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
-        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf(), "main".to_string()),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
         StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         make_config(true),
@@ -654,7 +688,11 @@ async fn test_review_exhaustion_does_not_mark_done() {
             task_id: "gh-42".to_string(),
         },
         MockSubmission::new(Arc::clone(&sub_tracker), None),
-        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf(), "main".to_string()),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
         StateManager::new(&state_dir),
         PromptEngine::new(None),
         config,
@@ -692,7 +730,11 @@ async fn test_existing_pr_skips_submission() {
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), Some(99)),
-        WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf(), "main".to_string()),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
         StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         make_config(false), // non-dry-run so submission would normally fire

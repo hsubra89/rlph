@@ -24,7 +24,7 @@ Configuration is read from `.rlph/config.toml` in the project root. CLI flags ov
 
 ```toml
 source = "github"              # Task source: github, linear
-runner = "bare"                # Agent runner: bare, docker
+runner = "claude"              # Agent runner: claude, codex
 submission = "github"          # Submission backend: github, graphite
 label = "rlph"                 # Label to filter eligible tasks
 poll_interval = 60             # Poll interval in seconds (continuous mode)
@@ -49,7 +49,7 @@ Options:
       --continuous                 Run continuously, polling for new tasks
       --max-iterations <N>         Max iterations before stopping (continuous mode)
       --dry-run                    Go through the full loop without pushing changes or marking issues
-      --runner <RUNNER>            Agent runner: bare, docker
+      --runner <RUNNER>            Agent runner: claude, codex
       --source <SOURCE>            Task source: github, linear
       --submission <BACKEND>       Submission backend: github, graphite
       --label <LABEL>              Label to filter eligible tasks

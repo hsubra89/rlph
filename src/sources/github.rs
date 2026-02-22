@@ -169,14 +169,7 @@ impl TaskSource for GitHubSource {
 
     fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
         let json = self.client.run(&[
-            "issue",
-            "list",
-            "--state",
-            "closed",
-            "--json",
-            "number",
-            "--limit",
-            "200",
+            "issue", "list", "--state", "closed", "--json", "number", "--limit", "200",
         ])?;
 
         #[derive(Deserialize)]

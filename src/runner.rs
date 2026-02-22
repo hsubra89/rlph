@@ -88,6 +88,89 @@ impl AgentRunner for BareClaudeRunner {
             timeout: self.timeout,
             log_prefix: format!("agent:{phase}"),
             env: vec![],
+            stdin_data: None,
+        };
+
+        let output = spawn_and_stream(config).await?;
+
+        let stdout = output.stdout_lines.join("\n");
+        let stderr = output.stderr_lines.join("\n");
+
+        if let Some(sig) = output.signal {
+            return Err(Error::AgentRunner(format!("agent killed by signal {sig}")));
+        }
+
+        if output.exit_code != 0 {
+            return Err(Error::AgentRunner(format!(
+                "agent exited with code {}",
+                output.exit_code
+            )));
+        }
+
+        Ok(RunResult {
+            exit_code: output.exit_code,
+            stdout,
+            stderr,
+        })
+    }
+}
+
+/// Enum dispatching to either Claude or Codex runner.
+pub enum AnyRunner {
+    Claude(BareClaudeRunner),
+    Codex(CodexRunner),
+}
+
+impl AgentRunner for AnyRunner {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        match self {
+            AnyRunner::Claude(r) => r.run(phase, prompt, working_dir).await,
+            AnyRunner::Codex(r) => r.run(phase, prompt, working_dir).await,
+        }
+    }
+}
+
+/// Codex runner — invokes the OpenAI Codex CLI.
+pub struct CodexRunner {
+    agent_binary: String,
+    model: Option<String>,
+    timeout: Option<Duration>,
+}
+
+impl CodexRunner {
+    pub fn new(agent_binary: String, model: Option<String>, timeout: Option<Duration>) -> Self {
+        Self {
+            agent_binary,
+            model,
+            timeout,
+        }
+    }
+
+    /// Build the command and arguments for codex invocation.
+    pub fn build_command(&self) -> (String, Vec<String>) {
+        let mut args = vec!["--quiet".to_string(), "--full-auto".to_string()];
+
+        if let Some(ref model) = self.model {
+            args.push("--model".to_string());
+            args.push(model.clone());
+        }
+
+        (self.agent_binary.clone(), args)
+    }
+}
+
+impl AgentRunner for CodexRunner {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        let (command, args) = self.build_command();
+
+        let config = ProcessConfig {
+            command,
+            args,
+            working_dir: working_dir.to_path_buf(),
+            timeout: self.timeout,
+            log_prefix: format!("agent:{phase}"),
+            env: vec![],
+            stdin_data: Some(prompt.to_string()),
         };
 
         let output = spawn_and_stream(config).await?;
@@ -153,5 +236,30 @@ mod tests {
         assert_eq!(Phase::Choose.to_string(), "choose");
         assert_eq!(Phase::Implement.to_string(), "implement");
         assert_eq!(Phase::Review.to_string(), "review");
+    }
+
+    #[test]
+    fn test_codex_build_command_defaults() {
+        let runner = CodexRunner::new("codex".to_string(), None, None);
+        let (cmd, args) = runner.build_command();
+        assert_eq!(cmd, "codex");
+        assert!(args.contains(&"--quiet".to_string()));
+        assert!(args.contains(&"--full-auto".to_string()));
+        assert!(!args.contains(&"--model".to_string()));
+    }
+
+    #[test]
+    fn test_codex_build_command_with_model() {
+        let runner = CodexRunner::new("codex".to_string(), Some("o3".to_string()), None);
+        let (_cmd, args) = runner.build_command();
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"o3".to_string()));
+    }
+
+    #[test]
+    fn test_codex_build_command_custom_binary() {
+        let runner = CodexRunner::new("/usr/local/bin/codex".to_string(), None, None);
+        let (cmd, _args) = runner.build_command();
+        assert_eq!(cmd, "/usr/local/bin/codex");
     }
 }

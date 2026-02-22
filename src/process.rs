@@ -23,6 +23,9 @@ pub struct ProcessConfig {
     pub timeout: Option<Duration>,
     pub log_prefix: String,
     pub env: Vec<(String, String)>,
+    /// Data to write to the child's stdin. When `Some`, stdin is piped and the
+    /// data is written before closing. When `None`, stdin is connected to /dev/null.
+    pub stdin_data: Option<String>,
 }
 
 /// Output from a completed child process.
@@ -50,9 +53,14 @@ impl ProcessOutput {
 pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let started_at = Instant::now();
     let mut cmd = Command::new(&config.command);
+    let has_stdin = config.stdin_data.is_some();
     cmd.args(&config.args)
         .current_dir(&config.working_dir)
-        .stdin(Stdio::null())
+        .stdin(if has_stdin {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -88,6 +96,17 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
         log_prefix, pid
     );
     eprintln!("[{}] started (pid {pid}): {command_preview}", log_prefix);
+
+    // Write stdin data if provided, then close stdin.
+    if let Some(data) = config.stdin_data {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        stdin
+            .write_all(data.as_bytes())
+            .await
+            .map_err(|e| Error::Process(format!("failed to write stdin: {e}")))?;
+        drop(stdin);
+    }
 
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
@@ -318,7 +337,13 @@ async fn handle_interrupt_unix(
 ) -> Result<ExitStatus> {
     warn!("[{log_prefix}] received {signal_name}; forwarding to child pid {child_pid}");
     eprintln!("[{log_prefix}] received {signal_name}; press Ctrl-C again to force exit");
-    send_signal_unix(child_pid, signal, log_prefix, signal_name, use_process_group);
+    send_signal_unix(
+        child_pid,
+        signal,
+        log_prefix,
+        signal_name,
+        use_process_group,
+    );
 
     tokio::select! {
         result = tokio::time::timeout(INTERRUPT_GRACE, &mut *wait_task) => {
@@ -454,11 +479,7 @@ fn should_use_process_group(command: &str) -> bool {
 }
 
 fn is_claude_binary(command: &str) -> bool {
-    let name = command
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(command)
-        .trim();
+    let name = command.rsplit(['/', '\\']).next().unwrap_or(command).trim();
     name.eq_ignore_ascii_case("claude") || name.eq_ignore_ascii_case("claude.exe")
 }
 

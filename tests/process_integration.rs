@@ -11,6 +11,7 @@ fn make_config(command: &str, args: &[&str]) -> ProcessConfig {
         timeout: None,
         log_prefix: "test".to_string(),
         env: vec![],
+        stdin_data: None,
     }
 }
 
@@ -107,6 +108,7 @@ async fn test_sigint_to_child() {
         timeout: Some(Duration::from_secs(10)),
         log_prefix: "test:sigint".to_string(),
         env: vec![],
+        stdin_data: None,
     };
 
     let handle = tokio::spawn(spawn_and_stream(config));
@@ -154,6 +156,7 @@ async fn test_double_sigint_force_exit() {
         timeout: None,
         log_prefix: "test:double-sigint".to_string(),
         env: vec![],
+        stdin_data: None,
     };
 
     let handle = tokio::spawn(spawn_and_stream(config));
@@ -197,6 +200,7 @@ async fn test_timeout_kills_descendants() {
         timeout: Some(Duration::from_millis(200)),
         log_prefix: "test:timeout-descendants".to_string(),
         env: vec![],
+        stdin_data: None,
     };
 
     let result = spawn_and_stream(config).await;
@@ -239,4 +243,36 @@ async fn test_stdout_with_output_before_failure() {
     assert!(!output.success());
     assert_eq!(output.exit_code, 1);
     assert_eq!(output.stdout_lines, vec!["before_fail"]);
+}
+
+#[tokio::test]
+async fn test_stdin_data() {
+    let config = ProcessConfig {
+        command: "bash".to_string(),
+        args: vec!["-c".to_string(), "cat".to_string()],
+        working_dir: PathBuf::from("."),
+        timeout: None,
+        log_prefix: "test:stdin".to_string(),
+        env: vec![],
+        stdin_data: Some("hello from stdin".to_string()),
+    };
+    let output = spawn_and_stream(config).await.unwrap();
+    assert!(output.success());
+    assert_eq!(output.stdout_lines, vec!["hello from stdin"]);
+}
+
+#[tokio::test]
+async fn test_stdin_data_multiline() {
+    let config = ProcessConfig {
+        command: "bash".to_string(),
+        args: vec!["-c".to_string(), "cat".to_string()],
+        working_dir: PathBuf::from("."),
+        timeout: None,
+        log_prefix: "test:stdin-multi".to_string(),
+        env: vec![],
+        stdin_data: Some("line1\nline2\nline3".to_string()),
+    };
+    let output = spawn_and_stream(config).await.unwrap();
+    assert!(output.success());
+    assert_eq!(output.stdout_lines, vec!["line1", "line2", "line3"]);
 }

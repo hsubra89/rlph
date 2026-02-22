@@ -80,17 +80,24 @@ pub fn parse_config(content: &str) -> Result<ConfigFile> {
 }
 
 pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
+    let runner = cli
+        .runner
+        .clone()
+        .or(file.runner)
+        .unwrap_or_else(|| "claude".to_string());
+
+    let default_binary = match runner.as_str() {
+        "codex" => "codex",
+        _ => "claude",
+    };
+
     let config = Config {
         source: cli
             .source
             .clone()
             .or(file.source)
             .unwrap_or_else(|| "github".to_string()),
-        runner: cli
-            .runner
-            .clone()
-            .or(file.runner)
-            .unwrap_or_else(|| "bare".to_string()),
+        runner,
         submission: cli
             .submission
             .clone()
@@ -120,7 +127,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .agent_binary
             .clone()
             .or(file.agent_binary)
-            .unwrap_or_else(|| "claude".to_string()),
+            .unwrap_or_else(|| default_binary.to_string()),
         agent_model: cli.agent_model.clone().or(file.agent_model),
         agent_timeout: cli.agent_timeout.or(file.agent_timeout).or(Some(300)),
         max_review_rounds: cli
@@ -142,10 +149,10 @@ fn validate(config: &Config) -> Result<()> {
         }
     }
     match config.runner.as_str() {
-        "bare" | "docker" => {}
+        "claude" | "codex" => {}
         other => {
             return Err(Error::ConfigValidation(format!(
-                "unknown runner: {other} (expected: bare, docker)"
+                "unknown runner: {other} (expected: claude, codex)"
             )));
         }
     }
@@ -175,7 +182,7 @@ mod tests {
     fn test_parse_valid_config() {
         let toml = r#"
 source = "github"
-runner = "bare"
+runner = "claude"
 submission = "github"
 label = "rlph"
 poll_interval = 30
@@ -247,7 +254,7 @@ worktree_dir = "/tmp/wt"
     fn test_cli_overrides_config() {
         let file = ConfigFile {
             source: Some("github".to_string()),
-            runner: Some("bare".to_string()),
+            runner: Some("claude".to_string()),
             label: Some("file-label".to_string()),
             poll_interval: Some(120),
             ..Default::default()
@@ -263,7 +270,7 @@ worktree_dir = "/tmp/wt"
         let config = merge(file, &cli).unwrap();
         assert_eq!(config.source, "linear"); // CLI wins
         assert_eq!(config.label, "cli-label"); // CLI wins
-        assert_eq!(config.runner, "bare"); // file value kept
+        assert_eq!(config.runner, "claude"); // file value kept
         assert_eq!(config.poll_interval, 120); // file value kept
         assert!(config.once);
     }
@@ -274,7 +281,7 @@ worktree_dir = "/tmp/wt"
         let cli = Cli::parse_from(["rlph", "--once"]);
         let config = merge(file, &cli).unwrap();
         assert_eq!(config.source, "github");
-        assert_eq!(config.runner, "bare");
+        assert_eq!(config.runner, "claude");
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
         assert_eq!(config.poll_interval, 60);
@@ -300,7 +307,7 @@ worktree_dir = "/tmp/wt"
         let cli = Cli::parse_from(["rlph", "--once"]);
         let config = Config::load_from(&cli, tmp.path()).unwrap();
         assert_eq!(config.source, "github");
-        assert_eq!(config.runner, "bare");
+        assert_eq!(config.runner, "claude");
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
         assert_eq!(config.poll_interval, 60);
@@ -311,9 +318,9 @@ worktree_dir = "/tmp/wt"
     fn test_load_missing_default_config_with_cli_overrides() {
         // CLI overrides should still win when default config file is absent.
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once", "--runner", "docker", "--label", "custom"]);
+        let cli = Cli::parse_from(["rlph", "--once", "--runner", "codex", "--label", "custom"]);
         let config = Config::load_from(&cli, tmp.path()).unwrap();
-        assert_eq!(config.runner, "docker");
+        assert_eq!(config.runner, "codex");
         assert_eq!(config.label, "custom");
         assert_eq!(config.source, "github"); // default
     }
@@ -356,5 +363,52 @@ worktree_dir = "/tmp/wt"
         let cli = Cli::parse_from(["rlph", "--once", "--poll-interval", "0"]);
         let err = Config::load_from(&cli, tmp.path()).unwrap_err();
         assert!(err.to_string().contains("poll_interval must be > 0"));
+    }
+
+    #[test]
+    fn test_codex_runner_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once", "--runner", "codex"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.runner, "codex");
+    }
+
+    #[test]
+    fn test_codex_runner_defaults_binary_to_codex() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once", "--runner", "codex"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.agent_binary, "codex");
+    }
+
+    #[test]
+    fn test_codex_runner_binary_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from([
+            "rlph",
+            "--once",
+            "--runner",
+            "codex",
+            "--agent-binary",
+            "/opt/codex",
+        ]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.agent_binary, "/opt/codex");
+    }
+
+    #[test]
+    fn test_old_runner_bare_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once", "--runner", "bare"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("unknown runner: bare"));
+    }
+
+    #[test]
+    fn test_old_runner_docker_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once", "--runner", "docker"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("unknown runner: docker"));
     }
 }

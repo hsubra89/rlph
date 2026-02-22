@@ -100,10 +100,7 @@ impl WorktreeManager {
 
         // Determine start point: prefer origin/<base>, fall back to local <base>
         let origin_ref = format!("origin/{}", self.base_branch);
-        let start_point = if self
-            .git(&["rev-parse", "--verify", &origin_ref])
-            .is_ok()
-        {
+        let start_point = if self.git(&["rev-parse", "--verify", &origin_ref]).is_ok() {
             origin_ref.as_str()
         } else if self
             .git(&["rev-parse", "--verify", &self.base_branch])

@@ -20,7 +20,7 @@ pub struct Cli {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Agent runner to use (bare, docker)
+    /// Agent runner to use (claude, codex)
     #[arg(long)]
     pub runner: Option<String>,
 
@@ -101,7 +101,7 @@ mod tests {
             "rlph",
             "--once",
             "--runner",
-            "docker",
+            "codex",
             "--source",
             "linear",
             "--submission",
@@ -113,7 +113,7 @@ mod tests {
             "--worktree-dir",
             "/tmp/wt",
         ]);
-        assert_eq!(cli.runner.as_deref(), Some("docker"));
+        assert_eq!(cli.runner.as_deref(), Some("codex"));
         assert_eq!(cli.source.as_deref(), Some("linear"));
         assert_eq!(cli.submission.as_deref(), Some("graphite"));
         assert_eq!(cli.label.as_deref(), Some("auto"));

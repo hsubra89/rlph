@@ -40,7 +40,11 @@ fn test_create_worktree() {
     let repo = init_temp_repo();
     let wt_base = TempDir::new().unwrap();
 
-    let mgr = WorktreeManager::new(repo.path().to_path_buf(), wt_base.path().to_path_buf(), "main".to_string());
+    let mgr = WorktreeManager::new(
+        repo.path().to_path_buf(),
+        wt_base.path().to_path_buf(),
+        "main".to_string(),
+    );
 
     let info = mgr.create(42, "fix-bug").unwrap();
     assert_eq!(info.branch, "rlph-42-fix-bug");
@@ -53,7 +57,11 @@ fn test_create_worktree_correct_naming() {
     let repo = init_temp_repo();
     let wt_base = TempDir::new().unwrap();
 
-    let mgr = WorktreeManager::new(repo.path().to_path_buf(), wt_base.path().to_path_buf(), "main".to_string());
+    let mgr = WorktreeManager::new(
+        repo.path().to_path_buf(),
+        wt_base.path().to_path_buf(),
+        "main".to_string(),
+    );
 
     let info = mgr.create(7, "add-auth").unwrap();
     assert!(info.path.ends_with("rlph-7-add-auth"));
@@ -64,7 +72,11 @@ fn test_find_existing_worktree() {
     let repo = init_temp_repo();
     let wt_base = TempDir::new().unwrap();
 
-    let mgr = WorktreeManager::new(repo.path().to_path_buf(), wt_base.path().to_path_buf(), "main".to_string());
+    let mgr = WorktreeManager::new(
+        repo.path().to_path_buf(),
+        wt_base.path().to_path_buf(),
+        "main".to_string(),
+    );
 
     // Create worktree
     let created = mgr.create(10, "feature").unwrap();
@@ -82,7 +94,11 @@ fn test_reuse_existing_worktree() {
     let repo = init_temp_repo();
     let wt_base = TempDir::new().unwrap();
 
-    let mgr = WorktreeManager::new(repo.path().to_path_buf(), wt_base.path().to_path_buf(), "main".to_string());
+    let mgr = WorktreeManager::new(
+        repo.path().to_path_buf(),
+        wt_base.path().to_path_buf(),
+        "main".to_string(),
+    );
 
     let first = mgr.create(10, "feature").unwrap();
     let second = mgr.create(10, "feature").unwrap();
@@ -96,7 +112,11 @@ fn test_find_nonexistent_worktree() {
     let repo = init_temp_repo();
     let wt_base = TempDir::new().unwrap();
 
-    let mgr = WorktreeManager::new(repo.path().to_path_buf(), wt_base.path().to_path_buf(), "main".to_string());
+    let mgr = WorktreeManager::new(
+        repo.path().to_path_buf(),
+        wt_base.path().to_path_buf(),
+        "main".to_string(),
+    );
 
     let found = mgr.find_existing(999).unwrap();
     assert!(found.is_none());
@@ -107,7 +127,11 @@ fn test_remove_worktree() {
     let repo = init_temp_repo();
     let wt_base = TempDir::new().unwrap();
 
-    let mgr = WorktreeManager::new(repo.path().to_path_buf(), wt_base.path().to_path_buf(), "main".to_string());
+    let mgr = WorktreeManager::new(
+        repo.path().to_path_buf(),
+        wt_base.path().to_path_buf(),
+        "main".to_string(),
+    );
 
     let info = mgr.create(15, "cleanup-test").unwrap();
     assert!(info.path.exists());
@@ -127,7 +151,11 @@ fn test_remove_worktree_cleans_branch() {
     let repo = init_temp_repo();
     let wt_base = TempDir::new().unwrap();
 
-    let mgr = WorktreeManager::new(repo.path().to_path_buf(), wt_base.path().to_path_buf(), "main".to_string());
+    let mgr = WorktreeManager::new(
+        repo.path().to_path_buf(),
+        wt_base.path().to_path_buf(),
+        "main".to_string(),
+    );
 
     let info = mgr.create(20, "branch-cleanup").unwrap();
     mgr.remove(&info.path).unwrap();
@@ -150,7 +178,11 @@ fn test_create_multiple_worktrees() {
     let repo = init_temp_repo();
     let wt_base = TempDir::new().unwrap();
 
-    let mgr = WorktreeManager::new(repo.path().to_path_buf(), wt_base.path().to_path_buf(), "main".to_string());
+    let mgr = WorktreeManager::new(
+        repo.path().to_path_buf(),
+        wt_base.path().to_path_buf(),
+        "main".to_string(),
+    );
 
     let wt1 = mgr.create(1, "first").unwrap();
     let wt2 = mgr.create(2, "second").unwrap();
