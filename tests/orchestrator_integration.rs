@@ -121,47 +121,6 @@ impl AgentRunner for MockRunner {
     }
 }
 
-/// Runner whose choose phase reports an existing PR number.
-struct ExistingPrRunner {
-    task_id: String,
-    pr_number: u64,
-}
-
-impl AgentRunner for ExistingPrRunner {
-    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
-        match phase {
-            Phase::Choose => {
-                let ralph_dir = working_dir.join(".ralph");
-                std::fs::create_dir_all(&ralph_dir)
-                    .map_err(|e| Error::AgentRunner(e.to_string()))?;
-                std::fs::write(
-                    ralph_dir.join("task.toml"),
-                    format!(
-                        "id = \"{}\"\ngithubPrNumber = {}",
-                        self.task_id, self.pr_number
-                    ),
-                )
-                .map_err(|e| Error::AgentRunner(e.to_string()))?;
-                Ok(RunResult {
-                    exit_code: 0,
-                    stdout: "Selected task".into(),
-                    stderr: String::new(),
-                })
-            }
-            Phase::Implement => Ok(RunResult {
-                exit_code: 0,
-                stdout: "IMPLEMENTATION_COMPLETE: done".into(),
-                stderr: String::new(),
-            }),
-            Phase::Review => Ok(RunResult {
-                exit_code: 0,
-                stdout: "REVIEW_COMPLETE: ok".into(),
-                stderr: String::new(),
-            }),
-        }
-    }
-}
-
 /// Runner that fails at a specific phase.
 struct FailAtPhaseRunner {
     fail_at: Phase,
@@ -205,11 +164,15 @@ impl AgentRunner for FailAtPhaseRunner {
 
 struct MockSubmission {
     tracker: Arc<Mutex<SubmissionTracker>>,
+    existing_pr_for_issue: Option<u64>,
 }
 
 impl MockSubmission {
-    fn new(tracker: Arc<Mutex<SubmissionTracker>>) -> Self {
-        Self { tracker }
+    fn new(tracker: Arc<Mutex<SubmissionTracker>>, existing_pr_for_issue: Option<u64>) -> Self {
+        Self {
+            tracker,
+            existing_pr_for_issue,
+        }
     }
 }
 
@@ -224,6 +187,10 @@ impl SubmissionBackend for MockSubmission {
         Ok(SubmitResult {
             url: "https://github.com/test/repo/pull/1".to_string(),
         })
+    }
+
+    fn find_existing_pr_for_issue(&self, _issue_number: u64) -> Result<Option<u64>> {
+        Ok(self.existing_pr_for_issue)
     }
 }
 
@@ -269,6 +236,10 @@ struct FailSubmission;
 impl SubmissionBackend for FailSubmission {
     fn submit(&self, _: &str, _: &str, _: &str, _: &str) -> Result<SubmitResult> {
         Err(Error::Submission("mock submission failure".to_string()))
+    }
+
+    fn find_existing_pr_for_issue(&self, _issue_number: u64) -> Result<Option<u64>> {
+        Ok(None)
     }
 }
 
@@ -352,7 +323,7 @@ async fn test_full_loop_dry_run() {
 
     let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
     let runner = MockRunner::new("gh-42");
-    let submission = MockSubmission::new(Arc::clone(&sub_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
     let worktree_mgr =
         WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf());
     let state_dir = repo_dir.path().join(".rlph-test-state");
@@ -399,7 +370,7 @@ async fn test_full_loop_with_push() {
 
     let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
     let runner = MockRunner::new("gh-42");
-    let submission = MockSubmission::new(Arc::clone(&sub_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
     let worktree_mgr =
         WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf());
     let state_dir = repo_dir.path().join(".rlph-test-state");
@@ -458,7 +429,7 @@ async fn test_no_eligible_tasks() {
     let orchestrator = Orchestrator::new(
         source,
         MockRunner::new("gh-1"),
-        MockSubmission::new(Arc::clone(&sub_tracker)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
         WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf()),
         StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
@@ -486,7 +457,7 @@ async fn test_error_at_choose_phase() {
     let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         runner,
-        MockSubmission::new(Arc::clone(&sub_tracker)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
         WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf()),
         StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
@@ -515,7 +486,7 @@ async fn test_error_at_implement_phase() {
     let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         runner,
-        MockSubmission::new(Arc::clone(&sub_tracker)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
         WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf()),
         StateManager::new(&state_dir),
         PromptEngine::new(None),
@@ -550,7 +521,7 @@ async fn test_error_at_review_phase() {
     let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         runner,
-        MockSubmission::new(Arc::clone(&sub_tracker)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
         WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf()),
         StateManager::new(&state_dir),
         PromptEngine::new(None),
@@ -602,7 +573,7 @@ async fn test_state_transitions_through_phases() {
     let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-7"),
-        MockSubmission::new(Arc::clone(&sub_tracker)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
         WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf()),
         StateManager::new(&state_dir),
         PromptEngine::new(None),
@@ -631,7 +602,7 @@ async fn test_worktree_cleaned_up_after_success() {
     let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
-        MockSubmission::new(Arc::clone(&sub_tracker)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
         WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf()),
         StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
@@ -667,7 +638,7 @@ async fn test_review_exhaustion_does_not_mark_done() {
         ReviewNeverCompleteRunner {
             task_id: "gh-42".to_string(),
         },
-        MockSubmission::new(Arc::clone(&sub_tracker)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
         WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf()),
         StateManager::new(&state_dir),
         PromptEngine::new(None),
@@ -704,11 +675,8 @@ async fn test_existing_pr_skips_submission() {
 
     let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
-        ExistingPrRunner {
-            task_id: "gh-42".to_string(),
-            pr_number: 99,
-        },
-        MockSubmission::new(Arc::clone(&sub_tracker)),
+        MockRunner::new("gh-42"),
+        MockSubmission::new(Arc::clone(&sub_tracker), Some(99)),
         WorktreeManager::new(repo_dir.path().to_path_buf(), wt_dir.path().to_path_buf()),
         StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
@@ -722,7 +690,7 @@ async fn test_existing_pr_skips_submission() {
     let subs = sub_tracker.lock().unwrap();
     assert!(
         subs.submissions.is_empty(),
-        "expected no submissions when existing PR reported, got {}",
+        "expected no submissions when existing PR is found, got {}",
         subs.submissions.len()
     );
 }

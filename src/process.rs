@@ -360,9 +360,7 @@ async fn handle_timeout_unix(
             let _ = wait_join_result(result)?;
         }
         Err(_) => {
-            warn!(
-                "[{log_prefix}] child pid {child_pid} ignored SIGTERM; sending SIGKILL"
-            );
+            warn!("[{log_prefix}] child pid {child_pid} ignored SIGTERM; sending SIGKILL");
             send_signal_to_child(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
             let _ = force_wait_or_abort(wait_task).await?;
         }
@@ -374,12 +372,7 @@ async fn handle_timeout_unix(
 }
 
 #[cfg(unix)]
-fn send_signal_to_child(
-    child_pid: i32,
-    signal: i32,
-    log_prefix: &str,
-    signal_name: &str,
-) {
+fn send_signal_to_child(child_pid: i32, signal: i32, log_prefix: &str, signal_name: &str) {
     // SAFETY: libc::kill is an FFI call that does not dereference pointers.
     let rc = unsafe { libc::kill(child_pid, signal) };
     if rc == 0 {

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Instant;
 
 use serde::Deserialize;
 use tracing::{info, warn};
@@ -17,8 +18,6 @@ use crate::worktree::{WorktreeInfo, WorktreeManager};
 #[derive(Deserialize)]
 struct TaskSelection {
     id: String,
-    #[serde(rename = "githubPrNumber")]
-    github_pr_number: Option<u64>,
 }
 
 pub struct Orchestrator<S, R, B> {
@@ -78,17 +77,31 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             .map_err(|e| Error::Orchestrator(format!("failed to serialize tasks: {e}")))?;
         choose_vars.insert("issues_json".to_string(), issues_json);
         let choose_prompt = self.prompt_engine.render_phase("choose", &choose_vars)?;
+        let choose_started = Instant::now();
         self.runner
             .run(Phase::Choose, &choose_prompt, &self.repo_root)
             .await?;
+        info!(
+            "[rlph:orchestrator] Choose phase complete in {}s",
+            choose_started.elapsed().as_secs()
+        );
 
         // 3. Parse task selection from .ralph/task.toml
-        let (task_id, existing_pr_number) = self.parse_task_selection()?;
+        let task_id = self.parse_task_selection()?;
         let issue_number = parse_issue_number(&task_id)?;
         info!("[rlph:orchestrator] Selected task: {task_id} (issue #{issue_number})");
-        if let Some(pr) = existing_pr_number {
-            info!("[rlph:orchestrator] Existing PR #{pr} reported by choose agent");
-        }
+        let existing_pr_number = if self.config.dry_run {
+            info!("[rlph:orchestrator] Dry run — skipping existing PR lookup");
+            None
+        } else {
+            let pr_number = self.submission.find_existing_pr_for_issue(issue_number)?;
+            if let Some(pr) = pr_number {
+                info!("[rlph:orchestrator] Existing PR #{pr} found for issue #{issue_number}");
+            } else {
+                info!("[rlph:orchestrator] No existing PR found for issue #{issue_number}");
+            }
+            pr_number
+        };
 
         // 4. Get task details
         let task = self.source.get_task_details(&issue_number.to_string())?;
@@ -228,7 +241,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
     }
 
     /// Parse the task selection from `.ralph/task.toml` written by the choose agent.
-    fn parse_task_selection(&self) -> Result<(String, Option<u64>)> {
+    fn parse_task_selection(&self) -> Result<String> {
         let path = self.repo_root.join(".ralph").join("task.toml");
         let content = std::fs::read_to_string(&path).map_err(|e| {
             Error::Orchestrator(format!(
@@ -242,7 +255,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
         // Clean up the selection file
         let _ = std::fs::remove_file(&path);
 
-        Ok((selection.id, selection.github_pr_number))
+        Ok(selection.id)
     }
 
     fn build_task_vars(&self, task: &Task, worktree: &WorktreeInfo) -> HashMap<String, String> {
