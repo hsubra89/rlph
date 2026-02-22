@@ -41,8 +41,8 @@ pub struct Cli {
     pub poll_interval: Option<u64>,
 
     /// Path to config file
-    #[arg(long, default_value = ".rlph/config.toml")]
-    pub config: String,
+    #[arg(long)]
+    pub config: Option<String>,
 
     /// Worktree base directory
     #[arg(long)]
