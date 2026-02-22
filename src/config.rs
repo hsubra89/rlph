@@ -16,6 +16,7 @@ pub struct ConfigFile {
     pub worktree_dir: Option<String>,
     pub max_iterations: Option<u32>,
     pub dry_run: Option<bool>,
+    pub base_branch: Option<String>,
     pub agent_binary: Option<String>,
     pub agent_model: Option<String>,
     pub agent_timeout: Option<u64>,
@@ -30,6 +31,7 @@ pub struct Config {
     pub label: String,
     pub poll_interval: u64,
     pub worktree_dir: String,
+    pub base_branch: String,
     pub max_iterations: Option<u32>,
     pub dry_run: bool,
     pub once: bool,
@@ -105,6 +107,11 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .clone()
             .or(file.worktree_dir)
             .unwrap_or_else(|| "../rlph-worktrees".to_string()),
+        base_branch: cli
+            .base_branch
+            .clone()
+            .or(file.base_branch)
+            .unwrap_or_else(|| "main".to_string()),
         max_iterations: cli.max_iterations.or(file.max_iterations),
         dry_run: cli.dry_run || file.dry_run.unwrap_or(false),
         once: cli.once,

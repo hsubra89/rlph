@@ -194,8 +194,12 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             info!("[rlph:orchestrator] Submitting PR...");
             let pr_body = format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.");
             let result =
-                self.submission
-                    .submit(&worktree_info.branch, "main", &task.title, &pr_body)?;
+                self.submission.submit(
+                    &worktree_info.branch,
+                    &self.config.base_branch,
+                    &task.title,
+                    &pr_body,
+                )?;
             info!("[rlph:orchestrator] PR: {}", result.url);
         } else {
             info!("[rlph:orchestrator] Dry run — skipping PR submission");

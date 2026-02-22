@@ -15,13 +15,15 @@ pub struct WorktreeInfo {
 pub struct WorktreeManager {
     repo_root: PathBuf,
     base_dir: PathBuf,
+    base_branch: String,
 }
 
 impl WorktreeManager {
-    pub fn new(repo_root: PathBuf, base_dir: PathBuf) -> Self {
+    pub fn new(repo_root: PathBuf, base_dir: PathBuf, base_branch: String) -> Self {
         Self {
             repo_root,
             base_dir,
+            base_branch,
         }
     }
 
@@ -93,13 +95,35 @@ impl WorktreeManager {
             ))
         })?;
 
-        // Try creating with a new branch
-        let create_result = match self.git_worktree_add(&path, &branch, true) {
+        // Fetch latest base branch from origin (best-effort)
+        let _ = self.git(&["fetch", "origin", &self.base_branch]);
+
+        // Determine start point: prefer origin/<base>, fall back to local <base>
+        let origin_ref = format!("origin/{}", self.base_branch);
+        let start_point = if self
+            .git(&["rev-parse", "--verify", &origin_ref])
+            .is_ok()
+        {
+            origin_ref.as_str()
+        } else if self
+            .git(&["rev-parse", "--verify", &self.base_branch])
+            .is_ok()
+        {
+            self.base_branch.as_str()
+        } else {
+            return Err(Error::Worktree(format!(
+                "base branch '{}' not found locally or on origin",
+                self.base_branch
+            )));
+        };
+
+        // Try creating with a new branch from main
+        let create_result = match self.git_worktree_add(&path, &branch, true, Some(start_point)) {
             Ok(()) => Ok(()),
             Err(e) => {
                 // Branch might already exist — try checking out existing branch
                 if e.to_string().contains("already exists") {
-                    self.git_worktree_add(&path, &branch, false)
+                    self.git_worktree_add(&path, &branch, false, None)
                 } else {
                     Err(e)
                 }
@@ -208,11 +232,21 @@ impl WorktreeManager {
     }
 
     /// Run `git worktree add`. If `new_branch` is true, uses `-b` to create the branch.
-    fn git_worktree_add(&self, path: &Path, branch: &str, new_branch: bool) -> Result<()> {
+    /// `start_point` specifies the commit/ref to branch from (only used with new_branch).
+    fn git_worktree_add(
+        &self,
+        path: &Path,
+        branch: &str,
+        new_branch: bool,
+        start_point: Option<&str>,
+    ) -> Result<()> {
         let path_str = path.to_string_lossy();
         let mut args = vec!["worktree", "add"];
         if new_branch {
             args.extend_from_slice(&["-b", branch, &path_str]);
+            if let Some(sp) = start_point {
+                args.push(sp);
+            }
         } else {
             args.extend_from_slice(&[&path_str, branch]);
         }
