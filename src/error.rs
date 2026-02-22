@@ -35,6 +35,9 @@ pub enum Error {
 
     #[error("prompt error: {0}")]
     Prompt(String),
+
+    #[error("orchestrator error: {0}")]
+    Orchestrator(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
