@@ -9,6 +9,14 @@ fn mock_codex_runner(script: &str) -> (CodexRunner, PathBuf) {
 }
 
 fn mock_codex_runner_with_retries(script: &str, retries: u32) -> (CodexRunner, PathBuf) {
+    mock_codex_runner_with_timeout_and_retries(script, Duration::from_secs(10), retries)
+}
+
+fn mock_codex_runner_with_timeout_and_retries(
+    script: &str,
+    timeout: Duration,
+    retries: u32,
+) -> (CodexRunner, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let script_path = tmp.path().join("mock_codex");
     std::fs::write(&script_path, format!("#!/bin/bash\n{script}")).unwrap();
@@ -20,7 +28,7 @@ fn mock_codex_runner_with_retries(script: &str, retries: u32) -> (CodexRunner, P
     let runner = CodexRunner::new(
         script_path.to_string_lossy().to_string(),
         None,
-        Some(Duration::from_secs(10)),
+        Some(timeout),
         retries,
     );
     let path = tmp.path().to_path_buf();
@@ -180,7 +188,8 @@ sleep 60
 #[cfg(unix)]
 async fn test_codex_timeout_exhausts_retries() {
     // Script always sleeps — all attempts will timeout.
-    let (runner, tmp) = mock_codex_runner_with_retries("sleep 60", 2);
+    let (runner, tmp) =
+        mock_codex_runner_with_timeout_and_retries("sleep 60", Duration::from_millis(200), 2);
     let err = runner
         .run(Phase::Implement, "never finish", tmp.as_ref())
         .await
