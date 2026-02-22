@@ -528,8 +528,7 @@ mod tests {
 
     #[test]
     fn test_codex_build_resume_command_with_model() {
-        let runner =
-            CodexRunner::new("codex".to_string(), Some("gpt-5.3".to_string()), None, 2);
+        let runner = CodexRunner::new("codex".to_string(), Some("gpt-5.3".to_string()), None, 2);
         let (_cmd, args) = runner.build_resume_command();
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"gpt-5.3".to_string()));

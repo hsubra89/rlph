@@ -82,7 +82,11 @@ async fn test_codex_exec_bypass_flags() {
         .unwrap();
     assert_eq!(result.exit_code, 0);
     assert!(result.stdout.contains("exec"));
-    assert!(result.stdout.contains("--dangerously-bypass-approvals-and-sandbox"));
+    assert!(
+        result
+            .stdout
+            .contains("--dangerously-bypass-approvals-and-sandbox")
+    );
     assert!(result.stdout.contains("-"));
 }
 

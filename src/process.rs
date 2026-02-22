@@ -185,7 +185,9 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let status = match status_result {
         Ok(status) => status,
         Err(Error::ProcessTimeout { timeout, .. }) => {
-            if let Some(t) = stdin_task { t.abort(); }
+            if let Some(t) = stdin_task {
+                t.abort();
+            }
             // Wait briefly for reader tasks to drain buffered output.
             let stdout_lines = match tokio::time::timeout(READER_DRAIN_TIMEOUT, stdout_task).await {
                 Ok(Ok(lines)) => lines,
@@ -202,7 +204,9 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
             });
         }
         Err(e) => {
-            if let Some(t) = stdin_task { t.abort(); }
+            if let Some(t) = stdin_task {
+                t.abort();
+            }
             stdout_task.abort();
             stderr_task.abort();
             return Err(e);
