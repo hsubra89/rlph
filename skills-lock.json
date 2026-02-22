@@ -6,6 +6,11 @@
       "sourceType": "github",
       "computedHash": "5d630150322d257c1b092be8ba7b8f89e464eb3701e0decfe835c212fc3eb62f"
     },
+    "tdd": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "computedHash": "ad055544599481182d0079c4198e85da26677cb408a677be2da04915375f0427"
+    },
     "write-a-prd": {
       "source": "yektas/skills",
       "sourceType": "github",
