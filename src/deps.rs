@@ -107,6 +107,8 @@ impl DependencyGraph {
             component_sorted.sort_unstable();
             cycles_for_log.push(component_sorted);
 
+            // Peer set includes the node itself; harmless because a node's deps
+            // never contain itself (except self-loops, where this is correct).
             let component_set: HashSet<u64> = component.into_iter().collect();
             for &node in &component_set {
                 cycle_peers
