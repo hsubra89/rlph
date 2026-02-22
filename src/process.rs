@@ -42,13 +42,16 @@ impl ProcessOutput {
 
 /// Spawn a child process, stream its output line-by-line, and handle signals.
 ///
-/// The child is placed in its own process group on Unix. SIGINT and SIGTERM
-/// received by the parent are forwarded to the child's process group.
+/// On Unix, SIGINT and SIGTERM received by the parent are forwarded to the
+/// child. The child shares the parent's process group so that terminal
+/// signals (Ctrl-C) reach it directly; explicit forwarding covers the
+/// timeout and programmatic-shutdown paths.
 pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let started_at = Instant::now();
     let mut cmd = Command::new(&config.command);
     cmd.args(&config.args)
         .current_dir(&config.working_dir)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -59,9 +62,6 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
 
     // Allow nested Claude CLI invocations (parent sets CLAUDECODE=1).
     cmd.env_remove("CLAUDECODE");
-
-    #[cfg(unix)]
-    cmd.process_group(0);
 
     let command_preview = format_command_preview(&config.command, &config.args);
     let log_prefix = config.log_prefix.clone();
@@ -218,7 +218,7 @@ fn wait_join_result(
 #[cfg(unix)]
 async fn wait_for_exit_unix(
     timeout: Option<Duration>,
-    process_group_id: i32,
+    child_pid: i32,
     log_prefix: &str,
     wait_task: &mut JoinHandle<std::io::Result<ExitStatus>>,
 ) -> Result<ExitStatus> {
@@ -235,17 +235,17 @@ async fn wait_for_exit_unix(
 
         tokio::select! {
             result = &mut *wait_task => wait_join_result(result),
-            _ = &mut timer => handle_timeout_unix(process_group_id, log_prefix, dur, wait_task).await,
+            _ = &mut timer => handle_timeout_unix(child_pid, log_prefix, dur, wait_task).await,
             signal = sigint.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(process_group_id, log_prefix, libc::SIGINT, "SIGINT", wait_task, &mut sigint, &mut sigterm).await
+                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGINT, "SIGINT", wait_task, &mut sigint, &mut sigterm).await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
             }
             signal = sigterm.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(process_group_id, log_prefix, libc::SIGTERM, "SIGTERM", wait_task, &mut sigint, &mut sigterm).await
+                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGTERM, "SIGTERM", wait_task, &mut sigint, &mut sigterm).await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
@@ -256,14 +256,14 @@ async fn wait_for_exit_unix(
             result = &mut *wait_task => wait_join_result(result),
             signal = sigint.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(process_group_id, log_prefix, libc::SIGINT, "SIGINT", wait_task, &mut sigint, &mut sigterm).await
+                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGINT, "SIGINT", wait_task, &mut sigint, &mut sigterm).await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
             }
             signal = sigterm.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(process_group_id, log_prefix, libc::SIGTERM, "SIGTERM", wait_task, &mut sigint, &mut sigterm).await
+                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGTERM, "SIGTERM", wait_task, &mut sigint, &mut sigterm).await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
@@ -292,7 +292,7 @@ async fn wait_for_exit_non_unix(
 
 #[cfg(unix)]
 async fn handle_interrupt_unix(
-    process_group_id: i32,
+    child_pid: i32,
     log_prefix: &str,
     signal: i32,
     signal_name: &str,
@@ -300,9 +300,9 @@ async fn handle_interrupt_unix(
     sigint: &mut tokio::signal::unix::Signal,
     sigterm: &mut tokio::signal::unix::Signal,
 ) -> Result<ExitStatus> {
-    warn!("[{log_prefix}] received {signal_name}; forwarding to process group {process_group_id}");
+    warn!("[{log_prefix}] received {signal_name}; forwarding to child pid {child_pid}");
     eprintln!("[{log_prefix}] received {signal_name}; press Ctrl-C again to force exit");
-    send_signal_to_process_group(process_group_id, signal, log_prefix, signal_name);
+    send_signal_to_child(child_pid, signal, log_prefix, signal_name);
 
     tokio::select! {
         result = tokio::time::timeout(INTERRUPT_GRACE, &mut *wait_task) => {
@@ -310,22 +310,22 @@ async fn handle_interrupt_unix(
                 Ok(join_result) => wait_join_result(join_result),
                 Err(_) => {
                     warn!(
-                        "[{log_prefix}] process group {process_group_id} ignored {signal_name}; sending SIGKILL"
+                        "[{log_prefix}] child pid {child_pid} ignored {signal_name}; sending SIGKILL"
                     );
-                    send_signal_to_process_group(process_group_id, libc::SIGKILL, log_prefix, "SIGKILL");
+                    send_signal_to_child(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
                     force_wait_or_abort(wait_task).await
                 }
             }
         }
         _ = sigint.recv() => {
             eprintln!("[{log_prefix}] force exit");
-            send_signal_to_process_group(process_group_id, libc::SIGKILL, log_prefix, "SIGKILL");
+            send_signal_to_child(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
             wait_task.abort();
             Err(Error::Interrupted)
         }
         _ = sigterm.recv() => {
             eprintln!("[{log_prefix}] force exit");
-            send_signal_to_process_group(process_group_id, libc::SIGKILL, log_prefix, "SIGKILL");
+            send_signal_to_child(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
             wait_task.abort();
             Err(Error::Interrupted)
         }
@@ -347,13 +347,13 @@ async fn force_wait_or_abort(
 
 #[cfg(unix)]
 async fn handle_timeout_unix(
-    process_group_id: i32,
+    child_pid: i32,
     log_prefix: &str,
     timeout: Duration,
     wait_task: &mut JoinHandle<std::io::Result<ExitStatus>>,
 ) -> Result<ExitStatus> {
     warn!("[{log_prefix}] process timed out after {timeout:?}; sending SIGTERM");
-    send_signal_to_process_group(process_group_id, libc::SIGTERM, log_prefix, "SIGTERM");
+    send_signal_to_child(child_pid, libc::SIGTERM, log_prefix, "SIGTERM");
 
     match tokio::time::timeout(TIMEOUT_GRACE, &mut *wait_task).await {
         Ok(result) => {
@@ -361,9 +361,9 @@ async fn handle_timeout_unix(
         }
         Err(_) => {
             warn!(
-                "[{log_prefix}] process group {process_group_id} ignored SIGTERM; sending SIGKILL"
+                "[{log_prefix}] child pid {child_pid} ignored SIGTERM; sending SIGKILL"
             );
-            send_signal_to_process_group(process_group_id, libc::SIGKILL, log_prefix, "SIGKILL");
+            send_signal_to_child(child_pid, libc::SIGKILL, log_prefix, "SIGKILL");
             let _ = force_wait_or_abort(wait_task).await?;
         }
     }
@@ -374,14 +374,14 @@ async fn handle_timeout_unix(
 }
 
 #[cfg(unix)]
-fn send_signal_to_process_group(
-    process_group_id: i32,
+fn send_signal_to_child(
+    child_pid: i32,
     signal: i32,
     log_prefix: &str,
     signal_name: &str,
 ) {
-    // SAFETY: libc::killpg is an FFI call that does not dereference pointers.
-    let rc = unsafe { libc::killpg(process_group_id, signal) };
+    // SAFETY: libc::kill is an FFI call that does not dereference pointers.
+    let rc = unsafe { libc::kill(child_pid, signal) };
     if rc == 0 {
         return;
     }
@@ -391,5 +391,5 @@ fn send_signal_to_process_group(
         return;
     }
 
-    warn!("[{log_prefix}] failed to send {signal_name} to process group {process_group_id}: {err}");
+    warn!("[{log_prefix}] failed to send {signal_name} to child pid {child_pid}: {err}");
 }

@@ -1,9 +1,11 @@
 pub mod github;
 
+use serde::Serialize;
+
 use crate::error::Result;
 
 /// Task priority (1 = highest, 9 = lowest).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Priority(pub u8);
 
 impl Priority {
@@ -25,7 +27,7 @@ impl Priority {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Task {
     pub id: String,
     pub title: String,

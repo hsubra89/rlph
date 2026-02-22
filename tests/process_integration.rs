@@ -93,7 +93,7 @@ async fn test_env_vars() {
 
 #[tokio::test]
 #[cfg(unix)]
-async fn test_sigint_to_process_group() {
+async fn test_sigint_to_child() {
     let pid_file = format!("/tmp/rlph_test_sigint_{}", std::process::id());
     let pid_file_clone = pid_file.clone();
 
@@ -126,9 +126,9 @@ async fn test_sigint_to_process_group() {
         pid.expect("child should write PID file")
     };
 
-    // Send SIGINT to child's process group
+    // Send SIGINT to child process
     unsafe {
-        libc::killpg(child_pid, libc::SIGINT);
+        libc::kill(child_pid, libc::SIGINT);
     }
 
     let output = tokio::time::timeout(Duration::from_secs(5), handle)
@@ -149,10 +149,7 @@ async fn test_double_sigint_force_exit() {
     // Spawn a process that traps SIGINT and refuses to die
     let config = ProcessConfig {
         command: "bash".to_string(),
-        args: vec![
-            "-c".to_string(),
-            "trap '' INT TERM; sleep 60".to_string(),
-        ],
+        args: vec!["-c".to_string(), "trap '' INT TERM; sleep 60".to_string()],
         working_dir: PathBuf::from("."),
         timeout: None,
         log_prefix: "test:double-sigint".to_string(),
@@ -165,11 +162,15 @@ async fn test_double_sigint_force_exit() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Send SIGINT to ourselves (triggers first Ctrl-C path)
-    unsafe { libc::kill(libc::getpid(), libc::SIGINT); }
+    unsafe {
+        libc::kill(libc::getpid(), libc::SIGINT);
+    }
 
     // Brief pause then second SIGINT (force exit path)
     tokio::time::sleep(Duration::from_millis(100)).await;
-    unsafe { libc::kill(libc::getpid(), libc::SIGINT); }
+    unsafe {
+        libc::kill(libc::getpid(), libc::SIGINT);
+    }
 
     let result = tokio::time::timeout(Duration::from_secs(5), handle)
         .await

@@ -74,6 +74,9 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             "repo_path".to_string(),
             self.repo_root.display().to_string(),
         );
+        let issues_json = serde_json::to_string_pretty(&tasks)
+            .map_err(|e| Error::Orchestrator(format!("failed to serialize tasks: {e}")))?;
+        choose_vars.insert("issues_json".to_string(), issues_json);
         let choose_prompt = self.prompt_engine.render_phase("choose", &choose_vars)?;
         self.runner
             .run(Phase::Choose, &choose_prompt, &self.repo_root)

@@ -16,6 +16,7 @@ const KNOWN_VARIABLES: &[&str] = &[
     "repo_path",
     "branch_name",
     "worktree_path",
+    "issues_json",
 ];
 
 fn default_template(phase: &str) -> Option<&'static str> {
@@ -253,9 +254,11 @@ mod tests {
         let engine = PromptEngine::new(None);
         let mut vars = HashMap::new();
         vars.insert("repo_path".to_string(), "/my/repo".to_string());
+        vars.insert("issues_json".to_string(), "[{\"id\":\"1\"}]".to_string());
 
         let result = engine.render_phase("choose", &vars).unwrap();
         assert!(result.contains("/my/repo"));
         assert!(!result.contains("{{repo_path}}"));
+        assert!(result.contains("[{\"id\":\"1\"}]"));
     }
 }

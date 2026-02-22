@@ -59,6 +59,7 @@ impl BareClaudeRunner {
     pub fn build_command(&self, prompt: &str) -> (String, Vec<String>) {
         let mut args = vec![
             "--print".to_string(),
+            "--verbose".to_string(),
             "--output-format".to_string(),
             "stream-json".to_string(),
             "--dangerously-skip-permissions".to_string(),

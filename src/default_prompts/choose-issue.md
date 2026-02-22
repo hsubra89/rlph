@@ -22,3 +22,7 @@ id = "gh-<issue number>"
 
 If an open PR exists, set `githubPrNumber` to that PR number.
 If no open PR exists, omit `githubPrNumber`.
+
+## Open Issues (GitHub JSON)
+
+{{issues_json}}
