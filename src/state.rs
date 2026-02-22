@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -75,6 +76,37 @@ impl StateManager {
         }
     }
 
+    fn lock_file_path(&self) -> PathBuf {
+        self.state_dir.join(".state.lock")
+    }
+
+    /// Atomically load, modify, and save state under an exclusive file lock.
+    /// Prevents concurrent load-modify-save races between processes.
+    fn modify(&self, f: impl FnOnce(&mut StateData)) -> Result<()> {
+        std::fs::create_dir_all(&self.state_dir)
+            .map_err(|e| Error::State(format!("failed to create state dir: {e}")))?;
+
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(self.lock_file_path())
+            .map_err(|e| Error::State(format!("failed to open lock file: {e}")))?;
+
+        let ret = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) };
+        if ret != 0 {
+            return Err(Error::State(format!(
+                "failed to acquire state lock: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+
+        let mut state = self.load();
+        f(&mut state);
+        self.save(&state)
+        // Lock released when `lock` is dropped (fd closed)
+    }
+
     /// Save state to disk atomically (write tmp + fsync + rename).
     pub fn save(&self, state: &StateData) -> Result<()> {
         use std::io::Write;
@@ -103,55 +135,58 @@ impl StateManager {
 
     /// Set the current task and record its worktree mapping.
     pub fn set_current_task(&self, id: &str, phase: &str, worktree_path: &str) -> Result<()> {
-        let mut state = self.load();
-        state.current_task = Some(CurrentTask {
-            id: id.to_string(),
-            phase: phase.to_string(),
-            worktree_path: worktree_path.to_string(),
-        });
-        state
-            .worktree_mappings
-            .insert(id.to_string(), worktree_path.to_string());
-        self.save(&state)
+        let id = id.to_string();
+        let phase = phase.to_string();
+        let worktree_path = worktree_path.to_string();
+        self.modify(|state| {
+            state.current_task = Some(CurrentTask {
+                id: id.clone(),
+                phase,
+                worktree_path: worktree_path.clone(),
+            });
+            state.worktree_mappings.insert(id, worktree_path);
+        })
     }
 
     /// Update only the phase of the current task.
     pub fn update_phase(&self, phase: &str) -> Result<()> {
-        let mut state = self.load();
-        if let Some(ref mut task) = state.current_task {
-            task.phase = phase.to_string();
-        }
-        self.save(&state)
+        let phase = phase.to_string();
+        self.modify(|state| {
+            if let Some(ref mut task) = state.current_task {
+                task.phase = phase;
+            }
+        })
     }
 
     /// Mark the current task as completed and move it to history.
     pub fn complete_current_task(&self) -> Result<()> {
-        let mut state = self.load();
-        if let Some(task) = state.current_task.take() {
-            let timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            state.history.push(CompletedTask {
-                id: task.id,
-                completed_at: timestamp,
-            });
-        }
-        self.save(&state)
+        self.modify(|state| {
+            if let Some(task) = state.current_task.take() {
+                let timestamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                state.history.push(CompletedTask {
+                    id: task.id,
+                    completed_at: timestamp,
+                });
+            }
+        })
     }
 
     /// Clear the current task without adding to history.
     pub fn clear_current_task(&self) -> Result<()> {
-        let mut state = self.load();
-        state.current_task = None;
-        self.save(&state)
+        self.modify(|state| {
+            state.current_task = None;
+        })
     }
 
     /// Remove a worktree mapping.
     pub fn remove_worktree_mapping(&self, task_id: &str) -> Result<()> {
-        let mut state = self.load();
-        state.worktree_mappings.remove(task_id);
-        self.save(&state)
+        let task_id = task_id.to_string();
+        self.modify(|state| {
+            state.worktree_mappings.remove(&task_id);
+        })
     }
 
     /// Get the worktree path for a task.
@@ -339,5 +374,37 @@ mod tests {
         let content = std::fs::read_to_string(mgr.state_file()).unwrap();
         // Should be parseable TOML
         let _: toml::Value = toml::from_str(&content).unwrap();
+    }
+
+    #[test]
+    fn test_concurrent_modifications_are_serialized() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = TempDir::new().unwrap();
+        let state_path: Arc<PathBuf> = Arc::new(dir.path().join("state"));
+
+        // 20 threads each add a unique worktree mapping via set_current_task.
+        // Without locking, concurrent load-modify-save would lose mappings.
+        let handles: Vec<_> = (1..=20)
+            .map(|i| {
+                let sp: Arc<PathBuf> = Arc::clone(&state_path);
+                thread::spawn(move || {
+                    let mgr = StateManager::new(sp.as_ref());
+                    let id = format!("gh-{i}");
+                    let wt = format!("/tmp/wt{i}");
+                    mgr.set_current_task(&id, "implement", &wt).unwrap();
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let mgr = StateManager::new(state_path.as_ref());
+        let state = mgr.load();
+        // All 20 worktree mappings must be present — none lost to races.
+        assert_eq!(state.worktree_mappings.len(), 20);
     }
 }
