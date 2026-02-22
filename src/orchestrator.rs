@@ -7,6 +7,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use crate::config::Config;
+use crate::deps::DependencyGraph;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 use crate::runner::{AgentRunner, Phase};
@@ -57,11 +58,19 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
 
     /// Run a single iteration of the orchestrator loop.
     pub async fn run_once(&self) -> Result<()> {
-        // 1. Fetch eligible tasks
+        // 1. Fetch eligible tasks and filter by dependency graph
         info!("[rlph:orchestrator] Fetching eligible tasks...");
         let tasks = self.source.fetch_eligible_tasks()?;
         if tasks.is_empty() {
             info!("[rlph:orchestrator] No eligible tasks found");
+            return Ok(());
+        }
+
+        let done_ids = self.source.fetch_closed_task_ids()?;
+        let graph = DependencyGraph::build(&tasks);
+        let tasks = graph.filter_eligible(tasks, &done_ids);
+        if tasks.is_empty() {
+            info!("[rlph:orchestrator] No unblocked tasks found");
             return Ok(());
         }
         info!("[rlph:orchestrator] Found {} eligible task(s)", tasks.len());

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -84,6 +84,10 @@ impl TaskSource for MockSource {
             .get(task_id)
             .cloned()
             .ok_or_else(|| Error::TaskSource(format!("task not found: {task_id}")))
+    }
+
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
+        Ok(HashSet::new())
     }
 }
 

@@ -2,6 +2,8 @@ pub mod github;
 
 use serde::Serialize;
 
+use std::collections::HashSet;
+
 use crate::error::Result;
 
 /// Task priority (1 = highest, 9 = lowest).
@@ -55,6 +57,9 @@ pub trait TaskSource {
 
     /// Get full details for a task.
     fn get_task_details(&self, task_id: &str) -> Result<Task>;
+
+    /// Fetch IDs of closed/done tasks (used for dependency resolution).
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>>;
 }
 
 #[cfg(test)]
