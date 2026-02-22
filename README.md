@@ -83,6 +83,28 @@ cargo clippy         # Lint
 cargo fmt            # Format
 ```
 
+## Release Process
+
+Releases are automated through GitHub Actions in two ways:
+
+1. Tag pushes matching `v*.*.*`.
+2. Manual dispatch (UI or CLI) with an explicit `tag` input.
+
+Release steps:
+
+1. Update `Cargo.toml` `version`.
+2. Trigger release using one of:
+   - Push a matching tag (for example, `v0.2.0` for `version = "0.2.0"`).
+   - Run `gh workflow run release.yml --ref main -f tag=v0.2.0`.
+3. The release workflow validates the tag format (`vX.Y.Z`) and enforces tag/version match.
+4. It builds and uploads archives for:
+   - `x86_64-unknown-linux-gnu`
+   - `aarch64-unknown-linux-gnu`
+   - `x86_64-apple-darwin`
+   - `aarch64-apple-darwin`
+
+Each release archive includes the `rlph` binary, `README.md`, and `LICENSE`.
+
 ## License
 
 See [LICENSE](LICENSE) for details.
