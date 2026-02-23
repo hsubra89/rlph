@@ -65,7 +65,7 @@ jobs:
 
           release_tag="${RELEASE_TAG}"
           tag_version="${release_tag#v}"
-          cargo_version="$(awk -F'"' '/^version = / {print $2; exit}' Cargo.toml)"
+          cargo_version="$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[0].version')"
 
           if [[ -z "${cargo_version}" ]]; then
             echo "::error title=Missing version::Could not read package.version from Cargo.toml"
