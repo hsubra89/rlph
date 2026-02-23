@@ -69,6 +69,7 @@ struct IssueNode {
     description: Option<String>,
     url: String,
     priority: u8,
+    #[allow(dead_code)]
     state: StateNode,
     labels: LabelConnection,
 }
