@@ -12,7 +12,8 @@ pub struct ConfigFile {
     pub runner: Option<String>,
     pub submission: Option<String>,
     pub label: Option<String>,
-    pub poll_interval: Option<u64>,
+    #[serde(alias = "poll_interval")]
+    pub poll_seconds: Option<u64>,
     pub worktree_dir: Option<String>,
     pub max_iterations: Option<u32>,
     pub dry_run: Option<bool>,
@@ -30,7 +31,7 @@ pub struct Config {
     pub runner: String,
     pub submission: String,
     pub label: String,
-    pub poll_interval: u64,
+    pub poll_seconds: u64,
     pub worktree_dir: String,
     pub base_branch: String,
     pub max_iterations: Option<u32>,
@@ -114,7 +115,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .clone()
             .or(file.label)
             .unwrap_or_else(|| "rlph".to_string()),
-        poll_interval: cli.poll_interval.or(file.poll_interval).unwrap_or(60),
+        poll_seconds: cli.poll_seconds.or(file.poll_seconds).unwrap_or(30),
         worktree_dir: cli
             .worktree_dir
             .clone()
@@ -178,9 +179,9 @@ fn validate(config: &Config) -> Result<()> {
             )));
         }
     }
-    if config.poll_interval == 0 {
+    if config.poll_seconds == 0 {
         return Err(Error::ConfigValidation(
-            "poll_interval must be > 0".to_string(),
+            "poll_seconds must be > 0".to_string(),
         ));
     }
     Ok(())
@@ -199,12 +200,18 @@ source = "github"
 runner = "claude"
 submission = "github"
 label = "rlph"
-poll_interval = 30
+poll_seconds = 30
 worktree_dir = "/tmp/wt"
 "#;
         let config = parse_config(toml).unwrap();
         assert_eq!(config.source.as_deref(), Some("github"));
-        assert_eq!(config.poll_interval, Some(30));
+        assert_eq!(config.poll_seconds, Some(30));
+    }
+
+    #[test]
+    fn test_parse_legacy_poll_interval_key() {
+        let config = parse_config(r#"poll_interval = 15"#).unwrap();
+        assert_eq!(config.poll_seconds, Some(15));
     }
 
     #[test]
@@ -247,14 +254,14 @@ worktree_dir = "/tmp/wt"
     }
 
     #[test]
-    fn test_file_zero_poll_interval_rejected() {
+    fn test_file_zero_poll_seconds_rejected() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join(".rlph");
         std::fs::create_dir_all(&cfg_dir).unwrap();
-        std::fs::write(cfg_dir.join("config.toml"), r#"poll_interval = 0"#).unwrap();
+        std::fs::write(cfg_dir.join("config.toml"), r#"poll_seconds = 0"#).unwrap();
         let cli = Cli::parse_from(["rlph", "--once"]);
         let err = Config::load_from(&cli, tmp.path()).unwrap_err();
-        assert!(err.to_string().contains("poll_interval must be > 0"));
+        assert!(err.to_string().contains("poll_seconds must be > 0"));
     }
 
     #[test]
@@ -270,7 +277,7 @@ worktree_dir = "/tmp/wt"
             source: Some("github".to_string()),
             runner: Some("claude".to_string()),
             label: Some("file-label".to_string()),
-            poll_interval: Some(120),
+            poll_seconds: Some(120),
             ..Default::default()
         };
         let cli = Cli::parse_from([
@@ -285,7 +292,7 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.source, "linear"); // CLI wins
         assert_eq!(config.label, "cli-label"); // CLI wins
         assert_eq!(config.runner, "claude"); // file value kept
-        assert_eq!(config.poll_interval, 120); // file value kept
+        assert_eq!(config.poll_seconds, 120); // file value kept
         assert!(config.once);
     }
 
@@ -298,7 +305,7 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.runner, "codex");
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
-        assert_eq!(config.poll_interval, 60);
+        assert_eq!(config.poll_seconds, 30);
         assert_eq!(config.agent_binary, "codex");
         assert_eq!(config.agent_model.as_deref(), Some("gpt-5.3-codex"));
         assert_eq!(config.agent_timeout, Some(600));
@@ -327,7 +334,7 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.runner, "codex");
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
-        assert_eq!(config.poll_interval, 60);
+        assert_eq!(config.poll_seconds, 30);
         assert_eq!(config.agent_binary, "codex");
         assert_eq!(config.agent_model.as_deref(), Some("gpt-5.3-codex"));
         assert!(config.once);
@@ -377,11 +384,11 @@ worktree_dir = "/tmp/wt"
     }
 
     #[test]
-    fn test_cli_zero_poll_interval_rejected() {
+    fn test_cli_zero_poll_seconds_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once", "--poll-interval", "0"]);
+        let cli = Cli::parse_from(["rlph", "--once", "--poll-seconds", "0"]);
         let err = Config::load_from(&cli, tmp.path()).unwrap_err();
-        assert!(err.to_string().contains("poll_interval must be > 0"));
+        assert!(err.to_string().contains("poll_seconds must be > 0"));
     }
 
     #[test]

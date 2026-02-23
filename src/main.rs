@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
+use tokio::sync::watch;
 use tracing::info;
 
 use rlph::cli::Cli;
@@ -38,8 +39,8 @@ async fn main() {
 
     info!(?config, "config loaded");
 
-    if !cli.once && !cli.continuous {
-        eprintln!("error: specify --once or --continuous");
+    if !config.once && !config.continuous && config.max_iterations.is_none() {
+        eprintln!("error: specify one of --once, --continuous, or --max-iterations");
         std::process::exit(1);
     }
 
@@ -79,16 +80,26 @@ async fn main() {
         repo_root,
     );
 
-    if cli.once {
-        if let Err(e) = orchestrator.run_once().await {
-            if matches!(&e, rlph::error::Error::Interrupted) {
-                std::process::exit(130);
-            }
-            eprintln!("error: {e}");
-            std::process::exit(1);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        // First SIGINT: graceful shutdown after current iteration
+        if tokio::signal::ctrl_c().await.is_ok() {
+            info!("[rlph] SIGINT received; shutting down after current iteration");
+            eprintln!("[rlph] SIGINT received; shutting down after current iteration");
+            let _ = shutdown_tx.send(true);
         }
-    } else {
-        eprintln!("error: continuous mode not yet implemented");
+        // Second SIGINT: force exit
+        if tokio::signal::ctrl_c().await.is_ok() {
+            eprintln!("[rlph] Second SIGINT received; exiting immediately");
+            std::process::exit(130);
+        }
+    });
+
+    if let Err(e) = orchestrator.run_loop(Some(shutdown_rx)).await {
+        if matches!(&e, rlph::error::Error::Interrupted) {
+            std::process::exit(130);
+        }
+        eprintln!("error: {e}");
         std::process::exit(1);
     }
 }

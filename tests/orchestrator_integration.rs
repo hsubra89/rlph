@@ -1,6 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rlph::config::Config;
@@ -12,6 +13,7 @@ use rlph::sources::{Task, TaskSource};
 use rlph::state::StateManager;
 use rlph::submission::{SubmissionBackend, SubmitResult};
 use rlph::worktree::WorktreeManager;
+use tokio::sync::watch;
 
 // --- Shared tracking state ---
 
@@ -131,6 +133,133 @@ impl AgentRunner for MockRunner {
                 stdout: "REVIEW_COMPLETE: no changes needed".into(),
                 stderr: String::new(),
             }),
+        }
+    }
+}
+
+struct SequenceSource {
+    tasks_by_fetch: Arc<Mutex<VecDeque<Vec<Task>>>>,
+    task_details: HashMap<String, Task>,
+}
+
+impl SequenceSource {
+    fn new(tasks_by_fetch: Vec<Vec<Task>>) -> Self {
+        let mut task_details = HashMap::new();
+        for tasks in &tasks_by_fetch {
+            for task in tasks {
+                task_details.insert(task.id.clone(), task.clone());
+            }
+        }
+        Self {
+            tasks_by_fetch: Arc::new(Mutex::new(VecDeque::from(tasks_by_fetch))),
+            task_details,
+        }
+    }
+}
+
+impl TaskSource for SequenceSource {
+    fn fetch_eligible_tasks(&self) -> Result<Vec<Task>> {
+        let next = self.tasks_by_fetch.lock().unwrap().pop_front();
+        Ok(next.unwrap_or_default())
+    }
+
+    fn mark_in_progress(&self, _task_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn mark_in_review(&self, _task_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn mark_done(&self, _task_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_task_details(&self, task_id: &str) -> Result<Task> {
+        self.task_details
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| Error::TaskSource(format!("task not found: {task_id}")))
+    }
+
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
+        Ok(HashSet::new())
+    }
+}
+
+#[derive(Default)]
+struct RunnerCounts {
+    choose: AtomicUsize,
+    implement: AtomicUsize,
+    review: AtomicUsize,
+}
+
+struct CountingRunner {
+    task_id: String,
+    counts: Arc<RunnerCounts>,
+    shutdown_tx: Option<watch::Sender<bool>>,
+}
+
+impl CountingRunner {
+    fn new(task_id: &str, counts: Arc<RunnerCounts>) -> Self {
+        Self {
+            task_id: task_id.to_string(),
+            counts,
+            shutdown_tx: None,
+        }
+    }
+
+    fn with_shutdown(
+        task_id: &str,
+        counts: Arc<RunnerCounts>,
+        shutdown_tx: watch::Sender<bool>,
+    ) -> Self {
+        Self {
+            task_id: task_id.to_string(),
+            counts,
+            shutdown_tx: Some(shutdown_tx),
+        }
+    }
+}
+
+impl AgentRunner for CountingRunner {
+    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        match phase {
+            Phase::Choose => {
+                self.counts.choose.fetch_add(1, Ordering::SeqCst);
+                let ralph_dir = working_dir.join(".ralph");
+                std::fs::create_dir_all(&ralph_dir)
+                    .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                std::fs::write(
+                    ralph_dir.join("task.toml"),
+                    format!("id = \"{}\"", self.task_id),
+                )
+                .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "Selected task".into(),
+                    stderr: String::new(),
+                })
+            }
+            Phase::Implement => {
+                self.counts.implement.fetch_add(1, Ordering::SeqCst);
+                if let Some(tx) = &self.shutdown_tx {
+                    let _ = tx.send(true);
+                }
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "IMPLEMENTATION_COMPLETE: done".into(),
+                    stderr: String::new(),
+                })
+            }
+            Phase::Review => {
+                self.counts.review.fetch_add(1, Ordering::SeqCst);
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "REVIEW_COMPLETE: no changes needed".into(),
+                    stderr: String::new(),
+                })
+            }
         }
     }
 }
@@ -276,7 +405,7 @@ fn make_config(dry_run: bool) -> Config {
         runner: "claude".to_string(),
         submission: "github".to_string(),
         label: "rlph".to_string(),
-        poll_interval: 60,
+        poll_seconds: 30,
         worktree_dir: String::new(),
         base_branch: "main".to_string(),
         max_iterations: None,
@@ -751,4 +880,114 @@ async fn test_existing_pr_skips_submission() {
         "expected no submissions when existing PR is found, got {}",
         subs.submissions.len()
     );
+}
+
+#[tokio::test]
+async fn test_continuous_mode_polls_with_empty_results() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+    let counts = Arc::new(RunnerCounts::default());
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = SequenceSource::new(vec![vec![task], vec![]]);
+
+    let mut config = make_config(true);
+    config.once = false;
+    config.continuous = true;
+    config.max_iterations = Some(2);
+    config.poll_seconds = 1;
+
+    let orchestrator = Orchestrator::new(
+        source,
+        CountingRunner::new("gh-42", Arc::clone(&counts)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    );
+
+    orchestrator.run_loop(None).await.unwrap();
+
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.review.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_max_iterations_stops_at_limit() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+    let counts = Arc::new(RunnerCounts::default());
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let mut config = make_config(true);
+    config.once = false;
+    config.continuous = false;
+    config.max_iterations = Some(3);
+
+    let orchestrator = Orchestrator::new(
+        MockSource::new(vec![task], Arc::clone(&source_tracker)),
+        CountingRunner::new("gh-42", Arc::clone(&counts)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    );
+
+    orchestrator.run_loop(None).await.unwrap();
+
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 3);
+    assert_eq!(counts.implement.load(Ordering::SeqCst), 3);
+    assert_eq!(counts.review.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn test_continuous_shutdown_exits_between_iterations() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+    let counts = Arc::new(RunnerCounts::default());
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let mut config = make_config(true);
+    config.once = false;
+    config.continuous = true;
+    config.max_iterations = None;
+    config.poll_seconds = 1;
+
+    let orchestrator = Orchestrator::new(
+        MockSource::new(vec![task], Arc::clone(&source_tracker)),
+        CountingRunner::with_shutdown("gh-42", Arc::clone(&counts), shutdown_tx),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    );
+
+    orchestrator.run_loop(Some(shutdown_rx)).await.unwrap();
+
+    // Shutdown signal fires during implement, but the current iteration
+    // completes fully. Shutdown is only checked between iterations.
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.review.load(Ordering::SeqCst), 1);
 }

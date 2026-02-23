@@ -37,8 +37,8 @@ pub struct Cli {
     pub label: Option<String>,
 
     /// Poll interval in seconds (continuous mode)
-    #[arg(long)]
-    pub poll_interval: Option<u64>,
+    #[arg(long = "poll-seconds", alias = "poll-interval")]
+    pub poll_seconds: Option<u64>,
 
     /// Path to config file
     #[arg(long)]
@@ -112,7 +112,7 @@ mod tests {
             "graphite",
             "--label",
             "auto",
-            "--poll-interval",
+            "--poll-seconds",
             "30",
             "--worktree-dir",
             "/tmp/wt",
@@ -121,7 +121,13 @@ mod tests {
         assert_eq!(cli.source.as_deref(), Some("linear"));
         assert_eq!(cli.submission.as_deref(), Some("graphite"));
         assert_eq!(cli.label.as_deref(), Some("auto"));
-        assert_eq!(cli.poll_interval, Some(30));
+        assert_eq!(cli.poll_seconds, Some(30));
         assert_eq!(cli.worktree_dir.as_deref(), Some("/tmp/wt"));
+    }
+
+    #[test]
+    fn test_parse_poll_interval_alias() {
+        let cli = Cli::parse_from(["rlph", "--once", "--poll-interval", "45"]);
+        assert_eq!(cli.poll_seconds, Some(45));
     }
 }
