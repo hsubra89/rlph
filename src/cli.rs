@@ -28,7 +28,7 @@ pub struct Cli {
     pub runner: Option<String>,
 
     /// Task source to use (github, linear)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub source: Option<String>,
 
     /// Submission backend to use (github, graphite)
@@ -36,7 +36,7 @@ pub struct Cli {
     pub submission: Option<String>,
 
     /// Label to filter eligible tasks
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub label: Option<String>,
 
     /// Poll interval in seconds (continuous mode)
@@ -44,7 +44,7 @@ pub struct Cli {
     pub poll_seconds: Option<u64>,
 
     /// Path to config file
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub config: Option<String>,
 
     /// Worktree base directory
@@ -142,5 +142,13 @@ mod tests {
     fn test_parse_poll_interval_alias() {
         let cli = Cli::parse_from(["rlph", "--once", "--poll-interval", "45"]);
         assert_eq!(cli.poll_seconds, Some(45));
+    }
+
+    #[test]
+    fn test_parse_init_allows_global_args_after_subcommand() {
+        let cli = Cli::parse_from(["rlph", "init", "--source", "linear", "--label", "auto"]);
+        assert!(matches!(cli.command, Some(CliCommand::Init)));
+        assert_eq!(cli.source.as_deref(), Some("linear"));
+        assert_eq!(cli.label.as_deref(), Some("auto"));
     }
 }

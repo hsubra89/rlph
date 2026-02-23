@@ -697,34 +697,43 @@ fn write_linear_config(team_key: &str, dir: &std::path::Path) -> Result<()> {
     }
 
     let path = dir.join("config.toml");
-    let mut content = if path.exists() {
-        std::fs::read_to_string(&path)?
+    let mut table = if path.exists() {
+        let existing = std::fs::read_to_string(&path)?;
+        if existing.trim().is_empty() {
+            toml::Table::new()
+        } else {
+            existing.parse::<toml::Table>().map_err(|e| {
+                Error::TaskSource(format!("failed to parse {}: {e}", path.display()))
+            })?
+        }
     } else {
-        String::new()
+        toml::Table::new()
     };
 
-    // Replace existing [linear] section or append
-    if let Some(start) = content.find("[linear]") {
-        // Find the end of this section (next section header or EOF)
-        let rest = &content[start + "[linear]".len()..];
-        let section_end = rest
-            .find("\n[")
-            .map(|pos| start + "[linear]".len() + pos)
-            .unwrap_or(content.len());
-        content.replace_range(
-            start..section_end,
-            &format!("[linear]\nteam = \"{team_key}\""),
-        );
-    } else {
-        if !content.is_empty() && !content.ends_with('\n') {
-            content.push('\n');
+    table.insert(
+        "source".to_string(),
+        toml::Value::String("linear".to_string()),
+    );
+
+    match table.get_mut("linear") {
+        Some(toml::Value::Table(linear)) => {
+            linear.insert(
+                "team".to_string(),
+                toml::Value::String(team_key.to_string()),
+            );
         }
-        if !content.is_empty() {
-            content.push('\n');
+        _ => {
+            let mut linear = toml::Table::new();
+            linear.insert(
+                "team".to_string(),
+                toml::Value::String(team_key.to_string()),
+            );
+            table.insert("linear".to_string(), toml::Value::Table(linear));
         }
-        content.push_str(&format!("[linear]\nteam = \"{team_key}\"\n"));
     }
 
+    let content = toml::to_string(&table)
+        .map_err(|e| Error::TaskSource(format!("failed to serialize {}: {e}", path.display())))?;
     std::fs::write(&path, content)?;
     Ok(())
 }
@@ -1060,6 +1069,7 @@ mod tests {
         write_linear_config("ENG", &cfg_dir).unwrap();
 
         let content = std::fs::read_to_string(cfg_dir.join("config.toml")).unwrap();
+        assert!(content.contains("source = \"linear\""));
         assert!(content.contains("[linear]"));
         assert!(content.contains("team = \"ENG\""));
     }
@@ -1093,7 +1103,40 @@ mod tests {
         write_linear_config("NEW", &cfg_dir).unwrap();
 
         let content = std::fs::read_to_string(cfg_dir.join("config.toml")).unwrap();
+        assert!(content.contains("source = \"linear\""));
         assert!(content.contains("team = \"NEW\""));
         assert!(!content.contains("OLD"));
+    }
+
+    #[test]
+    fn test_write_linear_config_overwrites_non_linear_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join("cfg");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("config.toml"), "source = \"github\"\n").unwrap();
+
+        write_linear_config("ENG", &cfg_dir).unwrap();
+
+        let content = std::fs::read_to_string(cfg_dir.join("config.toml")).unwrap();
+        assert!(content.contains("source = \"linear\""));
+        assert!(!content.contains("source = \"github\""));
+    }
+
+    #[test]
+    fn test_write_linear_config_preserves_existing_linear_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join("cfg");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            "source = \"linear\"\n\n[linear]\nteam = \"OLD\"\nproject = \"Core\"\n",
+        )
+        .unwrap();
+
+        write_linear_config("NEW", &cfg_dir).unwrap();
+
+        let content = std::fs::read_to_string(cfg_dir.join("config.toml")).unwrap();
+        assert!(content.contains("team = \"NEW\""));
+        assert!(content.contains("project = \"Core\""));
     }
 }

@@ -6,7 +6,7 @@ use tokio::sync::watch;
 use tracing::info;
 
 use rlph::cli::{Cli, CliCommand};
-use rlph::config::Config;
+use rlph::config::{Config, resolve_init_config};
 use rlph::orchestrator::Orchestrator;
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AnyRunner, ClaudeRunner, CodexRunner};
@@ -33,15 +33,20 @@ async fn main() {
 
     // Handle init before loading full config (init may need to create the config)
     if let Some(CliCommand::Init) = cli.command {
-        let source = cli.source.as_deref().unwrap_or("github");
-        let label = cli.label.as_deref().unwrap_or("rlph");
-        if source == "linear" {
-            if let Err(e) = rlph::sources::linear::init_interactive(label) {
+        let init_cfg = match resolve_init_config(&cli) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        };
+        if init_cfg.source == "linear" {
+            if let Err(e) = rlph::sources::linear::init_interactive(&init_cfg.label) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
         } else {
-            info!("init: nothing to do for source '{source}'");
+            info!("init: nothing to do for source '{}'", init_cfg.source);
         }
         return;
     }
