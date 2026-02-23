@@ -121,9 +121,10 @@ Each release archive includes the `rlph` binary, `README.md`, and `LICENSE`.
 
 ## Inspired by
 
-- [lalph](https://github.com/tim-smart/lalph) by Tim Smart
-- [accountability](https://github.com/mikearnaldi/accountability) by Mike Arnaldi
-- [skills](https://github.com/mattpocock/skills) by Matt Pocock
+- [lalph](https://github.com/tim-smart/lalph) by [Tim Smart](https://x.com/tim_smart)
+- [accountability](https://github.com/mikearnaldi/accountability) by [Michael Arnaldi](https://x.com/MichaelArnaldi)
+- [skills](https://github.com/mattpocock/skills) by [Matt Pocock](https://x.com/mattpocockuk)
+- [The Loop](https://ghuntley.com/loop/) by [Geoff Huntley](https://x.com/GeoffreyHuntley)
 
 ## License
 
