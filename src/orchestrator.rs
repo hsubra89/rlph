@@ -582,14 +582,20 @@ fn extract_comment_body(stdout: &str) -> String {
     }
 }
 
-/// Extract fix instructions from a `REVIEW_NEEDS_FIX: <instructions>` line.
+/// Extract fix instructions from `REVIEW_NEEDS_FIX: <instructions>`.
+/// Captures everything from the marker to end of output (multi-line).
 fn extract_fix_instructions(stdout: &str) -> Option<String> {
-    for line in stdout.lines() {
-        if let Some(rest) = line.strip_prefix("REVIEW_NEEDS_FIX:") {
-            return Some(rest.trim().to_string());
+    if let Some(pos) = stdout.find("REVIEW_NEEDS_FIX:") {
+        let after = &stdout[pos + "REVIEW_NEEDS_FIX:".len()..];
+        let trimmed = after.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
         }
+    } else {
+        None
     }
-    None
 }
 
 /// Extract the issue number from a task ID like "gh-42".
@@ -647,9 +653,10 @@ mod tests {
             Some("fix the bug".to_string())
         );
         assert_eq!(
-            extract_fix_instructions("Some output\nREVIEW_NEEDS_FIX: do stuff\nmore"),
-            Some("do stuff".to_string())
+            extract_fix_instructions("Some output\nREVIEW_NEEDS_FIX: do stuff\nmore lines\nhere"),
+            Some("do stuff\nmore lines\nhere".to_string())
         );
         assert_eq!(extract_fix_instructions("REVIEW_APPROVED"), None);
+        assert_eq!(extract_fix_instructions("REVIEW_NEEDS_FIX:   "), None);
     }
 }

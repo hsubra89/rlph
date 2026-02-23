@@ -298,35 +298,18 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
     let review_phases: Vec<ReviewPhaseConfig> = file
         .review_phases
         .unwrap_or_else(|| {
-            vec![
-                ReviewPhaseConfigFile {
-                    name: "correctness".to_string(),
-                    prompt: "correctness-review".to_string(),
+            default_review_phases()
+                .into_iter()
+                .map(|p| ReviewPhaseConfigFile {
+                    name: p.name,
+                    prompt: p.prompt,
                     runner: None,
                     agent_binary: None,
                     agent_model: None,
                     agent_effort: None,
                     agent_timeout: None,
-                },
-                ReviewPhaseConfigFile {
-                    name: "security".to_string(),
-                    prompt: "security-review".to_string(),
-                    runner: None,
-                    agent_binary: None,
-                    agent_model: None,
-                    agent_effort: None,
-                    agent_timeout: None,
-                },
-                ReviewPhaseConfigFile {
-                    name: "style".to_string(),
-                    prompt: "style-review".to_string(),
-                    runner: None,
-                    agent_binary: None,
-                    agent_model: None,
-                    agent_effort: None,
-                    agent_timeout: None,
-                },
-            ]
+                })
+                .collect()
         })
         .into_iter()
         .map(|p| ReviewPhaseConfig {
@@ -482,6 +465,16 @@ fn validate(config: &Config) -> Result<()> {
             }
         }
     }
+    fn validate_runner(runner: &str, context: &str) -> Result<()> {
+        match runner {
+            "claude" | "codex" => Ok(()),
+            other => Err(Error::ConfigValidation(format!(
+                "unknown runner '{other}' in {context}"
+            ))),
+        }
+    }
+    validate_runner(&config.review_aggregate.runner, "review_aggregate")?;
+    validate_runner(&config.review_fix.runner, "review_fix")?;
     if config.source == "linear" {
         match &config.linear {
             Some(lc) if lc.team.is_empty() => {
