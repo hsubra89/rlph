@@ -226,9 +226,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
                 // Process exited non-zero — stdin write failures (BrokenPipe,
                 // ConnectionReset, etc.) are expected side-effects; the exit
                 // code is the real error.
-                warn!(
-                    "[{log_prefix}] stdin write failed ({e}), ignored — process exited non-zero"
-                );
+                warn!("[{log_prefix}] stdin write failed ({e}), ignored — process exited non-zero");
             }
             Err(e) => {
                 return Err(Error::Process(format!("stdin writer task failed: {e}")));

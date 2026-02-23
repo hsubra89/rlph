@@ -409,7 +409,13 @@ mod tests {
 
     #[test]
     fn test_build_command_with_model() {
-        let runner = ClaudeRunner::new("claude".to_string(), Some("opus".to_string()), None, None, 2);
+        let runner = ClaudeRunner::new(
+            "claude".to_string(),
+            Some("opus".to_string()),
+            None,
+            None,
+            2,
+        );
         let (_cmd, args) = runner.build_command("pick a task");
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"opus".to_string()));
@@ -440,7 +446,13 @@ mod tests {
 
     #[test]
     fn test_build_resume_command_with_model() {
-        let runner = ClaudeRunner::new("claude".to_string(), Some("opus".to_string()), None, None, 2);
+        let runner = ClaudeRunner::new(
+            "claude".to_string(),
+            Some("opus".to_string()),
+            None,
+            None,
+            2,
+        );
         let (_cmd, args) = runner.build_resume_command("sess-xyz");
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"opus".to_string()));

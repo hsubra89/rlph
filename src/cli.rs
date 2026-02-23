@@ -1,9 +1,12 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 /// rlph — autonomous AI development loop
 #[derive(Parser, Debug)]
 #[command(name = "rlph", version, about)]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Run a single iteration then exit
     #[arg(long)]
     pub once: bool,
@@ -77,6 +80,35 @@ pub struct Cli {
     pub agent_timeout_retries: Option<u32>,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Launch an interactive PRD-writing session
+    Plan {
+        /// Seed description for the PRD (optional)
+        description: Option<String>,
+
+        /// Agent runner to use (claude, codex)
+        #[arg(long)]
+        runner: Option<String>,
+
+        /// Task source to use (github, linear)
+        #[arg(long)]
+        source: Option<String>,
+
+        /// Path to config file
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Agent binary to use
+        #[arg(long)]
+        agent_binary: Option<String>,
+
+        /// Model for the agent to use
+        #[arg(long)]
+        agent_model: Option<String>,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,6 +119,7 @@ mod tests {
         assert!(cli.once);
         assert!(!cli.continuous);
         assert!(!cli.dry_run);
+        assert!(cli.command.is_none());
     }
 
     #[test]
@@ -133,5 +166,58 @@ mod tests {
     fn test_parse_poll_interval_alias() {
         let cli = Cli::parse_from(["rlph", "--once", "--poll-interval", "45"]);
         assert_eq!(cli.poll_seconds, Some(45));
+    }
+
+    #[test]
+    fn test_parse_plan_no_description() {
+        let cli = Cli::parse_from(["rlph", "plan"]);
+        match cli.command {
+            Some(Command::Plan { description, .. }) => assert!(description.is_none()),
+            _ => panic!("expected Plan subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_plan_with_description() {
+        let cli = Cli::parse_from(["rlph", "plan", "add auth support"]);
+        match cli.command {
+            Some(Command::Plan { description, .. }) => {
+                assert_eq!(description.as_deref(), Some("add auth support"));
+            }
+            _ => panic!("expected Plan subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_plan_with_overrides() {
+        let cli = Cli::parse_from([
+            "rlph",
+            "plan",
+            "--runner",
+            "codex",
+            "--source",
+            "linear",
+            "my feature",
+        ]);
+        match cli.command {
+            Some(Command::Plan {
+                description,
+                runner,
+                source,
+                ..
+            }) => {
+                assert_eq!(description.as_deref(), Some("my feature"));
+                assert_eq!(runner.as_deref(), Some("codex"));
+                assert_eq!(source.as_deref(), Some("linear"));
+            }
+            _ => panic!("expected Plan subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_bare_rlph_once_still_works() {
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        assert!(cli.command.is_none());
+        assert!(cli.once);
     }
 }

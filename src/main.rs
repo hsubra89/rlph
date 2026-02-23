@@ -5,9 +5,10 @@ use clap::Parser;
 use tokio::sync::watch;
 use tracing::info;
 
-use rlph::cli::Cli;
+use rlph::cli::{Cli, Command};
 use rlph::config::Config;
 use rlph::orchestrator::Orchestrator;
+use rlph::plan;
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AnyRunner, ClaudeRunner, CodexRunner};
 use rlph::sources::github::GitHubSource;
@@ -29,6 +30,65 @@ async fn main() {
 
     info!("rlph starting");
 
+    match cli.command {
+        Some(Command::Plan {
+            ref description,
+            ref runner,
+            ref source,
+            ref config,
+            ref agent_binary,
+            ref agent_model,
+        }) => {
+            // Merge plan-specific CLI overrides into a Cli-compatible form for config loading.
+            let plan_cli = Cli {
+                command: None,
+                once: false,
+                continuous: false,
+                max_iterations: None,
+                dry_run: false,
+                runner: runner.clone().or(cli.runner.clone()),
+                source: source.clone().or(cli.source.clone()),
+                submission: cli.submission.clone(),
+                label: cli.label.clone(),
+                poll_seconds: cli.poll_seconds,
+                config: config.clone().or(cli.config.clone()),
+                worktree_dir: cli.worktree_dir.clone(),
+                base_branch: cli.base_branch.clone(),
+                agent_binary: agent_binary.clone().or(cli.agent_binary.clone()),
+                agent_model: agent_model.clone().or(cli.agent_model.clone()),
+                agent_timeout: cli.agent_timeout,
+                agent_effort: cli.agent_effort.clone(),
+                max_review_rounds: cli.max_review_rounds,
+                agent_timeout_retries: cli.agent_timeout_retries,
+            };
+
+            let cfg = match Config::load(&plan_cli) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+            info!(?cfg, "config loaded for plan");
+
+            let exit_code = match plan::run_plan(&cfg, description.as_deref()).await {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+            std::process::exit(exit_code);
+        }
+        None => {
+            run_loop(cli).await;
+        }
+    }
+}
+
+async fn run_loop(cli: Cli) {
     let config = match Config::load(&cli) {
         Ok(c) => c,
         Err(e) => {

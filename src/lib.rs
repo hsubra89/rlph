@@ -3,6 +3,7 @@ pub mod config;
 pub mod deps;
 pub mod error;
 pub mod orchestrator;
+pub mod plan;
 pub mod process;
 pub mod prompts;
 pub mod runner;
