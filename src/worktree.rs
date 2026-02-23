@@ -117,7 +117,7 @@ impl WorktreeManager {
         })?;
 
         // Fetch latest base branch from origin (mandatory, with retries)
-        self.fetch_with_retry(&self.base_branch.clone(), 3)?;
+        self.fetch_with_retry(&self.base_branch, 3)?;
 
         // Start point is always origin/<base> since fetch above succeeded
         let start_point = format!("origin/{}", self.base_branch);

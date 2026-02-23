@@ -11,7 +11,7 @@ use rlph::config::{Config, resolve_init_config};
 use rlph::orchestrator::{Orchestrator, ReviewInvocation};
 use rlph::prd;
 use rlph::prompts::PromptEngine;
-use rlph::runner::{AnyRunner, ClaudeRunner, CodexRunner};
+use rlph::runner::{AnyRunner, ClaudeRunner, CodexRunner, build_runner};
 use rlph::sources::AnySource;
 use rlph::sources::TaskSource;
 use rlph::sources::github::GitHubSource;
@@ -68,22 +68,6 @@ async fn main() {
 
             let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let source: AnySource = AnySource::GitHub(GitHubSource::new(&config));
-            let timeout = config.agent_timeout.map(Duration::from_secs);
-            let runner = match config.runner.as_str() {
-                "codex" => AnyRunner::Codex(CodexRunner::new(
-                    config.agent_binary.clone(),
-                    config.agent_model.clone(),
-                    timeout,
-                    config.agent_timeout_retries,
-                )),
-                _ => AnyRunner::Claude(ClaudeRunner::new(
-                    config.agent_binary.clone(),
-                    config.agent_model.clone(),
-                    config.agent_effort.clone(),
-                    timeout,
-                    config.agent_timeout_retries,
-                )),
-            };
 
             let submission = GitHubSubmission::new();
             let pr_context = match submission.get_pr_context(pr_number) {
@@ -150,9 +134,17 @@ async fn main() {
 
             let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
             let prompt_engine = PromptEngine::new(None);
+            let timeout = config.agent_timeout.map(Duration::from_secs);
             let orchestrator = Orchestrator::new(
                 source,
-                runner,
+                build_runner(
+                    &config.runner,
+                    &config.agent_binary,
+                    config.agent_model.as_deref(),
+                    config.agent_effort.as_deref(),
+                    timeout,
+                    config.agent_timeout_retries,
+                ),
                 submission,
                 worktree_mgr,
                 state_mgr,

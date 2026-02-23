@@ -356,12 +356,12 @@ impl SubmissionBackend for MockSubmission {
         Ok(self.existing_pr_for_issue)
     }
 
-    fn comment_on_pr(&self, _pr_number: u64, _body: &str) -> Result<()> {
+    fn comment_on_pr(&self, pr_number: u64, body: &str) -> Result<()> {
         self.tracker
             .lock()
             .unwrap()
             .comments
-            .push((_pr_number, _body.to_string()));
+            .push((pr_number, body.to_string()));
         Ok(())
     }
 }

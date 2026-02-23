@@ -615,6 +615,8 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             "worktree_path".to_string(),
             worktree.path.display().to_string(),
         );
+        vars.insert("pr_number".to_string(), String::new());
+        vars.insert("pr_branch".to_string(), String::new());
         vars
     }
 
