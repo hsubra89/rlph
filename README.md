@@ -119,6 +119,12 @@ Release steps:
 
 Each release archive includes the `rlph` binary, `README.md`, and `LICENSE`.
 
+## Inspired by
+
+- [lalph](https://github.com/tim-smart/lalph) by Tim Smart
+- [accountability](https://github.com/mikearnaldi/accountability) by Mike Arnaldi
+- [skills](https://github.com/mattpocock/skills) by Matt Pocock
+
 ## License
 
 See [LICENSE](LICENSE) for details.
