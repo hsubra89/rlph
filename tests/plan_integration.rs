@@ -64,7 +64,7 @@ fn test_plan_template_renders_with_github_source() {
     let mut vars = HashMap::new();
     vars.insert(
         "submission_instructions".to_string(),
-        submission_instructions("github").to_string(),
+        submission_instructions("github", "rlph"),
     );
     vars.insert("description".to_string(), "add auth support".to_string());
 
@@ -80,7 +80,7 @@ fn test_plan_template_renders_with_linear_source() {
     let mut vars = HashMap::new();
     vars.insert(
         "submission_instructions".to_string(),
-        submission_instructions("linear").to_string(),
+        submission_instructions("linear", "rlph"),
     );
     vars.insert("description".to_string(), String::new());
 

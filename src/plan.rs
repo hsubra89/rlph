@@ -8,22 +8,23 @@ use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 
 /// Build the submission instructions string for the given task source.
-pub fn submission_instructions(source: &str) -> &'static str {
+pub fn submission_instructions(source: &str, label: &str) -> String {
     match source {
-        "github" => concat!(
-            "Submit the final PRD as a GitHub issue using the `gh` CLI:\n",
-            "```\n",
-            "gh issue create --title \"PRD: <title>\" --body \"<prd content>\"\n",
-            "```\n",
-            "Use a HEREDOC for the body if it contains special characters.\n",
-            "Add the label `rlph` to the issue so the autonomous loop can pick it up.",
+        "github" => format!(
+            "Submit the final PRD as a GitHub issue using the `gh` CLI:\n\
+             ```\n\
+             gh issue create --label \"{label}\" --title \"PRD: <title>\" --body \"<prd content>\"\n\
+             ```\n\
+             Use a HEREDOC for the body if it contains special characters.\n\
+             Add the label `{label}` to the issue so the autonomous loop can pick it up.",
         ),
-        "linear" => concat!(
-            "Submit the final PRD as a Linear project/issue.\n",
-            "Use the Linear CLI or API to create the issue with the PRD as its description.\n",
-            "Ensure it is placed in the correct team and project.",
+        "linear" => format!(
+            "Submit the final PRD as a Linear project/issue.\n\
+             Use the Linear CLI or API to create the issue with the PRD as its description.\n\
+             Ensure it is placed in the correct team and project.\n\
+             Tag it with the label `{label}`.",
         ),
-        _ => "Submit the final PRD to your configured task source.",
+        _ => "Submit the final PRD to your configured task source.".to_string(),
     }
 }
 
@@ -63,7 +64,7 @@ pub async fn run_plan(config: &Config, description: Option<&str>) -> Result<i32>
     let mut vars = HashMap::new();
     vars.insert(
         "submission_instructions".to_string(),
-        submission_instructions(&config.source).to_string(),
+        submission_instructions(&config.source, &config.label),
     );
     vars.insert(
         "description".to_string(),
@@ -107,20 +108,29 @@ mod tests {
 
     #[test]
     fn test_submission_instructions_github() {
-        let instr = submission_instructions("github");
+        let instr = submission_instructions("github", "rlph");
         assert!(instr.contains("gh issue create"));
         assert!(instr.contains("rlph"));
     }
 
     #[test]
+    fn test_submission_instructions_github_custom_label() {
+        let instr = submission_instructions("github", "ai-tasks");
+        assert!(instr.contains("--label \"ai-tasks\""));
+        assert!(instr.contains("ai-tasks"));
+        assert!(!instr.contains("rlph"));
+    }
+
+    #[test]
     fn test_submission_instructions_linear() {
-        let instr = submission_instructions("linear");
+        let instr = submission_instructions("linear", "rlph");
         assert!(instr.contains("Linear"));
+        assert!(instr.contains("rlph"));
     }
 
     #[test]
     fn test_submission_instructions_unknown_source() {
-        let instr = submission_instructions("jira");
+        let instr = submission_instructions("jira", "rlph");
         assert!(instr.contains("configured task source"));
     }
 
