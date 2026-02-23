@@ -125,7 +125,7 @@ impl GitHubSubmission {
                 "view",
                 &number_str,
                 "--json",
-                "number,title,body,url,headRefName,closingIssuesReferences",
+                "number,title,body,url,headRefName",
             ])
             .output()
             .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
@@ -202,11 +202,6 @@ fn pr_body_references_issue(body: &str, issue_number: u64) -> bool {
 }
 
 #[derive(Debug, Deserialize)]
-struct GhIssueRef {
-    number: u64,
-}
-
-#[derive(Debug, Deserialize)]
 struct GhPrView {
     number: u64,
     title: String,
@@ -215,8 +210,6 @@ struct GhPrView {
     url: String,
     #[serde(rename = "headRefName")]
     head_ref_name: String,
-    #[serde(rename = "closingIssuesReferences", default)]
-    closing_issues_references: Vec<GhIssueRef>,
 }
 
 fn parse_pr_context_json(json: &str) -> std::result::Result<PrContext, String> {
@@ -229,16 +222,29 @@ fn parse_pr_context_json(json: &str) -> std::result::Result<PrContext, String> {
     Ok(PrContext {
         number: pr.number,
         title: pr.title,
-        body: pr.body,
+        body: pr.body.clone(),
         url: pr.url,
         head_branch: pr.head_ref_name,
-        linked_issue_number: pr.closing_issues_references.first().map(|i| i.number),
+        linked_issue_number: extract_issue_number_reference(&pr.body),
+    })
+}
+
+fn extract_issue_number_reference(body: &str) -> Option<u64> {
+    body.split_whitespace().find_map(|token| {
+        let trimmed = token.trim_matches(|c: char| ",.;:()[]{}".contains(c));
+        if let Some(num) = trimmed.strip_prefix('#') {
+            return num.parse::<u64>().ok();
+        }
+        None
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_pr_context_json, parse_pr_number_from_url, pr_body_references_issue};
+    use super::{
+        extract_issue_number_reference, parse_pr_context_json, parse_pr_number_from_url,
+        pr_body_references_issue,
+    };
 
     #[test]
     fn test_pr_body_references_issue_exact_match() {
@@ -275,8 +281,7 @@ mod tests {
             "title": "Fix race condition",
             "body": "Resolves #42",
             "url": "https://github.com/o/r/pull/9",
-            "headRefName": "feature/fix-race",
-            "closingIssuesReferences": [{"number": 42}]
+            "headRefName": "feature/fix-race"
         }"#;
 
         let ctx = parse_pr_context_json(json).unwrap();
@@ -295,8 +300,7 @@ mod tests {
             "title": "Refactor worker",
             "body": "",
             "url": "https://github.com/o/r/pull/11",
-            "headRefName": "refactor/worker",
-            "closingIssuesReferences": []
+            "headRefName": "refactor/worker"
         }"#;
 
         let ctx = parse_pr_context_json(json).unwrap();
@@ -311,11 +315,17 @@ mod tests {
             "title": "Refactor worker",
             "body": "",
             "url": "https://github.com/o/r/pull/11",
-            "headRefName": "",
-            "closingIssuesReferences": []
+            "headRefName": ""
         }"#;
 
         let err = parse_pr_context_json(json).unwrap_err();
         assert!(err.contains("headRefName"));
+    }
+
+    #[test]
+    fn test_extract_issue_number_reference() {
+        assert_eq!(extract_issue_number_reference("Resolves #42"), Some(42));
+        assert_eq!(extract_issue_number_reference("Fixes (#7)."), Some(7));
+        assert_eq!(extract_issue_number_reference("No issue refs"), None);
     }
 }

@@ -169,6 +169,26 @@ pub fn extract_session_id(stdout_lines: &[String]) -> Option<String> {
     last_id
 }
 
+/// Extract the final human-readable result from Claude stream-json output.
+///
+/// Claude emits many JSON events when using `--output-format stream-json`.
+/// The useful summary is stored in `{"type":"result","result":"..."}`.
+/// If found, returning this keeps downstream prompts/comments compact.
+fn extract_claude_result(stdout_lines: &[String]) -> Option<String> {
+    let mut last_result: Option<String> = None;
+    for line in stdout_lines {
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if val.get("type").and_then(|v| v.as_str()) == Some("result")
+            && let Some(result) = val.get("result").and_then(|v| v.as_str())
+        {
+            last_result = Some(result.to_string());
+        }
+    }
+    last_result
+}
+
 impl AgentRunner for ClaudeRunner {
     async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
         let log_prefix = format!("agent:{phase}");
@@ -209,6 +229,7 @@ impl AgentRunner for ClaudeRunner {
                 working_dir: working_dir.to_path_buf(),
                 timeout: self.timeout,
                 log_prefix: log_prefix.clone(),
+                stream_output: false,
                 env: vec![],
                 stdin_data: None,
             };
@@ -218,7 +239,8 @@ impl AgentRunner for ClaudeRunner {
                     all_stdout.extend(output.stdout_lines);
                     all_stderr.extend(output.stderr_lines);
 
-                    let stdout = all_stdout.join("\n");
+                    let stdout =
+                        extract_claude_result(&all_stdout).unwrap_or_else(|| all_stdout.join("\n"));
                     let stderr = all_stderr.join("\n");
 
                     if let Some(sig) = output.signal {
@@ -397,6 +419,7 @@ impl AgentRunner for CodexRunner {
                 working_dir: working_dir.to_path_buf(),
                 timeout: self.timeout,
                 log_prefix: log_prefix.clone(),
+                stream_output: false,
                 env: vec![],
                 stdin_data,
             };
@@ -564,6 +587,37 @@ mod tests {
             r#"{"type":"user","session_id":"found-it"}"#.to_string(),
         ];
         assert_eq!(extract_session_id(&lines), Some("found-it".to_string()));
+    }
+
+    #[test]
+    fn test_extract_claude_result_prefers_result_event() {
+        let lines = vec![
+            r#"{"type":"system","session_id":"abc"}"#.to_string(),
+            r#"{"type":"assistant","message":"thinking"}"#.to_string(),
+            r#"{"type":"result","result":"REVIEW_APPROVED"}"#.to_string(),
+        ];
+        assert_eq!(
+            extract_claude_result(&lines).as_deref(),
+            Some("REVIEW_APPROVED")
+        );
+    }
+
+    #[test]
+    fn test_extract_claude_result_returns_last_result_event() {
+        let lines = vec![
+            r#"{"type":"result","result":"first"}"#.to_string(),
+            r#"{"type":"result","result":"second"}"#.to_string(),
+        ];
+        assert_eq!(extract_claude_result(&lines).as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn test_extract_claude_result_none_without_result_event() {
+        let lines = vec![
+            r#"{"type":"system","session_id":"abc"}"#.to_string(),
+            r#"{"type":"assistant","message":"noop"}"#.to_string(),
+        ];
+        assert_eq!(extract_claude_result(&lines), None);
     }
 
     #[test]
