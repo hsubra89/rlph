@@ -24,18 +24,16 @@ fn resolve_api_key(api_key_env: &str) -> Result<String> {
 
     if let Some(home) = std::env::var_os("HOME") {
         let creds_path = std::path::Path::new(&home).join(LINEAR_CLI_CREDENTIALS);
-        if let Ok(contents) = std::fs::read_to_string(&creds_path) {
-            if let Ok(table) = contents.parse::<toml::Table>() {
-                if let Some(default_profile) = table.get("default").and_then(|v| v.as_str()) {
-                    if let Some(token) = table.get(default_profile).and_then(|v| v.as_str()) {
-                        debug!(
-                            profile = default_profile,
-                            "using Linear API key from CLI credentials"
-                        );
-                        return Ok(token.to_string());
-                    }
-                }
-            }
+        if let Ok(contents) = std::fs::read_to_string(&creds_path)
+            && let Ok(table) = contents.parse::<toml::Table>()
+            && let Some(default_profile) = table.get("default").and_then(|v| v.as_str())
+            && let Some(token) = table.get(default_profile).and_then(|v| v.as_str())
+        {
+            debug!(
+                profile = default_profile,
+                "using Linear API key from CLI credentials"
+            );
+            return Ok(token.to_string());
         }
     }
 
@@ -59,30 +57,56 @@ struct DefaultLinearClient {
 
 impl LinearClient for DefaultLinearClient {
     fn graphql(&self, query: &str, variables: serde_json::Value) -> Result<serde_json::Value> {
-        retry_with_backoff(|| {
-            let body = serde_json::json!({
-                "query": query,
-                "variables": variables,
-            });
+        let body = serde_json::json!({
+            "query": query,
+            "variables": variables,
+        });
 
-            let response = ureq::post(LINEAR_API_URL)
+        let mut backoff_ms = INITIAL_BACKOFF_MS;
+        for attempt in 1..=MAX_RETRIES {
+            // Linear API uses raw API key, not "Bearer <key>"
+            match ureq::post(LINEAR_API_URL)
                 .set("Authorization", &self.api_key)
                 .set("Content-Type", "application/json")
                 .send_json(&body)
-                .map_err(|e| Error::TaskSource(format!("Linear API request failed: {e}")))?;
+            {
+                Ok(response) => {
+                    let json: serde_json::Value = response.into_json().map_err(|e| {
+                        Error::TaskSource(format!("failed to parse Linear response: {e}"))
+                    })?;
 
-            let json: serde_json::Value = response
-                .into_json()
-                .map_err(|e| Error::TaskSource(format!("failed to parse Linear response: {e}")))?;
+                    if let Some(errors) = json.get("errors") {
+                        return Err(Error::TaskSource(format!("Linear API errors: {errors}")));
+                    }
 
-            if let Some(errors) = json.get("errors") {
-                return Err(Error::TaskSource(format!("Linear API errors: {errors}")));
+                    return json.get("data").cloned().ok_or_else(|| {
+                        Error::TaskSource("Linear API response missing data".to_string())
+                    });
+                }
+                Err(ref e) if attempt < MAX_RETRIES && is_retryable(e) => {
+                    warn!(
+                        attempt,
+                        error = %e,
+                        backoff_ms,
+                        "retrying Linear API after transient error"
+                    );
+                    thread::sleep(Duration::from_millis(backoff_ms));
+                    backoff_ms *= 2;
+                }
+                Err(e) => {
+                    return Err(Error::TaskSource(format!("Linear API request failed: {e}")));
+                }
             }
+        }
+        unreachable!()
+    }
+}
 
-            json.get("data")
-                .cloned()
-                .ok_or_else(|| Error::TaskSource("Linear API response missing data".to_string()))
-        })
+/// Only retry rate-limits (429), server errors (5xx), and transport/network errors.
+fn is_retryable(err: &ureq::Error) -> bool {
+    match err {
+        ureq::Error::Status(code, _) => *code == 429 || *code >= 500,
+        ureq::Error::Transport(_) => true,
     }
 }
 
@@ -92,7 +116,6 @@ impl LinearClient for DefaultLinearClient {
 
 #[derive(Debug, Deserialize)]
 struct IssueNode {
-    id: String,
     #[allow(dead_code)]
     identifier: String,
     number: u64,
@@ -127,6 +150,17 @@ struct LabelNode {
 #[derive(Debug, Deserialize)]
 struct IssueConnection {
     nodes: Vec<IssueNode>,
+}
+
+/// Lightweight types for queries that only need the issue UUID.
+#[derive(Debug, Deserialize)]
+struct IssueIdNode {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IssueIdConnection {
+    nodes: Vec<IssueIdNode>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,7 +315,7 @@ impl LinearSource {
             serde_json::json!({ "team": self.team, "number": number }),
         )?;
 
-        let issues: IssueConnection =
+        let issues: IssueIdConnection =
             serde_json::from_value(data.get("issues").cloned().unwrap_or_default())
                 .map_err(|e| Error::TaskSource(format!("failed to parse issue lookup: {e}")))?;
 
@@ -306,10 +340,22 @@ impl LinearSource {
             }
         "#;
 
-        self.client.graphql(
+        let data = self.client.graphql(
             query,
             serde_json::json!({ "issueId": issue_id, "stateId": state_id }),
         )?;
+
+        let success = data
+            .get("issueUpdate")
+            .and_then(|u| u.get("success"))
+            .and_then(|s| s.as_bool())
+            .unwrap_or(false);
+
+        if !success {
+            return Err(Error::TaskSource(format!(
+                "failed to update issue #{task_id} to state '{state_name}'"
+            )));
+        }
 
         Ok(())
     }
@@ -467,11 +513,7 @@ pub fn init_label(config: &Config) -> Result<()> {
     init_label_with_client(&config.label, &linear.team, &client)
 }
 
-fn init_label_with_client(
-    label: &str,
-    team_key: &str,
-    client: &dyn LinearClient,
-) -> Result<()> {
+fn init_label_with_client(label: &str, team_key: &str, client: &dyn LinearClient) -> Result<()> {
     let label_name = label;
 
     // Check if label already exists
@@ -669,7 +711,10 @@ fn write_linear_config(team_key: &str, dir: &std::path::Path) -> Result<()> {
             .find("\n[")
             .map(|pos| start + "[linear]".len() + pos)
             .unwrap_or(content.len());
-        content.replace_range(start..section_end, &format!("[linear]\nteam = \"{team_key}\""));
+        content.replace_range(
+            start..section_end,
+            &format!("[linear]\nteam = \"{team_key}\""),
+        );
     } else {
         if !content.is_empty() && !content.ends_with('\n') {
             content.push('\n');
@@ -688,13 +733,7 @@ fn write_linear_config(team_key: &str, dir: &std::path::Path) -> Result<()> {
 // Retry with exponential backoff
 // ---------------------------------------------------------------------------
 
-fn retry_with_backoff<F, T>(f: F) -> Result<T>
-where
-    F: Fn() -> Result<T>,
-{
-    retry_with_backoff_ms(f, INITIAL_BACKOFF_MS, MAX_RETRIES)
-}
-
+#[cfg(test)]
 fn retry_with_backoff_ms<F, T>(f: F, initial_backoff_ms: u64, max_retries: u32) -> Result<T>
 where
     F: Fn() -> Result<T>,
@@ -888,18 +927,10 @@ mod tests {
 
     #[test]
     fn test_mark_in_progress() {
-        // find_issue_id response, find_state_id response, issueUpdate response
-        let issue_data = issues_response(vec![serde_json::json!({
-            "id": "uuid-42",
-            "identifier": "ENG-42",
-            "number": 42,
-            "title": "t",
-            "description": null,
-            "url": "u",
-            "priority": 0,
-            "state": { "name": "Todo", "type": "unstarted" },
-            "labels": { "nodes": [] }
-        })]);
+        // find_issue_id response (lightweight: only id), find_state_id, issueUpdate
+        let issue_data = serde_json::json!({
+            "issues": { "nodes": [{ "id": "uuid-42" }] }
+        });
         let state_data = serde_json::json!({
             "workflowStates": { "nodes": [
                 { "id": "state-1", "name": "In Progress" },
@@ -982,10 +1013,13 @@ mod tests {
         });
         let client = MockLinearClient::new(vec![Ok(data)]);
         let teams = list_teams(&client).unwrap();
-        assert_eq!(teams, vec![
-            ("ENG".to_string(), "Engineering".to_string()),
-            ("DES".to_string(), "Design".to_string()),
-        ]);
+        assert_eq!(
+            teams,
+            vec![
+                ("ENG".to_string(), "Engineering".to_string()),
+                ("DES".to_string(), "Design".to_string()),
+            ]
+        );
     }
 
     #[test]
