@@ -32,6 +32,10 @@ fn init_temp_repo() -> TempDir {
     run(&["commit", "-m", "init"]);
     run(&["branch", "-M", "main"]);
 
+    // Add self as origin so `git fetch origin main` works in tests
+    let path_str = path.to_str().unwrap();
+    run(&["remote", "add", "origin", path_str]);
+
     dir
 }
 

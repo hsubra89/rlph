@@ -95,27 +95,46 @@ impl WorktreeManager {
             ))
         })?;
 
-        // Fetch latest base branch from origin (best-effort)
-        let _ = self.git(&["fetch", "origin", &self.base_branch]);
-
-        // Determine start point: prefer origin/<base>, fall back to local <base>
-        let origin_ref = format!("origin/{}", self.base_branch);
-        let start_point = if self.git(&["rev-parse", "--verify", &origin_ref]).is_ok() {
-            origin_ref.as_str()
-        } else if self
-            .git(&["rev-parse", "--verify", &self.base_branch])
-            .is_ok()
+        // Fetch latest base branch from origin (mandatory, with retries)
         {
-            self.base_branch.as_str()
-        } else {
-            return Err(Error::Worktree(format!(
-                "base branch '{}' not found locally or on origin",
-                self.base_branch
-            )));
-        };
+            let max_attempts = 3;
+            let mut last_err = String::new();
+            let mut fetched = false;
+            for attempt in 1..=max_attempts {
+                match self.git(&["fetch", "origin", &self.base_branch]) {
+                    Ok(_) => {
+                        fetched = true;
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(
+                            attempt,
+                            max_attempts,
+                            error = %e.trim(),
+                            "git fetch origin {} failed",
+                            self.base_branch
+                        );
+                        last_err = e;
+                        if attempt < max_attempts {
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                        }
+                    }
+                }
+            }
+            if !fetched {
+                return Err(Error::Worktree(format!(
+                    "failed to fetch origin/{} after {max_attempts} attempts: {}",
+                    self.base_branch,
+                    last_err.trim()
+                )));
+            }
+        }
+
+        // Start point is always origin/<base> since fetch above succeeded
+        let start_point = format!("origin/{}", self.base_branch);
 
         // Try creating with a new branch from main
-        let create_result = match self.git_worktree_add(&path, &branch, true, Some(start_point)) {
+        let create_result = match self.git_worktree_add(&path, &branch, true, Some(&start_point)) {
             Ok(()) => Ok(()),
             Err(e) => {
                 // Branch might already exist — try checking out existing branch
@@ -131,11 +150,24 @@ impl WorktreeManager {
 
         // Canonicalize to resolve symlinks (e.g. /var -> /private/var on macOS)
         let canonical_path = path.canonicalize().unwrap_or(path);
+
+        // Log resolved commit SHA (uses Command directly because self.git() runs in repo_root)
+        let commit_sha = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&canonical_path)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
         info!(
             issue = issue_number,
             path = %canonical_path.display(),
             branch = %branch,
-            "created worktree"
+            commit = %commit_sha,
+            "created worktree from origin/{}",
+            self.base_branch
         );
         Ok(WorktreeInfo {
             path: canonical_path,
