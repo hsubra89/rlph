@@ -886,6 +886,7 @@ mod tests {
             agent_timeout: Some(600),
             max_review_rounds: 3,
             agent_timeout_retries: 2,
+            agent_effort: None,
             linear: None,
         };
 
@@ -917,6 +918,7 @@ mod tests {
             agent_timeout: Some(600),
             max_review_rounds: 3,
             agent_timeout_retries: 2,
+            agent_effort: None,
             linear: None,
         };
 
