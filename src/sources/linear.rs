@@ -345,19 +345,19 @@ impl TaskSource for LinearSource {
     }
 
     fn mark_in_progress(&self, task_id: &str) -> Result<()> {
-        self.update_issue_state(task_id, &self.in_progress_state.clone())?;
+        self.update_issue_state(task_id, &self.in_progress_state)?;
         debug!(task_id, "marked in-progress on Linear");
         Ok(())
     }
 
     fn mark_in_review(&self, task_id: &str) -> Result<()> {
-        self.update_issue_state(task_id, &self.in_review_state.clone())?;
+        self.update_issue_state(task_id, &self.in_review_state)?;
         debug!(task_id, "marked in-review on Linear");
         Ok(())
     }
 
     fn mark_done(&self, task_id: &str) -> Result<()> {
-        self.update_issue_state(task_id, &self.done_state.clone())?;
+        self.update_issue_state(task_id, &self.done_state)?;
         debug!(task_id, "marked done on Linear");
         Ok(())
     }
