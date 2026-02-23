@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::{BufRead, Write};
 use std::thread;
 use std::time::Duration;
 
@@ -11,8 +12,38 @@ use crate::error::{Error, Result};
 use super::{Priority, Task, TaskSource};
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
+const LINEAR_CLI_CREDENTIALS: &str = ".config/linear/credentials.toml";
 const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 500;
+
+/// Resolve the Linear API key: env var first, then Linear CLI credentials file.
+fn resolve_api_key(api_key_env: &str) -> Result<String> {
+    if let Ok(key) = std::env::var(api_key_env) {
+        return Ok(key);
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let creds_path = std::path::Path::new(&home).join(LINEAR_CLI_CREDENTIALS);
+        if let Ok(contents) = std::fs::read_to_string(&creds_path) {
+            if let Ok(table) = contents.parse::<toml::Table>() {
+                if let Some(default_profile) = table.get("default").and_then(|v| v.as_str()) {
+                    if let Some(token) = table.get(default_profile).and_then(|v| v.as_str()) {
+                        debug!(
+                            profile = default_profile,
+                            "using Linear API key from CLI credentials"
+                        );
+                        return Ok(token.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Err(Error::TaskSource(format!(
+        "Linear API key not found in ${} or ~/.config/linear/credentials.toml",
+        api_key_env
+    )))
+}
 
 // ---------------------------------------------------------------------------
 // Client abstraction (for testability)
@@ -141,12 +172,7 @@ impl LinearSource {
             )
         })?;
 
-        let api_key = std::env::var(&linear.api_key_env).map_err(|_| {
-            Error::TaskSource(format!(
-                "Linear API key not found in environment variable: {}",
-                linear.api_key_env
-            ))
-        })?;
+        let api_key = resolve_api_key(&linear.api_key_env)?;
 
         Ok(Self {
             label: config.label.clone(),
@@ -433,25 +459,20 @@ pub fn init_label(config: &Config) -> Result<()> {
         Error::ConfigValidation("[linear] config section required for init".to_string())
     })?;
 
-    let api_key = std::env::var(&linear.api_key_env).map_err(|_| {
-        Error::TaskSource(format!(
-            "Linear API key not found in environment variable: {}",
-            linear.api_key_env
-        ))
-    })?;
+    let api_key = resolve_api_key(&linear.api_key_env)?;
 
     let client = DefaultLinearClient {
         api_key: api_key.to_string(),
     };
-    init_label_with_client(config, &linear.team, &client)
+    init_label_with_client(&config.label, &linear.team, &client)
 }
 
 fn init_label_with_client(
-    config: &Config,
+    label: &str,
     team_key: &str,
     client: &dyn LinearClient,
 ) -> Result<()> {
-    let label_name = &config.label;
+    let label_name = label;
 
     // Check if label already exists
     let query = r#"
@@ -526,6 +547,140 @@ fn init_label_with_client(
     )?;
 
     info!("Created label '{}' in team '{}'", label_name, team_key);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// rlph init — interactive team discovery + label bootstrapping
+// ---------------------------------------------------------------------------
+
+/// Interactive init: discover teams, prompt user to pick one, create label, write config.
+pub fn init_interactive(label: &str) -> Result<()> {
+    let api_key = resolve_api_key("LINEAR_API_KEY")?;
+    let client = DefaultLinearClient {
+        api_key: api_key.to_string(),
+    };
+
+    let teams = list_teams(&client)?;
+    if teams.is_empty() {
+        return Err(Error::TaskSource(
+            "no teams found for your Linear account".to_string(),
+        ));
+    }
+
+    let team_key = if teams.len() == 1 {
+        eprintln!("Found one team: {} ({})", teams[0].1, teams[0].0);
+        teams[0].0.clone()
+    } else {
+        prompt_team_selection(&teams, &mut std::io::stdin().lock(), &mut std::io::stderr())?
+    };
+
+    init_label_with_client(label, &team_key, &client)?;
+
+    let config_dir = std::path::Path::new(".rlph");
+    write_linear_config(&team_key, config_dir)?;
+
+    eprintln!("Wrote [linear] config to .rlph/config.toml");
+    Ok(())
+}
+
+fn list_teams(client: &dyn LinearClient) -> Result<Vec<(String, String)>> {
+    let query = r#"
+        query { viewer { teams { nodes { key name } } } }
+    "#;
+
+    let data = client.graphql(query, serde_json::json!({}))?;
+
+    #[derive(Deserialize)]
+    struct TeamInfoNode {
+        key: String,
+        name: String,
+    }
+    #[derive(Deserialize)]
+    struct TeamInfoConnection {
+        nodes: Vec<TeamInfoNode>,
+    }
+    #[derive(Deserialize)]
+    struct Viewer {
+        teams: TeamInfoConnection,
+    }
+
+    let viewer: Viewer = serde_json::from_value(data.get("viewer").cloned().unwrap_or_default())
+        .map_err(|e| Error::TaskSource(format!("failed to parse teams: {e}")))?;
+
+    Ok(viewer
+        .teams
+        .nodes
+        .into_iter()
+        .map(|t| (t.key, t.name))
+        .collect())
+}
+
+fn prompt_team_selection(
+    teams: &[(String, String)],
+    stdin: &mut dyn BufRead,
+    stderr: &mut dyn Write,
+) -> Result<String> {
+    writeln!(stderr, "Select a Linear team:").ok();
+    for (i, (key, name)) in teams.iter().enumerate() {
+        writeln!(stderr, "  {}) {} ({})", i + 1, name, key).ok();
+    }
+    write!(stderr, "Choice [1-{}]: ", teams.len()).ok();
+    stderr.flush().ok();
+
+    let mut line = String::new();
+    stdin
+        .read_line(&mut line)
+        .map_err(|e| Error::TaskSource(format!("failed to read stdin: {e}")))?;
+
+    let choice: usize = line
+        .trim()
+        .parse()
+        .map_err(|_| Error::TaskSource(format!("invalid choice: {}", line.trim())))?;
+
+    if choice < 1 || choice > teams.len() {
+        return Err(Error::TaskSource(format!(
+            "choice out of range: {} (expected 1-{})",
+            choice,
+            teams.len()
+        )));
+    }
+
+    Ok(teams[choice - 1].0.clone())
+}
+
+fn write_linear_config(team_key: &str, dir: &std::path::Path) -> Result<()> {
+    if !dir.exists() {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    let path = dir.join("config.toml");
+    let mut content = if path.exists() {
+        std::fs::read_to_string(&path)?
+    } else {
+        String::new()
+    };
+
+    // Replace existing [linear] section or append
+    if let Some(start) = content.find("[linear]") {
+        // Find the end of this section (next section header or EOF)
+        let rest = &content[start + "[linear]".len()..];
+        let section_end = rest
+            .find("\n[")
+            .map(|pos| start + "[linear]".len() + pos)
+            .unwrap_or(content.len());
+        content.replace_range(start..section_end, &format!("[linear]\nteam = \"{team_key}\""));
+    } else {
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(&format!("[linear]\nteam = \"{team_key}\"\n"));
+    }
+
+    std::fs::write(&path, content)?;
     Ok(())
 }
 
@@ -804,29 +959,7 @@ mod tests {
         });
 
         let client = MockLinearClient::new(vec![Ok(label_data), Ok(team_data), Ok(create_data)]);
-
-        let config = Config {
-            source: "linear".to_string(),
-            runner: "claude".to_string(),
-            submission: "github".to_string(),
-            label: "rlph".to_string(),
-            poll_seconds: 30,
-            worktree_dir: "/tmp".to_string(),
-            base_branch: "main".to_string(),
-            max_iterations: None,
-            dry_run: false,
-            once: true,
-            continuous: false,
-            agent_binary: "claude".to_string(),
-            agent_model: None,
-            agent_timeout: Some(600),
-            max_review_rounds: 3,
-            agent_timeout_retries: 2,
-            agent_effort: None,
-            linear: None,
-        };
-
-        init_label_with_client(&config, "ENG", &client).unwrap();
+        init_label_with_client("rlph", "ENG", &client).unwrap();
     }
 
     #[test]
@@ -836,28 +969,97 @@ mod tests {
         });
 
         let client = MockLinearClient::new(vec![Ok(label_data)]);
+        init_label_with_client("rlph", "ENG", &client).unwrap();
+    }
 
-        let config = Config {
-            source: "linear".to_string(),
-            runner: "claude".to_string(),
-            submission: "github".to_string(),
-            label: "rlph".to_string(),
-            poll_seconds: 30,
-            worktree_dir: "/tmp".to_string(),
-            base_branch: "main".to_string(),
-            max_iterations: None,
-            dry_run: false,
-            once: true,
-            continuous: false,
-            agent_binary: "claude".to_string(),
-            agent_model: None,
-            agent_timeout: Some(600),
-            max_review_rounds: 3,
-            agent_timeout_retries: 2,
-            agent_effort: None,
-            linear: None,
-        };
+    #[test]
+    fn test_list_teams() {
+        let data = serde_json::json!({
+            "viewer": { "teams": { "nodes": [
+                { "key": "ENG", "name": "Engineering" },
+                { "key": "DES", "name": "Design" },
+            ]}}
+        });
+        let client = MockLinearClient::new(vec![Ok(data)]);
+        let teams = list_teams(&client).unwrap();
+        assert_eq!(teams, vec![
+            ("ENG".to_string(), "Engineering".to_string()),
+            ("DES".to_string(), "Design".to_string()),
+        ]);
+    }
 
-        init_label_with_client(&config, "ENG", &client).unwrap();
+    #[test]
+    fn test_prompt_team_selection_valid() {
+        let teams = vec![
+            ("ENG".to_string(), "Engineering".to_string()),
+            ("DES".to_string(), "Design".to_string()),
+        ];
+        let mut input = std::io::Cursor::new(b"2\n");
+        let mut output = Vec::new();
+        let result = prompt_team_selection(&teams, &mut input, &mut output).unwrap();
+        assert_eq!(result, "DES");
+    }
+
+    #[test]
+    fn test_prompt_team_selection_out_of_range() {
+        let teams = vec![("ENG".to_string(), "Engineering".to_string())];
+        let mut input = std::io::Cursor::new(b"5\n");
+        let mut output = Vec::new();
+        let err = prompt_team_selection(&teams, &mut input, &mut output).unwrap_err();
+        assert!(err.to_string().contains("out of range"));
+    }
+
+    #[test]
+    fn test_prompt_team_selection_not_a_number() {
+        let teams = vec![("ENG".to_string(), "Engineering".to_string())];
+        let mut input = std::io::Cursor::new(b"abc\n");
+        let mut output = Vec::new();
+        let err = prompt_team_selection(&teams, &mut input, &mut output).unwrap_err();
+        assert!(err.to_string().contains("invalid choice"));
+    }
+
+    #[test]
+    fn test_write_linear_config_creates_new() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join("cfg");
+
+        write_linear_config("ENG", &cfg_dir).unwrap();
+
+        let content = std::fs::read_to_string(cfg_dir.join("config.toml")).unwrap();
+        assert!(content.contains("[linear]"));
+        assert!(content.contains("team = \"ENG\""));
+    }
+
+    #[test]
+    fn test_write_linear_config_appends_to_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join("cfg");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("config.toml"), "source = \"linear\"\n").unwrap();
+
+        write_linear_config("DES", &cfg_dir).unwrap();
+
+        let content = std::fs::read_to_string(cfg_dir.join("config.toml")).unwrap();
+        assert!(content.contains("source = \"linear\""));
+        assert!(content.contains("[linear]"));
+        assert!(content.contains("team = \"DES\""));
+    }
+
+    #[test]
+    fn test_write_linear_config_replaces_existing_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join("cfg");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            "source = \"linear\"\n\n[linear]\nteam = \"OLD\"\n",
+        )
+        .unwrap();
+
+        write_linear_config("NEW", &cfg_dir).unwrap();
+
+        let content = std::fs::read_to_string(cfg_dir.join("config.toml")).unwrap();
+        assert!(content.contains("team = \"NEW\""));
+        assert!(!content.contains("OLD"));
     }
 }

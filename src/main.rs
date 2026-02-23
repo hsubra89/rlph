@@ -31,6 +31,21 @@ async fn main() {
 
     info!("rlph starting");
 
+    // Handle init before loading full config (init may need to create the config)
+    if let Some(CliCommand::Init) = cli.command {
+        let source = cli.source.as_deref().unwrap_or("github");
+        let label = cli.label.as_deref().unwrap_or("rlph");
+        if source == "linear" {
+            if let Err(e) = rlph::sources::linear::init_interactive(label) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        } else {
+            info!("init: nothing to do for source '{source}'");
+        }
+        return;
+    }
+
     let config = match Config::load(&cli) {
         Ok(c) => c,
         Err(e) => {
@@ -40,19 +55,6 @@ async fn main() {
     };
 
     info!(?config, "config loaded");
-
-    // Handle subcommands
-    if let Some(CliCommand::Init) = cli.command {
-        if config.source == "linear" {
-            if let Err(e) = rlph::sources::linear::init_label(&config) {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            }
-        } else {
-            info!("init: nothing to do for source '{}'", config.source);
-        }
-        return;
-    }
 
     if !config.once && !config.continuous && config.max_iterations.is_none() {
         eprintln!("error: specify one of --once, --continuous, or --max-iterations");
