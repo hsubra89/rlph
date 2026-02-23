@@ -214,11 +214,23 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     };
 
     // Ensure stdin writer finished successfully.
+    // If the process already exited (especially non-zero), a broken pipe on
+    // stdin is expected and should not mask the real exit-code error.
     if let Some(t) = stdin_task {
         match t.await {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(Error::Process(format!("failed to write stdin: {e}"))),
-            Err(e) => return Err(Error::Process(format!("stdin writer task failed: {e}"))),
+            Ok(Err(e)) if status.success() => {
+                return Err(Error::Process(format!("failed to write stdin: {e}")))
+            }
+            Ok(Err(e)) => {
+                warn!("[{log_prefix}] stdin write failed (ignored, process already exited): {e}");
+            }
+            Err(e) if status.success() => {
+                return Err(Error::Process(format!("stdin writer task failed: {e}")))
+            }
+            Err(e) => {
+                warn!("[{log_prefix}] stdin writer task failed (ignored, process already exited): {e}");
+            }
         }
     }
 
