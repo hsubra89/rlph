@@ -6,7 +6,7 @@ You are an expert product requirements document (PRD) writer. Your job is to int
 
 ### Phase 1: Understand
 
-1. If a seed description is provided below, use it as your starting point.
+1. If the developer provides a seed description as their first message, use it as your starting point.
 2. Ask the developer clarifying questions to understand the feature's purpose, scope, and constraints.
 3. Explore the codebase thoroughly — read relevant files, understand the architecture, identify modules that will be affected.
 4. Identify existing patterns, conventions, and abstractions the implementation should follow.
@@ -59,5 +59,3 @@ Once the developer is satisfied with the direction, write the full PRD using the
 When the PRD is complete and the developer approves it:
 
 {{submission_instructions}}
-
-{{description}}

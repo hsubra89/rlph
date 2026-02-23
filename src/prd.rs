@@ -33,6 +33,7 @@ pub fn submission_instructions(source: &str, label: &str) -> String {
 /// Build the agent command for an interactive PRD session.
 ///
 /// Returns `(binary, args)` suitable for spawning with inherited stdio.
+/// Dispatches on `config.runner` to produce the correct CLI flags.
 pub fn build_prd_command(
     config: &Config,
     rendered_prompt: &str,
@@ -40,17 +41,40 @@ pub fn build_prd_command(
 ) -> (String, Vec<String>) {
     let mut args = Vec::new();
 
-    args.push("--append-system-prompt".to_string());
-    args.push(rendered_prompt.to_string());
+    match config.runner.as_str() {
+        "codex" => {
+            // Codex interactive mode: no subcommand (not `exec`).
+            // Codex lacks --append-system-prompt, so we combine the system
+            // prompt and seed description into a single initial message.
+            if let Some(ref model) = config.agent_model {
+                args.push("--model".to_string());
+                args.push(model.clone());
+            }
 
-    if let Some(ref model) = config.agent_model {
-        args.push("--model".to_string());
-        args.push(model.clone());
-    }
+            let combined = match description {
+                Some(desc) if !desc.is_empty() => {
+                    format!("{rendered_prompt}\n\n## Seed Description\n\n{desc}")
+                }
+                _ => rendered_prompt.to_string(),
+            };
+            args.push("-p".to_string());
+            args.push(combined);
+        }
+        _ => {
+            // Claude (default): separate system prompt and user message.
+            args.push("--append-system-prompt".to_string());
+            args.push(rendered_prompt.to_string());
 
-    if let Some(desc) = description {
-        args.push("-p".to_string());
-        args.push(desc.to_string());
+            if let Some(ref model) = config.agent_model {
+                args.push("--model".to_string());
+                args.push(model.clone());
+            }
+
+            if let Some(desc) = description {
+                args.push("-p".to_string());
+                args.push(desc.to_string());
+            }
+        }
     }
 
     (config.agent_binary.clone(), args)
@@ -73,11 +97,6 @@ pub async fn run_prd(config: &Config, description: Option<&str>) -> Result<i32> 
         "submission_instructions".to_string(),
         submission_instructions(&config.source, &config.label),
     );
-    let description_section = match description {
-        Some(desc) if !desc.is_empty() => format!("## Seed Description\n\n{desc}"),
-        _ => String::new(),
-    };
-    vars.insert("description".to_string(), description_section);
 
     let rendered = engine.render_phase("prd", &vars)?;
 
@@ -142,8 +161,10 @@ mod tests {
         assert!(instr.contains("configured task source"));
     }
 
+    // --- Claude runner tests ---
+
     #[test]
-    fn test_build_prd_command_basic() {
+    fn test_build_prd_command_claude_basic() {
         let config = test_config("claude", "github", None);
         let (cmd, args) = build_prd_command(&config, "rendered prompt", None);
         assert_eq!(cmd, "claude");
@@ -153,22 +174,25 @@ mod tests {
     }
 
     #[test]
-    fn test_build_prd_command_with_description() {
+    fn test_build_prd_command_claude_with_description() {
         let config = test_config("claude", "github", None);
         let (_, args) = build_prd_command(&config, "prompt", Some("add auth"));
         assert!(args.contains(&"-p".to_string()));
         assert!(args.contains(&"add auth".to_string()));
+        // Description must NOT be baked into the system prompt arg
+        let sys_idx = args.iter().position(|a| a == "--append-system-prompt").unwrap();
+        assert!(!args[sys_idx + 1].contains("add auth"));
     }
 
     #[test]
-    fn test_build_prd_command_without_description() {
+    fn test_build_prd_command_claude_without_description() {
         let config = test_config("claude", "github", None);
         let (_, args) = build_prd_command(&config, "prompt", None);
         assert!(!args.contains(&"-p".to_string()));
     }
 
     #[test]
-    fn test_build_prd_command_with_model() {
+    fn test_build_prd_command_claude_with_model() {
         let config = test_config("claude", "github", Some("opus"));
         let (_, args) = build_prd_command(&config, "prompt", None);
         assert!(args.contains(&"--model".to_string()));
@@ -176,10 +200,42 @@ mod tests {
     }
 
     #[test]
-    fn test_build_prd_command_without_model() {
+    fn test_build_prd_command_claude_without_model() {
         let config = test_config_no_model("claude", "github");
         let (_, args) = build_prd_command(&config, "prompt", None);
         assert!(!args.contains(&"--model".to_string()));
+    }
+
+    // --- Codex runner tests ---
+
+    #[test]
+    fn test_build_prd_command_codex_basic() {
+        let config = test_config_codex("codex", "github", None);
+        let (cmd, args) = build_prd_command(&config, "rendered prompt", None);
+        assert_eq!(cmd, "codex");
+        // Codex should NOT use --append-system-prompt
+        assert!(!args.contains(&"--append-system-prompt".to_string()));
+        // System prompt passed via -p instead
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"rendered prompt".to_string()));
+    }
+
+    #[test]
+    fn test_build_prd_command_codex_with_description() {
+        let config = test_config_codex("codex", "github", None);
+        let (_, args) = build_prd_command(&config, "prompt", Some("add auth"));
+        // Codex combines system prompt + description into one -p arg
+        let combined = args.iter().find(|a| a.contains("prompt") && a.contains("add auth"));
+        assert!(combined.is_some(), "expected combined prompt+description");
+        assert!(!args.contains(&"--append-system-prompt".to_string()));
+    }
+
+    #[test]
+    fn test_build_prd_command_codex_with_model() {
+        let config = test_config_codex("codex", "github", Some("gpt-5.3-codex"));
+        let (_, args) = build_prd_command(&config, "prompt", None);
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"gpt-5.3-codex".to_string()));
     }
 
     fn test_config(binary: &str, source: &str, model: Option<&str>) -> Config {
@@ -209,6 +265,15 @@ mod tests {
         Config {
             agent_model: None,
             ..test_config(binary, source, None)
+        }
+    }
+
+    fn test_config_codex(binary: &str, source: &str, model: Option<&str>) -> Config {
+        Config {
+            runner: "codex".to_string(),
+            agent_binary: binary.to_string(),
+            agent_model: model.map(str::to_string),
+            ..test_config("codex", source, model)
         }
     }
 }

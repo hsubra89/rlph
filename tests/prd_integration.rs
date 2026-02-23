@@ -27,6 +27,15 @@ fn test_config(source: &str) -> Config {
     }
 }
 
+fn test_config_codex(source: &str) -> Config {
+    Config {
+        runner: "codex".to_string(),
+        agent_binary: "codex".to_string(),
+        agent_model: Some("gpt-5.3-codex".to_string()),
+        ..test_config(source)
+    }
+}
+
 #[test]
 fn test_prd_command_includes_append_system_prompt() {
     let config = test_config("github");
@@ -67,11 +76,9 @@ fn test_prd_template_renders_with_github_source() {
         "submission_instructions".to_string(),
         submission_instructions("github", "rlph"),
     );
-    vars.insert("description".to_string(), "add auth support".to_string());
 
     let rendered = engine.render_phase("prd", &vars).unwrap();
     assert!(rendered.contains("gh issue create"));
-    assert!(rendered.contains("add auth support"));
     assert!(!rendered.contains("{{"));
 }
 
@@ -83,11 +90,40 @@ fn test_prd_template_renders_with_linear_source() {
         "submission_instructions".to_string(),
         submission_instructions("linear", "rlph"),
     );
-    vars.insert("description".to_string(), String::new());
 
     let rendered = engine.render_phase("prd", &vars).unwrap();
     assert!(rendered.contains("Linear"));
     assert!(!rendered.contains("{{"));
+}
+
+// --- Codex runner command tests ---
+
+#[test]
+fn test_prd_command_codex_no_append_system_prompt() {
+    let config = test_config_codex("github");
+    let (cmd, args) = build_prd_command(&config, "the rendered prompt", None);
+    assert_eq!(cmd, "codex");
+    assert!(!args.contains(&"--append-system-prompt".to_string()));
+    // System prompt passed via -p instead
+    assert!(args.contains(&"-p".to_string()));
+}
+
+#[test]
+fn test_prd_command_codex_combines_prompt_and_description() {
+    let config = test_config_codex("github");
+    let (_, args) = build_prd_command(&config, "sys prompt", Some("add auth"));
+    let combined = args
+        .iter()
+        .find(|a| a.contains("sys prompt") && a.contains("add auth"));
+    assert!(combined.is_some(), "codex should combine prompt+description into one -p arg");
+}
+
+#[test]
+fn test_prd_command_codex_includes_model() {
+    let config = test_config_codex("github");
+    let (_, args) = build_prd_command(&config, "prompt", None);
+    assert!(args.contains(&"--model".to_string()));
+    assert!(args.contains(&"gpt-5.3-codex".to_string()));
 }
 
 /// End-to-end: mock agent binary verifies it receives the expected flags.

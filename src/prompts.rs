@@ -19,7 +19,6 @@ const KNOWN_VARIABLES: &[&str] = &[
     "worktree_path",
     "issues_json",
     "submission_instructions",
-    "description",
 ];
 
 fn default_template(phase: &str) -> Option<&'static str> {
@@ -275,18 +274,21 @@ mod tests {
         let template = engine.load_template("prd").unwrap();
         assert!(template.contains("PRD Writing Agent"));
         assert!(template.contains("{{submission_instructions}}"));
-        assert!(template.contains("{{description}}"));
     }
 
     #[test]
     fn test_prd_override_takes_precedence() {
         let dir = TempDir::new().unwrap();
         let override_path = dir.path().join("prd.md");
-        fs::write(&override_path, "Custom prd: {{description}}").unwrap();
+        fs::write(
+            &override_path,
+            "Custom prd: {{submission_instructions}}",
+        )
+        .unwrap();
 
         let engine = PromptEngine::new(Some(dir.path().to_string_lossy().to_string()));
         let template = engine.load_template("prd").unwrap();
-        assert_eq!(template, "Custom prd: {{description}}");
+        assert_eq!(template, "Custom prd: {{submission_instructions}}");
     }
 
     #[test]
@@ -297,27 +299,9 @@ mod tests {
             "submission_instructions".to_string(),
             "Create a GitHub issue using `gh issue create`".to_string(),
         );
-        vars.insert("description".to_string(), "add authentication".to_string());
 
         let result = engine.render_phase("prd", &vars).unwrap();
         assert!(result.contains("Create a GitHub issue using `gh issue create`"));
-        assert!(result.contains("add authentication"));
         assert!(!result.contains("{{submission_instructions}}"));
-        assert!(!result.contains("{{description}}"));
-    }
-
-    #[test]
-    fn test_render_prd_with_empty_description() {
-        let engine = PromptEngine::new(None);
-        let mut vars = HashMap::new();
-        vars.insert(
-            "submission_instructions".to_string(),
-            "Submit as GitHub issue".to_string(),
-        );
-        vars.insert("description".to_string(), String::new());
-
-        let result = engine.render_phase("prd", &vars).unwrap();
-        assert!(result.contains("Submit as GitHub issue"));
-        assert!(!result.contains("{{description}}"));
     }
 }
