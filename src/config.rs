@@ -7,6 +7,27 @@ use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct LinearConfigFile {
+    pub team: Option<String>,
+    pub project: Option<String>,
+    pub api_key_env: Option<String>,
+    pub in_progress_state: Option<String>,
+    pub in_review_state: Option<String>,
+    pub done_state: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinearConfig {
+    pub team: String,
+    pub project: Option<String>,
+    pub api_key_env: String,
+    pub in_progress_state: String,
+    pub in_review_state: String,
+    pub done_state: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigFile {
     pub source: Option<String>,
     pub runner: Option<String>,
@@ -24,6 +45,7 @@ pub struct ConfigFile {
     pub agent_effort: Option<String>,
     pub max_review_rounds: Option<u32>,
     pub agent_timeout_retries: Option<u32>,
+    pub linear: Option<LinearConfigFile>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +67,7 @@ pub struct Config {
     pub agent_effort: Option<String>,
     pub max_review_rounds: u32,
     pub agent_timeout_retries: u32,
+    pub linear: Option<LinearConfig>,
 }
 
 const DEFAULT_CONFIG_FILE: &str = ".rlph/config.toml";
@@ -104,6 +127,21 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         _ => None,
     };
 
+    let linear = file.linear.map(|lc| LinearConfig {
+        team: lc.team.unwrap_or_default(),
+        project: lc.project,
+        api_key_env: lc
+            .api_key_env
+            .unwrap_or_else(|| "LINEAR_API_KEY".to_string()),
+        in_progress_state: lc
+            .in_progress_state
+            .unwrap_or_else(|| "In Progress".to_string()),
+        in_review_state: lc
+            .in_review_state
+            .unwrap_or_else(|| "In Review".to_string()),
+        done_state: lc.done_state.unwrap_or_else(|| "Done".to_string()),
+    });
+
     let config = Config {
         source: cli
             .source
@@ -160,6 +198,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .agent_timeout_retries
             .or(file.agent_timeout_retries)
             .unwrap_or(2),
+        linear,
     };
     validate(&config)?;
     Ok(config)
@@ -194,6 +233,21 @@ fn validate(config: &Config) -> Result<()> {
         return Err(Error::ConfigValidation(
             "poll_seconds must be > 0".to_string(),
         ));
+    }
+    if config.source == "linear" {
+        match &config.linear {
+            Some(lc) if lc.team.is_empty() => {
+                return Err(Error::ConfigValidation(
+                    "linear.team is required when source = \"linear\"".to_string(),
+                ));
+            }
+            None => {
+                return Err(Error::ConfigValidation(
+                    "[linear] config section required when source = \"linear\"".to_string(),
+                ));
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -289,6 +343,10 @@ worktree_dir = "/tmp/wt"
             runner: Some("claude".to_string()),
             label: Some("file-label".to_string()),
             poll_seconds: Some(120),
+            linear: Some(LinearConfigFile {
+                team: Some("ENG".to_string()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let cli = Cli::parse_from([

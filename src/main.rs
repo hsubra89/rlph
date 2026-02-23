@@ -5,12 +5,14 @@ use clap::Parser;
 use tokio::sync::watch;
 use tracing::info;
 
-use rlph::cli::Cli;
+use rlph::cli::{Cli, CliCommand};
 use rlph::config::Config;
 use rlph::orchestrator::Orchestrator;
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AnyRunner, ClaudeRunner, CodexRunner};
+use rlph::sources::AnySource;
 use rlph::sources::github::GitHubSource;
+use rlph::sources::linear::LinearSource;
 use rlph::state::StateManager;
 use rlph::submission::GitHubSubmission;
 use rlph::worktree::WorktreeManager;
@@ -39,6 +41,19 @@ async fn main() {
 
     info!(?config, "config loaded");
 
+    // Handle subcommands
+    if let Some(CliCommand::Init) = cli.command {
+        if config.source == "linear" {
+            if let Err(e) = rlph::sources::linear::init_label(&config) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        } else {
+            info!("init: nothing to do for source '{}'", config.source);
+        }
+        return;
+    }
+
     if !config.once && !config.continuous && config.max_iterations.is_none() {
         eprintln!("error: specify one of --once, --continuous, or --max-iterations");
         std::process::exit(1);
@@ -46,7 +61,16 @@ async fn main() {
 
     let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-    let source = GitHubSource::new(&config);
+    let source: AnySource = match config.source.as_str() {
+        "linear" => match LinearSource::new(&config) {
+            Ok(s) => AnySource::Linear(s),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        },
+        _ => AnySource::GitHub(GitHubSource::new(&config)),
+    };
     let timeout = config.agent_timeout.map(Duration::from_secs);
     let runner = match config.runner.as_str() {
         "codex" => AnyRunner::Codex(CodexRunner::new(

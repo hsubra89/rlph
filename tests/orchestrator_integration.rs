@@ -418,6 +418,7 @@ fn make_config(dry_run: bool) -> Config {
         agent_effort: None,
         max_review_rounds: 3,
         agent_timeout_retries: 2,
+        linear: None,
     }
 }
 
