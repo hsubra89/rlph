@@ -318,6 +318,26 @@ async fn test_stdin_write_error_propagated() {
 
 #[tokio::test]
 #[serial]
+async fn test_stdin_broken_pipe_ignored_for_nonzero_exit() {
+    // Child closes stdin immediately without reading, then exits non-zero.
+    // Broken pipe should not mask the non-zero exit status.
+    let large_data = "x".repeat(256 * 1024);
+    let config = ProcessConfig {
+        command: "bash".to_string(),
+        args: vec!["-c".to_string(), "exec 0<&-; exit 7".to_string()],
+        working_dir: PathBuf::from("."),
+        timeout: Some(Duration::from_secs(5)),
+        log_prefix: "test:stdin-nonzero".to_string(),
+        env: vec![],
+        stdin_data: Some(large_data),
+    };
+    let output = spawn_and_stream(config).await.unwrap();
+    assert!(!output.success());
+    assert_eq!(output.exit_code, 7);
+}
+
+#[tokio::test]
+#[serial]
 async fn test_stdin_blocked_still_times_out() {
     // Child never reads stdin. With large data the write would block forever
     // if done synchronously. The timeout must still fire.

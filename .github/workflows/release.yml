@@ -37,6 +37,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error title=Invalid dispatch ref::Manual releases must run from main (got ${GITHUB_REF})"
+            exit 1
+          fi
+
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             release_tag="${INPUT_TAG}"
           else
