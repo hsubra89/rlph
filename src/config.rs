@@ -341,25 +341,22 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         })
         .collect();
 
-    let resolve_step = |step: Option<ReviewStepConfigFile>,
-                        default_prompt: &str|
-     -> ReviewStepConfig {
-        let s = step.unwrap_or_default();
-        let effective_runner = s.runner.unwrap_or_else(|| global_runner.clone());
-        let runner_binary = runner_default_binary(&effective_runner);
-        let runner_model = runner_default_model(&effective_runner);
-        let runner_effort = runner_default_effort(&effective_runner);
-        ReviewStepConfig {
-            prompt: s
-                .prompt
-                .unwrap_or_else(|| default_prompt.to_string()),
-            agent_binary: s.agent_binary.unwrap_or_else(|| runner_binary.to_string()),
-            agent_model: s.agent_model.or_else(|| runner_model.map(str::to_string)),
-            agent_effort: s.agent_effort.or_else(|| runner_effort.map(str::to_string)),
-            agent_timeout: s.agent_timeout.or(global_timeout),
-            runner: effective_runner,
-        }
-    };
+    let resolve_step =
+        |step: Option<ReviewStepConfigFile>, default_prompt: &str| -> ReviewStepConfig {
+            let s = step.unwrap_or_default();
+            let effective_runner = s.runner.unwrap_or_else(|| global_runner.clone());
+            let runner_binary = runner_default_binary(&effective_runner);
+            let runner_model = runner_default_model(&effective_runner);
+            let runner_effort = runner_default_effort(&effective_runner);
+            ReviewStepConfig {
+                prompt: s.prompt.unwrap_or_else(|| default_prompt.to_string()),
+                agent_binary: s.agent_binary.unwrap_or_else(|| runner_binary.to_string()),
+                agent_model: s.agent_model.or_else(|| runner_model.map(str::to_string)),
+                agent_effort: s.agent_effort.or_else(|| runner_effort.map(str::to_string)),
+                agent_timeout: s.agent_timeout.or(global_timeout),
+                runner: effective_runner,
+            }
+        };
 
     let review_aggregate = resolve_step(file.review_aggregate, "review-aggregate");
     let review_fix = resolve_step(file.review_fix, "review-fix");
@@ -452,6 +449,14 @@ fn validate(config: &Config) -> Result<()> {
             "at least one review phase is required".to_string(),
         ));
     }
+    fn validate_runner(runner: &str, context: &str) -> Result<()> {
+        match runner {
+            "claude" | "codex" => Ok(()),
+            other => Err(Error::ConfigValidation(format!(
+                "unknown runner '{other}' in {context}"
+            ))),
+        }
+    }
     {
         let mut seen_names = std::collections::HashSet::new();
         for phase in &config.review_phases {
@@ -472,23 +477,7 @@ fn validate(config: &Config) -> Result<()> {
                     phase.name
                 )));
             }
-            match phase.runner.as_str() {
-                "claude" | "codex" => {}
-                other => {
-                    return Err(Error::ConfigValidation(format!(
-                        "unknown runner '{}' in review phase '{}'",
-                        other, phase.name
-                    )));
-                }
-            }
-        }
-    }
-    fn validate_runner(runner: &str, context: &str) -> Result<()> {
-        match runner {
-            "claude" | "codex" => Ok(()),
-            other => Err(Error::ConfigValidation(format!(
-                "unknown runner '{other}' in {context}"
-            ))),
+            validate_runner(&phase.runner, &format!("review phase '{}'", phase.name))?;
         }
     }
     validate_runner(&config.review_aggregate.runner, "review_aggregate")?;

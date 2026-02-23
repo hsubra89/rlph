@@ -323,11 +323,7 @@ mod tests {
     fn test_prd_override_takes_precedence() {
         let dir = TempDir::new().unwrap();
         let override_path = dir.path().join("prd.md");
-        fs::write(
-            &override_path,
-            "Custom prd: {{submission_instructions}}",
-        )
-        .unwrap();
+        fs::write(&override_path, "Custom prd: {{submission_instructions}}").unwrap();
 
         let engine = PromptEngine::new(Some(dir.path().to_string_lossy().to_string()));
         let template = engine.load_template("prd").unwrap();

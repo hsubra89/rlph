@@ -381,36 +381,32 @@ struct ApprovedReviewFactory;
 
 impl ReviewRunnerFactory for ApprovedReviewFactory {
     fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
-        AnyRunner::Callback(CallbackRunner::new(Arc::new(
-            |_phase, _prompt, _dir| {
-                Box::pin(async {
-                    Ok(RunResult {
-                        exit_code: 0,
-                        stdout: "NO_ISSUES_FOUND".into(),
-                        stderr: String::new(),
-                    })
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async {
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "NO_ISSUES_FOUND".into(),
+                    stderr: String::new(),
                 })
-            },
-        )))
+            })
+        })))
     }
 
     fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
-        AnyRunner::Callback(CallbackRunner::new(Arc::new(
-            |phase, _prompt, _dir| {
-                Box::pin(async move {
-                    let stdout = match phase {
-                        Phase::ReviewAggregate => "All good.\n\nREVIEW_APPROVED".to_string(),
-                        Phase::ReviewFix => "FIX_COMPLETE: done".to_string(),
-                        _ => String::new(),
-                    };
-                    Ok(RunResult {
-                        exit_code: 0,
-                        stdout,
-                        stderr: String::new(),
-                    })
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
+            Box::pin(async move {
+                let stdout = match phase {
+                    Phase::ReviewAggregate => "All good.\n\nREVIEW_APPROVED".to_string(),
+                    Phase::ReviewFix => "FIX_COMPLETE: done".to_string(),
+                    _ => String::new(),
+                };
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout,
+                    stderr: String::new(),
                 })
-            },
-        )))
+            })
+        })))
     }
 }
 
@@ -419,38 +415,34 @@ struct NeverApproveReviewFactory;
 
 impl ReviewRunnerFactory for NeverApproveReviewFactory {
     fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
-        AnyRunner::Callback(CallbackRunner::new(Arc::new(
-            |_phase, _prompt, _dir| {
-                Box::pin(async {
-                    Ok(RunResult {
-                        exit_code: 0,
-                        stdout: "WARNING: issues found".into(),
-                        stderr: String::new(),
-                    })
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async {
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "WARNING: issues found".into(),
+                    stderr: String::new(),
                 })
-            },
-        )))
+            })
+        })))
     }
 
     fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
-        AnyRunner::Callback(CallbackRunner::new(Arc::new(
-            |phase, _prompt, _dir| {
-                Box::pin(async move {
-                    let stdout = match phase {
-                        Phase::ReviewAggregate => {
-                            "Issues found\nREVIEW_NEEDS_FIX: fix everything".to_string()
-                        }
-                        Phase::ReviewFix => "FIX_COMPLETE: attempted fixes".to_string(),
-                        _ => String::new(),
-                    };
-                    Ok(RunResult {
-                        exit_code: 0,
-                        stdout,
-                        stderr: String::new(),
-                    })
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
+            Box::pin(async move {
+                let stdout = match phase {
+                    Phase::ReviewAggregate => {
+                        "Issues found\nREVIEW_NEEDS_FIX: fix everything".to_string()
+                    }
+                    Phase::ReviewFix => "FIX_COMPLETE: attempted fixes".to_string(),
+                    _ => String::new(),
+                };
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout,
+                    stderr: String::new(),
                 })
-            },
-        )))
+            })
+        })))
     }
 }
 
@@ -459,25 +451,21 @@ struct FailReviewFactory;
 
 impl ReviewRunnerFactory for FailReviewFactory {
     fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
-        AnyRunner::Callback(CallbackRunner::new(Arc::new(
-            |_phase, _prompt, _dir| {
-                Box::pin(async { Err(Error::AgentRunner("mock failure at review".to_string())) })
-            },
-        )))
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async { Err(Error::AgentRunner("mock failure at review".to_string())) })
+        })))
     }
 
     fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
-        AnyRunner::Callback(CallbackRunner::new(Arc::new(
-            |_phase, _prompt, _dir| {
-                Box::pin(async {
-                    Ok(RunResult {
-                        exit_code: 0,
-                        stdout: String::new(),
-                        stderr: String::new(),
-                    })
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async {
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
                 })
-            },
-        )))
+            })
+        })))
     }
 }
 

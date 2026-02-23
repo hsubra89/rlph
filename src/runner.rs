@@ -264,7 +264,11 @@ impl AgentRunner for ClaudeRunner {
 }
 
 /// Type alias for a callback function used in `CallbackRunner`.
-pub type RunnerCallbackFn = dyn Fn(Phase, String, PathBuf) -> Pin<Box<dyn std::future::Future<Output = Result<RunResult>> + Send>>
+pub type RunnerCallbackFn = dyn Fn(
+        Phase,
+        String,
+        PathBuf,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<RunResult>> + Send>>
     + Send
     + Sync;
 
@@ -274,9 +278,7 @@ pub struct CallbackRunner {
 }
 
 impl CallbackRunner {
-    pub fn new(
-        callback: Arc<RunnerCallbackFn>,
-    ) -> Self {
+    pub fn new(callback: Arc<RunnerCallbackFn>) -> Self {
         Self { callback }
     }
 }

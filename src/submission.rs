@@ -34,7 +34,14 @@ impl GitHubSubmission {
     fn find_existing_pr(&self, branch: &str) -> Result<Option<(String, Option<u64>)>> {
         let output = Command::new("gh")
             .args([
-                "pr", "list", "--head", branch, "--json", "url,number", "--limit", "1",
+                "pr",
+                "list",
+                "--head",
+                branch,
+                "--json",
+                "url,number",
+                "--limit",
+                "1",
             ])
             .output()
             .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
@@ -140,9 +147,7 @@ impl SubmissionBackend for GitHubSubmission {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!(
-                "gh pr comment failed: {stderr}"
-            )));
+            return Err(Error::Submission(format!("gh pr comment failed: {stderr}")));
         }
 
         info!(pr_number = pr_number, "commented on PR");

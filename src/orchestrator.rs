@@ -395,17 +395,14 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             info!("[rlph:orchestrator] Review round {round}/{max_reviews}...");
 
             // 11a. Run all review phases in parallel
-            let mut phase_futures = Vec::new();
+            let mut join_set = tokio::task::JoinSet::new();
             for phase_config in &self.config.review_phases {
                 let phase_runner = self
                     .review_factory
                     .create_phase_runner(phase_config, self.config.agent_timeout_retries);
 
                 let mut phase_vars = vars.clone();
-                phase_vars.insert(
-                    "review_phase_name".to_string(),
-                    phase_config.name.clone(),
-                );
+                phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());
 
                 let prompt = self
                     .prompt_engine
@@ -413,7 +410,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 let working_dir = worktree_info.path.clone();
                 let phase_name = phase_config.name.clone();
 
-                phase_futures.push(async move {
+                join_set.spawn(async move {
                     let result = phase_runner
                         .run(Phase::Review, &prompt, &working_dir)
                         .await?;
@@ -425,12 +422,10 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 });
             }
 
-            let phase_results = futures::future::join_all(phase_futures).await;
-
             // Collect results, fail on any error
             let mut review_outputs = Vec::new();
-            for result in phase_results {
-                review_outputs.push(result?);
+            while let Some(result) = join_set.join_next().await {
+                review_outputs.push(result.map_err(|e| Error::AgentRunner(e.to_string()))??);
             }
 
             // 11b. Run aggregation agent
@@ -459,11 +454,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 .prompt_engine
                 .render_phase(&agg_config.prompt, &agg_vars)?;
             let agg_result = agg_runner
-                .run(
-                    Phase::ReviewAggregate,
-                    &agg_prompt,
-                    &worktree_info.path,
-                )
+                .run(Phase::ReviewAggregate, &agg_prompt, &worktree_info.path)
                 .await?;
 
             // 11c. Comment findings on PR
@@ -484,30 +475,38 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             }
 
             // 11e. Extract fix instructions and run fix agent
-            if let Some(fix_instructions) = extract_fix_instructions(&agg_result.stdout) {
-                info!("[rlph:orchestrator] Review needs fix at round {round}, running fix agent...");
-
-                let fix_config = &self.config.review_fix;
-                let fix_runner = self
-                    .review_factory
-                    .create_step_runner(fix_config, self.config.agent_timeout_retries);
-
-                let mut fix_vars = vars.clone();
-                fix_vars.insert("fix_instructions".to_string(), fix_instructions);
-
-                let fix_prompt = self
-                    .prompt_engine
-                    .render_phase(&fix_config.prompt, &fix_vars)?;
-                fix_runner
-                    .run(Phase::ReviewFix, &fix_prompt, &worktree_info.path)
-                    .await?;
-
-                // Push fixes
-                if !self.config.dry_run
-                    && let Err(e) = self.push_branch(worktree_info)
-                {
-                    warn!("[rlph:orchestrator] Failed to push review fixes: {e}");
+            let fix_instructions = match extract_fix_instructions(&agg_result.stdout) {
+                Some(instructions) => instructions,
+                None => {
+                    warn!(
+                        "[rlph:orchestrator] Aggregator produced neither REVIEW_APPROVED nor REVIEW_NEEDS_FIX — retrying"
+                    );
+                    continue;
                 }
+            };
+
+            info!("[rlph:orchestrator] Review needs fix at round {round}, running fix agent...");
+
+            let fix_config = &self.config.review_fix;
+            let fix_runner = self
+                .review_factory
+                .create_step_runner(fix_config, self.config.agent_timeout_retries);
+
+            let mut fix_vars = vars.clone();
+            fix_vars.insert("fix_instructions".to_string(), fix_instructions);
+
+            let fix_prompt = self
+                .prompt_engine
+                .render_phase(&fix_config.prompt, &fix_vars)?;
+            fix_runner
+                .run(Phase::ReviewFix, &fix_prompt, &worktree_info.path)
+                .await?;
+
+            // Push fixes
+            if !self.config.dry_run
+                && let Err(e) = self.push_branch(worktree_info)
+            {
+                warn!("[rlph:orchestrator] Failed to push review fixes: {e}");
             }
         }
 
