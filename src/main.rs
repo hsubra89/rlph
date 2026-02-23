@@ -5,13 +5,15 @@ use clap::Parser;
 use tokio::sync::watch;
 use tracing::info;
 
-use rlph::cli::{Cli, Command};
-use rlph::config::Config;
+use rlph::cli::{Cli, CliCommand};
+use rlph::config::{Config, resolve_init_config};
 use rlph::orchestrator::Orchestrator;
 use rlph::plan;
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AnyRunner, ClaudeRunner, CodexRunner};
+use rlph::sources::AnySource;
 use rlph::sources::github::GitHubSource;
+use rlph::sources::linear::LinearSource;
 use rlph::state::StateManager;
 use rlph::submission::GitHubSubmission;
 use rlph::worktree::WorktreeManager;
@@ -31,7 +33,25 @@ async fn main() {
     info!("rlph starting");
 
     match cli.command {
-        Some(Command::Plan {
+        Some(CliCommand::Init) => {
+            let init_cfg = match resolve_init_config(&cli) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if init_cfg.source == "linear" {
+                if let Err(e) = rlph::sources::linear::init_interactive(&init_cfg.label) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            } else {
+                info!("init: nothing to do for source '{}'", init_cfg.source);
+            }
+            return;
+        }
+        Some(CliCommand::Plan {
             ref description,
             ref runner,
             ref source,
@@ -82,13 +102,9 @@ async fn main() {
 
             std::process::exit(exit_code);
         }
-        None => {
-            run_loop(cli).await;
-        }
+        None => {}
     }
-}
 
-async fn run_loop(cli: Cli) {
     let config = match Config::load(&cli) {
         Ok(c) => c,
         Err(e) => {
@@ -106,7 +122,16 @@ async fn run_loop(cli: Cli) {
 
     let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-    let source = GitHubSource::new(&config);
+    let source: AnySource = match config.source.as_str() {
+        "linear" => match LinearSource::new(&config) {
+            Ok(s) => AnySource::Linear(s),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        },
+        _ => AnySource::GitHub(GitHubSource::new(&config)),
+    };
     let timeout = config.agent_timeout.map(Duration::from_secs);
     let runner = match config.runner.as_str() {
         "codex" => AnyRunner::Codex(CodexRunner::new(

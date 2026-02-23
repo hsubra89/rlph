@@ -7,6 +7,27 @@ use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct LinearConfigFile {
+    pub team: Option<String>,
+    pub project: Option<String>,
+    pub api_key_env: Option<String>,
+    pub in_progress_state: Option<String>,
+    pub in_review_state: Option<String>,
+    pub done_state: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinearConfig {
+    pub team: String,
+    pub project: Option<String>,
+    pub api_key_env: String,
+    pub in_progress_state: String,
+    pub in_review_state: String,
+    pub done_state: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigFile {
     pub source: Option<String>,
     pub runner: Option<String>,
@@ -24,6 +45,7 @@ pub struct ConfigFile {
     pub agent_effort: Option<String>,
     pub max_review_rounds: Option<u32>,
     pub agent_timeout_retries: Option<u32>,
+    pub linear: Option<LinearConfigFile>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +67,13 @@ pub struct Config {
     pub agent_effort: Option<String>,
     pub max_review_rounds: u32,
     pub agent_timeout_retries: u32,
+    pub linear: Option<LinearConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InitConfig {
+    pub source: String,
+    pub label: String,
 }
 
 const DEFAULT_CONFIG_FILE: &str = ".rlph/config.toml";
@@ -55,27 +84,61 @@ impl Config {
     }
 
     pub fn load_from(cli: &Cli, project_dir: &Path) -> Result<Self> {
-        let file_config = match &cli.config {
-            Some(explicit_path) => {
-                let path = Path::new(explicit_path);
-                if !path.exists() {
-                    return Err(Error::ConfigNotFound(path.to_path_buf()));
-                }
-                let content = std::fs::read_to_string(path)?;
-                parse_config(&content)?
-            }
-            None => {
-                let path = project_dir.join(DEFAULT_CONFIG_FILE);
-                if path.exists() {
-                    let content = std::fs::read_to_string(&path)?;
-                    parse_config(&content)?
-                } else {
-                    ConfigFile::default()
-                }
-            }
-        };
-
+        let file_config = load_file_config(cli, project_dir)?;
         merge(file_config, cli)
+    }
+}
+
+pub fn resolve_init_config(cli: &Cli) -> Result<InitConfig> {
+    resolve_init_config_from(cli, Path::new("."))
+}
+
+pub fn resolve_init_config_from(cli: &Cli, project_dir: &Path) -> Result<InitConfig> {
+    let file = load_file_config(cli, project_dir)?;
+    let source = cli
+        .source
+        .clone()
+        .or(file.source)
+        .unwrap_or_else(|| "github".to_string());
+
+    match source.as_str() {
+        "github" | "linear" => {}
+        other => {
+            return Err(Error::ConfigValidation(format!(
+                "unknown source: {other} (expected: github, linear)"
+            )));
+        }
+    }
+
+    Ok(InitConfig {
+        source,
+        label: cli
+            .label
+            .clone()
+            .or(file.label)
+            .unwrap_or_else(|| "rlph".to_string()),
+    })
+}
+
+fn load_file_config(cli: &Cli, project_dir: &Path) -> Result<ConfigFile> {
+    match &cli.config {
+        Some(explicit_path) => {
+            let path = Path::new(explicit_path);
+            if !path.exists() {
+                return Err(Error::ConfigNotFound(path.to_path_buf()));
+            }
+            let content = std::fs::read_to_string(path)?;
+            parse_config(&content)
+        }
+        None => {
+            let path = project_dir.join(DEFAULT_CONFIG_FILE);
+            if path.exists() {
+                let content = std::fs::read_to_string(&path)?;
+                parse_config(&content)
+            } else {
+                Ok(ConfigFile::default())
+            }
+        }
     }
 }
 
@@ -103,6 +166,21 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         "claude" => Some("high"),
         _ => None,
     };
+
+    let linear = file.linear.map(|lc| LinearConfig {
+        team: lc.team.unwrap_or_default(),
+        project: lc.project,
+        api_key_env: lc
+            .api_key_env
+            .unwrap_or_else(|| "LINEAR_API_KEY".to_string()),
+        in_progress_state: lc
+            .in_progress_state
+            .unwrap_or_else(|| "In Progress".to_string()),
+        in_review_state: lc
+            .in_review_state
+            .unwrap_or_else(|| "In Review".to_string()),
+        done_state: lc.done_state.unwrap_or_else(|| "Done".to_string()),
+    });
 
     let config = Config {
         source: cli
@@ -160,6 +238,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .agent_timeout_retries
             .or(file.agent_timeout_retries)
             .unwrap_or(2),
+        linear,
     };
     validate(&config)?;
     Ok(config)
@@ -194,6 +273,21 @@ fn validate(config: &Config) -> Result<()> {
         return Err(Error::ConfigValidation(
             "poll_seconds must be > 0".to_string(),
         ));
+    }
+    if config.source == "linear" {
+        match &config.linear {
+            Some(lc) if lc.team.is_empty() => {
+                return Err(Error::ConfigValidation(
+                    "linear.team is required when source = \"linear\"".to_string(),
+                ));
+            }
+            None => {
+                return Err(Error::ConfigValidation(
+                    "[linear] config section required when source = \"linear\"".to_string(),
+                ));
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -289,6 +383,10 @@ worktree_dir = "/tmp/wt"
             runner: Some("claude".to_string()),
             label: Some("file-label".to_string()),
             poll_seconds: Some(120),
+            linear: Some(LinearConfigFile {
+                team: Some("ENG".to_string()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let cli = Cli::parse_from([
@@ -370,6 +468,49 @@ worktree_dir = "/tmp/wt"
         let cli = Cli::parse_from(["rlph", "--once", "--config", "/nonexistent/config.toml"]);
         let err = Config::load(&cli).unwrap_err();
         assert!(err.to_string().contains("config file not found"));
+    }
+
+    #[test]
+    fn test_resolve_init_config_uses_file_source_without_linear_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            "source = \"linear\"\nlabel = \"ops\"\n",
+        )
+        .unwrap();
+
+        let cli = Cli::parse_from(["rlph", "init"]);
+        let cfg = resolve_init_config_from(&cli, tmp.path()).unwrap();
+        assert_eq!(cfg.source, "linear");
+        assert_eq!(cfg.label, "ops");
+    }
+
+    #[test]
+    fn test_resolve_init_config_cli_overrides_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            "source = \"github\"\nlabel = \"file\"\n",
+        )
+        .unwrap();
+
+        let cli = Cli::parse_from(["rlph", "init", "--source", "linear", "--label", "cli"]);
+        let cfg = resolve_init_config_from(&cli, tmp.path()).unwrap();
+        assert_eq!(cfg.source, "linear");
+        assert_eq!(cfg.label, "cli");
+    }
+
+    #[test]
+    fn test_resolve_init_config_defaults_when_file_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "init"]);
+        let cfg = resolve_init_config_from(&cli, tmp.path()).unwrap();
+        assert_eq!(cfg.source, "github");
+        assert_eq!(cfg.label, "rlph");
     }
 
     #[test]

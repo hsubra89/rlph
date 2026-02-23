@@ -1,4 +1,5 @@
 pub mod github;
+pub mod linear;
 
 use serde::Serialize;
 
@@ -49,17 +50,53 @@ pub trait TaskSource {
     /// Mark a task as in-review in the remote system.
     fn mark_in_review(&self, task_id: &str) -> Result<()>;
 
-    /// Mark a task as done in the remote system.
-    ///
-    /// Currently unused in the happy path — GitHub auto-closes issues when the
-    /// PR containing "Resolves #N" is merged. Kept for manual / fallback use.
-    fn mark_done(&self, task_id: &str) -> Result<()>;
-
     /// Get full details for a task.
     fn get_task_details(&self, task_id: &str) -> Result<Task>;
 
     /// Fetch IDs of closed/done tasks (used for dependency resolution).
     fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>>;
+}
+
+pub enum AnySource {
+    GitHub(github::GitHubSource),
+    Linear(linear::LinearSource),
+}
+
+impl TaskSource for AnySource {
+    fn fetch_eligible_tasks(&self) -> Result<Vec<Task>> {
+        match self {
+            AnySource::GitHub(s) => s.fetch_eligible_tasks(),
+            AnySource::Linear(s) => s.fetch_eligible_tasks(),
+        }
+    }
+
+    fn mark_in_progress(&self, task_id: &str) -> Result<()> {
+        match self {
+            AnySource::GitHub(s) => s.mark_in_progress(task_id),
+            AnySource::Linear(s) => s.mark_in_progress(task_id),
+        }
+    }
+
+    fn mark_in_review(&self, task_id: &str) -> Result<()> {
+        match self {
+            AnySource::GitHub(s) => s.mark_in_review(task_id),
+            AnySource::Linear(s) => s.mark_in_review(task_id),
+        }
+    }
+
+    fn get_task_details(&self, task_id: &str) -> Result<Task> {
+        match self {
+            AnySource::GitHub(s) => s.get_task_details(task_id),
+            AnySource::Linear(s) => s.get_task_details(task_id),
+        }
+    }
+
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
+        match self {
+            AnySource::GitHub(s) => s.fetch_closed_task_ids(),
+            AnySource::Linear(s) => s.fetch_closed_task_ids(),
+        }
+    }
 }
 
 #[cfg(test)]

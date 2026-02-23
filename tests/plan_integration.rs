@@ -23,6 +23,7 @@ fn test_config(source: &str) -> Config {
         agent_effort: Some("high".to_string()),
         max_review_rounds: 3,
         agent_timeout_retries: 2,
+        linear: None,
     }
 }
 

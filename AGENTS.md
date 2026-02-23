@@ -22,7 +22,7 @@ clap (CLI parsing), serde + toml (config), thiserror (errors), tracing + tracing
 - `cli` — Argument parsing via clap
 - `config` — `.rlph/config.toml` parsing, validation, CLI merge
 - `error` — Common error type used across all modules
-- `sources` — `TaskSource` trait (fetch, mark_in_progress, mark_done, get_task_details)
+- `sources` — `TaskSource` trait (fetch, mark_in_progress, mark_in_review, get_task_details)
 - `runner` — `AgentRunner` trait (run agent for choose/implement/review phases)
 - `submission` — `SubmissionBackend` trait (submit PR/diff)
 - `orchestrator` — Core loop (stub)
