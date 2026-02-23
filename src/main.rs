@@ -8,6 +8,7 @@ use tracing::info;
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
 use rlph::orchestrator::Orchestrator;
+use rlph::prd;
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AnyRunner, ClaudeRunner, CodexRunner};
 use rlph::sources::AnySource;
@@ -31,24 +32,78 @@ async fn main() {
 
     info!("rlph starting");
 
-    // Handle init before loading full config (init may need to create the config)
-    if let Some(CliCommand::Init) = cli.command {
-        let init_cfg = match resolve_init_config(&cli) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                eprintln!("error: {e}");
-                std::process::exit(1);
+    match cli.command {
+        Some(CliCommand::Init) => {
+            let init_cfg = match resolve_init_config(&cli) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if init_cfg.source == "linear" {
+                if let Err(e) = rlph::sources::linear::init_interactive(&init_cfg.label) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            } else {
+                info!("init: nothing to do for source '{}'", init_cfg.source);
             }
-        };
-        if init_cfg.source == "linear" {
-            if let Err(e) = rlph::sources::linear::init_interactive(&init_cfg.label) {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            }
-        } else {
-            info!("init: nothing to do for source '{}'", init_cfg.source);
+            return;
         }
-        return;
+        Some(CliCommand::Prd {
+            ref description,
+            ref runner,
+            ref source,
+            ref config,
+            ref agent_binary,
+            ref agent_model,
+        }) => {
+            // Clone top-level CLI and merge prd-specific overrides.
+            // Using clone ensures new Cli fields are automatically preserved.
+            let mut prd_cli = cli.clone();
+            prd_cli.command = None;
+            prd_cli.once = false;
+            prd_cli.continuous = false;
+            prd_cli.max_iterations = None;
+            prd_cli.dry_run = false;
+            if let Some(r) = runner {
+                prd_cli.runner = Some(r.clone());
+            }
+            if let Some(s) = source {
+                prd_cli.source = Some(s.clone());
+            }
+            if let Some(c) = config {
+                prd_cli.config = Some(c.clone());
+            }
+            if let Some(b) = agent_binary {
+                prd_cli.agent_binary = Some(b.clone());
+            }
+            if let Some(m) = agent_model {
+                prd_cli.agent_model = Some(m.clone());
+            }
+
+            let cfg = match Config::load(&prd_cli) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+            info!(?cfg, "config loaded for prd");
+
+            let exit_code = match prd::run_prd(&cfg, description.as_deref()).await {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+            std::process::exit(exit_code);
+        }
+        None => {}
     }
 
     let config = match Config::load(&cli) {

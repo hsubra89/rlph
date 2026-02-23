@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 const DEFAULT_CHOOSE: &str = include_str!("default_prompts/choose-issue.md");
 const DEFAULT_IMPLEMENT: &str = include_str!("default_prompts/implement-issue.md");
 const DEFAULT_REVIEW: &str = include_str!("default_prompts/review-issue.md");
+const DEFAULT_PRD: &str = include_str!("default_prompts/prd.md");
 
 /// Known template variable names for validation.
 const KNOWN_VARIABLES: &[&str] = &[
@@ -17,6 +18,7 @@ const KNOWN_VARIABLES: &[&str] = &[
     "branch_name",
     "worktree_path",
     "issues_json",
+    "submission_instructions",
 ];
 
 fn default_template(phase: &str) -> Option<&'static str> {
@@ -24,12 +26,16 @@ fn default_template(phase: &str) -> Option<&'static str> {
         "choose" => Some(DEFAULT_CHOOSE),
         "implement" => Some(DEFAULT_IMPLEMENT),
         "review" => Some(DEFAULT_REVIEW),
+        "prd" => Some(DEFAULT_PRD),
         _ => None,
     }
 }
 
 fn template_filename(phase: &str) -> String {
-    format!("{phase}-issue.md")
+    match phase {
+        "prd" => "prd.md".to_string(),
+        _ => format!("{phase}-issue.md"),
+    }
 }
 
 /// Prompt template engine with default templates and user overrides.
@@ -260,5 +266,42 @@ mod tests {
         assert!(result.contains("/my/repo"));
         assert!(!result.contains("{{repo_path}}"));
         assert!(result.contains("[{\"id\":\"1\"}]"));
+    }
+
+    #[test]
+    fn test_load_default_prd() {
+        let engine = PromptEngine::new(None);
+        let template = engine.load_template("prd").unwrap();
+        assert!(template.contains("PRD Writing Agent"));
+        assert!(template.contains("{{submission_instructions}}"));
+    }
+
+    #[test]
+    fn test_prd_override_takes_precedence() {
+        let dir = TempDir::new().unwrap();
+        let override_path = dir.path().join("prd.md");
+        fs::write(
+            &override_path,
+            "Custom prd: {{submission_instructions}}",
+        )
+        .unwrap();
+
+        let engine = PromptEngine::new(Some(dir.path().to_string_lossy().to_string()));
+        let template = engine.load_template("prd").unwrap();
+        assert_eq!(template, "Custom prd: {{submission_instructions}}");
+    }
+
+    #[test]
+    fn test_render_prd_with_variables() {
+        let engine = PromptEngine::new(None);
+        let mut vars = HashMap::new();
+        vars.insert(
+            "submission_instructions".to_string(),
+            "Create a GitHub issue using `gh issue create`".to_string(),
+        );
+
+        let result = engine.render_phase("prd", &vars).unwrap();
+        assert!(result.contains("Create a GitHub issue using `gh issue create`"));
+        assert!(!result.contains("{{submission_instructions}}"));
     }
 }
