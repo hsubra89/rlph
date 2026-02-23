@@ -8,7 +8,7 @@ use rlph::cli::Cli;
 use rlph::config::Config;
 use rlph::orchestrator::Orchestrator;
 use rlph::prompts::PromptEngine;
-use rlph::runner::{AnyRunner, BareClaudeRunner, CodexRunner};
+use rlph::runner::{AnyRunner, ClaudeRunner, CodexRunner};
 use rlph::sources::github::GitHubSource;
 use rlph::state::StateManager;
 use rlph::submission::GitHubSubmission;
@@ -54,7 +54,7 @@ async fn main() {
             timeout,
             config.agent_timeout_retries,
         )),
-        _ => AnyRunner::Claude(BareClaudeRunner::new(
+        _ => AnyRunner::Claude(ClaudeRunner::new(
             config.agent_binary.clone(),
             config.agent_model.clone(),
             timeout,
