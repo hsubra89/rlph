@@ -75,8 +75,10 @@ struct IssueNode {
 
 #[derive(Debug, Deserialize)]
 struct StateNode {
+    #[allow(dead_code)]
     name: String,
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     state_type: String,
 }
 
@@ -198,15 +200,6 @@ impl LinearSource {
         }
     }
 
-    fn is_eligible(&self, node: &IssueNode) -> bool {
-        let state = node.state.name.to_lowercase();
-        state != self.in_progress_state.to_lowercase()
-            && state != self.in_review_state.to_lowercase()
-            && state != self.done_state.to_lowercase()
-            && node.state.state_type != "completed"
-            && node.state.state_type != "canceled"
-    }
-
     /// Resolve a workflow state name → UUID for the configured team.
     fn find_state_id(&self, state_name: &str) -> Result<String> {
         let query = r#"
@@ -311,7 +304,10 @@ impl LinearSource {
 impl TaskSource for LinearSource {
     fn fetch_eligible_tasks(&self) -> Result<Vec<Task>> {
         let mut filter = self.build_issue_filter();
-        filter["state"] = serde_json::json!({ "type": { "nin": ["completed", "canceled"] } });
+        filter["state"] = serde_json::json!({
+            "name": { "nin": [&self.in_progress_state, &self.in_review_state, &self.done_state] },
+            "type": { "nin": ["completed", "canceled"] },
+        });
 
         let query = r#"
             query Issues($filter: IssueFilter!) {
@@ -333,12 +329,7 @@ impl TaskSource for LinearSource {
             serde_json::from_value(data.get("issues").cloned().unwrap_or_default())
                 .map_err(|e| Error::TaskSource(format!("failed to parse Linear issues: {e}")))?;
 
-        let tasks: Vec<Task> = issues
-            .nodes
-            .iter()
-            .filter(|node| self.is_eligible(node))
-            .map(Self::parse_issue)
-            .collect();
+        let tasks: Vec<Task> = issues.nodes.iter().map(Self::parse_issue).collect();
 
         debug!(count = tasks.len(), "fetched eligible Linear tasks");
         Ok(tasks)
@@ -403,15 +394,12 @@ impl TaskSource for LinearSource {
     }
 
     fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
+        let mut filter = self.build_issue_filter();
+        filter["state"] = serde_json::json!({ "type": { "in": ["completed", "canceled"] } });
+
         let query = r#"
-            query ClosedIssues($team: String!) {
-                issues(
-                    filter: {
-                        team: { key: { eq: $team } }
-                        state: { type: { in: ["completed", "canceled"] } }
-                    }
-                    first: 200
-                ) {
+            query ClosedIssues($filter: IssueFilter!) {
+                issues(filter: $filter, first: 200) {
                     nodes { number }
                 }
             }
@@ -419,7 +407,7 @@ impl TaskSource for LinearSource {
 
         let data = self
             .client
-            .graphql(query, serde_json::json!({ "team": self.team }))?;
+            .graphql(query, serde_json::json!({ "filter": filter }))?;
 
         #[derive(Deserialize)]
         struct NumberNode {
@@ -645,11 +633,10 @@ mod tests {
     }
 
     #[test]
-    fn test_fetch_eligible_filters_correctly() {
+    fn test_fetch_eligible_returns_all_from_api() {
+        // Server-side filter handles state exclusion; client gets only eligible issues
         let data = issues_response(vec![
             issue_node(1, "Task 1", 0, "Todo", "unstarted", &["rlph"]),
-            issue_node(2, "Task 2", 1, "In Progress", "started", &["rlph"]),
-            issue_node(3, "Task 3", 0, "Done", "completed", &["rlph"]),
             issue_node(4, "Task 4", 2, "Backlog", "backlog", &["rlph"]),
         ]);
         let client = MockLinearClient::new(vec![Ok(data)]);
@@ -658,31 +645,6 @@ mod tests {
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].id, "1");
         assert_eq!(tasks[1].id, "4");
-    }
-
-    #[test]
-    fn test_fetch_excludes_in_review() {
-        let data = issues_response(vec![
-            issue_node(1, "Task 1", 0, "Todo", "unstarted", &["rlph"]),
-            issue_node(2, "Task 2", 0, "In Review", "started", &["rlph"]),
-        ]);
-        let client = MockLinearClient::new(vec![Ok(data)]);
-        let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
-        let tasks = source.fetch_eligible_tasks().unwrap();
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].id, "1");
-    }
-
-    #[test]
-    fn test_fetch_excludes_canceled() {
-        let data = issues_response(vec![
-            issue_node(1, "Task 1", 0, "Todo", "unstarted", &["rlph"]),
-            issue_node(2, "Task 2", 0, "Cancelled", "canceled", &["rlph"]),
-        ]);
-        let client = MockLinearClient::new(vec![Ok(data)]);
-        let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
-        let tasks = source.fetch_eligible_tasks().unwrap();
-        assert_eq!(tasks.len(), 1);
     }
 
     #[test]
