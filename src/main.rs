@@ -82,10 +82,16 @@ async fn main() {
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     tokio::spawn(async move {
+        // First SIGINT: graceful shutdown after current iteration
         if tokio::signal::ctrl_c().await.is_ok() {
             info!("[rlph] SIGINT received; shutting down after current iteration");
             eprintln!("[rlph] SIGINT received; shutting down after current iteration");
             let _ = shutdown_tx.send(true);
+        }
+        // Second SIGINT: force exit
+        if tokio::signal::ctrl_c().await.is_ok() {
+            eprintln!("[rlph] Second SIGINT received; exiting immediately");
+            std::process::exit(130);
         }
     });
 
