@@ -104,8 +104,10 @@ fn test_prd_command_codex_no_append_system_prompt() {
     let (cmd, args) = build_prd_command(&config, "the rendered prompt", None);
     assert_eq!(cmd, "codex");
     assert!(!args.contains(&"--append-system-prompt".to_string()));
-    // System prompt passed via -p instead
-    assert!(args.contains(&"-p".to_string()));
+    // Codex should NOT use -p (that's --profile in codex)
+    assert!(!args.contains(&"-p".to_string()));
+    // System prompt passed as positional argument
+    assert!(args.contains(&"the rendered prompt".to_string()));
 }
 
 #[test]

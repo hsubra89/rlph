@@ -57,7 +57,8 @@ pub fn build_prd_command(
                 }
                 _ => rendered_prompt.to_string(),
             };
-            args.push("-p".to_string());
+            // Codex takes the prompt as a positional argument, not via -p
+            // (-p is --profile in Codex).
             args.push(combined);
         }
         _ => {
@@ -215,8 +216,9 @@ mod tests {
         assert_eq!(cmd, "codex");
         // Codex should NOT use --append-system-prompt
         assert!(!args.contains(&"--append-system-prompt".to_string()));
-        // System prompt passed via -p instead
-        assert!(args.contains(&"-p".to_string()));
+        // Codex should NOT use -p (that's --profile in codex)
+        assert!(!args.contains(&"-p".to_string()));
+        // System prompt passed as positional argument
         assert!(args.contains(&"rendered prompt".to_string()));
     }
 
