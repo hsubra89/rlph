@@ -41,42 +41,21 @@ pub fn build_prd_command(
 ) -> (String, Vec<String>) {
     let mut args = Vec::new();
 
-    match config.runner.as_str() {
-        "codex" => {
-            // Codex interactive mode: no subcommand (not `exec`).
-            // Codex lacks --append-system-prompt, so we combine the system
-            // prompt and seed description into a single initial message.
-            if let Some(ref model) = config.agent_model {
-                args.push("--model".to_string());
-                args.push(model.clone());
-            }
-
-            let combined = match description {
-                Some(desc) if !desc.is_empty() => {
-                    format!("{rendered_prompt}\n\n## Seed Description\n\n{desc}")
-                }
-                _ => rendered_prompt.to_string(),
-            };
-            // Codex takes the prompt as a positional argument, not via -p
-            // (-p is --profile in Codex).
-            args.push(combined);
+    // Build the initial user prompt: template + optional description.
+    // Passed as a positional argument so the session stays interactive.
+    let prompt = match description {
+        Some(desc) if !desc.is_empty() => {
+            format!("{rendered_prompt}\n\n## Desired Objective\n\n{desc}")
         }
-        _ => {
-            // Claude (default): separate system prompt and user message.
-            args.push("--append-system-prompt".to_string());
-            args.push(rendered_prompt.to_string());
+        _ => rendered_prompt.to_string(),
+    };
 
-            if let Some(ref model) = config.agent_model {
-                args.push("--model".to_string());
-                args.push(model.clone());
-            }
-
-            if let Some(desc) = description {
-                args.push("-p".to_string());
-                args.push(desc.to_string());
-            }
-        }
+    if let Some(ref model) = config.agent_model {
+        args.push("--model".to_string());
+        args.push(model.clone());
     }
+
+    args.push(prompt);
 
     (config.agent_binary.clone(), args)
 }
@@ -162,38 +141,41 @@ mod tests {
         assert!(instr.contains("configured task source"));
     }
 
-    // --- Claude runner tests ---
+    // --- Common behavior tests (runner-agnostic) ---
 
     #[test]
-    fn test_build_prd_command_claude_basic() {
+    fn test_build_prd_command_basic() {
         let config = test_config("claude", "github", None);
         let (cmd, args) = build_prd_command(&config, "rendered prompt", None);
         assert_eq!(cmd, "claude");
-        assert!(args.contains(&"--append-system-prompt".to_string()));
-        assert!(args.contains(&"rendered prompt".to_string()));
+        // Template passed as positional arg (last element)
+        assert_eq!(args.last().unwrap(), "rendered prompt");
+        // No system prompt or -p flags
+        assert!(!args.contains(&"--append-system-prompt".to_string()));
         assert!(!args.contains(&"-p".to_string()));
     }
 
     #[test]
-    fn test_build_prd_command_claude_with_description() {
+    fn test_build_prd_command_with_description() {
         let config = test_config("claude", "github", None);
         let (_, args) = build_prd_command(&config, "prompt", Some("add auth"));
-        assert!(args.contains(&"-p".to_string()));
-        assert!(args.contains(&"add auth".to_string()));
-        // Description must NOT be baked into the system prompt arg
-        let sys_idx = args.iter().position(|a| a == "--append-system-prompt").unwrap();
-        assert!(!args[sys_idx + 1].contains("add auth"));
-    }
-
-    #[test]
-    fn test_build_prd_command_claude_without_description() {
-        let config = test_config("claude", "github", None);
-        let (_, args) = build_prd_command(&config, "prompt", None);
+        let positional = args.last().unwrap();
+        assert!(positional.contains("prompt"));
+        assert!(positional.contains("## Desired Objective"));
+        assert!(positional.contains("add auth"));
         assert!(!args.contains(&"-p".to_string()));
     }
 
     #[test]
-    fn test_build_prd_command_claude_with_model() {
+    fn test_build_prd_command_without_description() {
+        let config = test_config("claude", "github", None);
+        let (_, args) = build_prd_command(&config, "prompt", None);
+        assert_eq!(args.last().unwrap(), "prompt");
+        assert!(!args.last().unwrap().contains("Desired Objective"));
+    }
+
+    #[test]
+    fn test_build_prd_command_with_model() {
         let config = test_config("claude", "github", Some("opus"));
         let (_, args) = build_prd_command(&config, "prompt", None);
         assert!(args.contains(&"--model".to_string()));
@@ -201,41 +183,21 @@ mod tests {
     }
 
     #[test]
-    fn test_build_prd_command_claude_without_model() {
+    fn test_build_prd_command_without_model() {
         let config = test_config_no_model("claude", "github");
         let (_, args) = build_prd_command(&config, "prompt", None);
         assert!(!args.contains(&"--model".to_string()));
     }
 
-    // --- Codex runner tests ---
-
     #[test]
-    fn test_build_prd_command_codex_basic() {
-        let config = test_config_codex("codex", "github", None);
-        let (cmd, args) = build_prd_command(&config, "rendered prompt", None);
-        assert_eq!(cmd, "codex");
-        // Codex should NOT use --append-system-prompt
-        assert!(!args.contains(&"--append-system-prompt".to_string()));
-        // Codex should NOT use -p (that's --profile in codex)
-        assert!(!args.contains(&"-p".to_string()));
-        // System prompt passed as positional argument
-        assert!(args.contains(&"rendered prompt".to_string()));
-    }
-
-    #[test]
-    fn test_build_prd_command_codex_with_description() {
-        let config = test_config_codex("codex", "github", None);
-        let (_, args) = build_prd_command(&config, "prompt", Some("add auth"));
-        // Codex combines system prompt + description into one -p arg
-        let combined = args.iter().find(|a| a.contains("prompt") && a.contains("add auth"));
-        assert!(combined.is_some(), "expected combined prompt+description");
-        assert!(!args.contains(&"--append-system-prompt".to_string()));
-    }
-
-    #[test]
-    fn test_build_prd_command_codex_with_model() {
+    fn test_build_prd_command_codex_same_behavior() {
         let config = test_config_codex("codex", "github", Some("gpt-5.3-codex"));
-        let (_, args) = build_prd_command(&config, "prompt", None);
+        let (cmd, args) = build_prd_command(&config, "rendered prompt", Some("add auth"));
+        assert_eq!(cmd, "codex");
+        let positional = args.last().unwrap();
+        assert!(positional.contains("rendered prompt"));
+        assert!(positional.contains("## Desired Objective"));
+        assert!(positional.contains("add auth"));
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"gpt-5.3-codex".to_string()));
     }

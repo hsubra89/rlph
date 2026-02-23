@@ -37,20 +37,24 @@ fn test_config_codex(source: &str) -> Config {
 }
 
 #[test]
-fn test_prd_command_includes_append_system_prompt() {
+fn test_prd_command_passes_template_as_positional_arg() {
     let config = test_config("github");
     let (cmd, args) = build_prd_command(&config, "the rendered prompt", None);
     assert_eq!(cmd, "claude");
-    assert!(args.contains(&"--append-system-prompt".to_string()));
-    assert!(args.contains(&"the rendered prompt".to_string()));
+    // Template is a positional arg, not --append-system-prompt
+    assert!(!args.contains(&"--append-system-prompt".to_string()));
+    assert_eq!(args.last().unwrap(), "the rendered prompt");
 }
 
 #[test]
-fn test_prd_command_with_description_includes_p_flag() {
+fn test_prd_command_with_description_appended_to_prompt() {
     let config = test_config("github");
     let (_, args) = build_prd_command(&config, "prompt", Some("add auth"));
-    assert!(args.contains(&"-p".to_string()));
-    assert!(args.contains(&"add auth".to_string()));
+    assert!(!args.contains(&"-p".to_string()));
+    let positional = args.last().unwrap();
+    assert!(positional.contains("prompt"));
+    assert!(positional.contains("## Desired Objective"));
+    assert!(positional.contains("add auth"));
 }
 
 #[test]
@@ -99,25 +103,23 @@ fn test_prd_template_renders_with_linear_source() {
 // --- Codex runner command tests ---
 
 #[test]
-fn test_prd_command_codex_no_append_system_prompt() {
+fn test_prd_command_codex_positional_prompt() {
     let config = test_config_codex("github");
     let (cmd, args) = build_prd_command(&config, "the rendered prompt", None);
     assert_eq!(cmd, "codex");
     assert!(!args.contains(&"--append-system-prompt".to_string()));
-    // Codex should NOT use -p (that's --profile in codex)
     assert!(!args.contains(&"-p".to_string()));
-    // System prompt passed as positional argument
-    assert!(args.contains(&"the rendered prompt".to_string()));
+    assert_eq!(args.last().unwrap(), "the rendered prompt");
 }
 
 #[test]
 fn test_prd_command_codex_combines_prompt_and_description() {
     let config = test_config_codex("github");
     let (_, args) = build_prd_command(&config, "sys prompt", Some("add auth"));
-    let combined = args
-        .iter()
-        .find(|a| a.contains("sys prompt") && a.contains("add auth"));
-    assert!(combined.is_some(), "codex should combine prompt+description into one -p arg");
+    let positional = args.last().unwrap();
+    assert!(positional.contains("sys prompt"));
+    assert!(positional.contains("## Desired Objective"));
+    assert!(positional.contains("add auth"));
 }
 
 #[test]
@@ -128,27 +130,31 @@ fn test_prd_command_codex_includes_model() {
     assert!(args.contains(&"gpt-5.3-codex".to_string()));
 }
 
-/// End-to-end: mock agent binary verifies it receives the expected flags.
+/// End-to-end: mock agent binary verifies template is passed as positional arg.
 #[tokio::test]
 #[cfg(unix)]
 async fn test_prd_end_to_end_with_mock_agent() {
     let tmp = tempfile::tempdir().unwrap();
     let script_path = tmp.path().join("mock_claude");
-    // Script verifies --append-system-prompt is present in args
+    // Script verifies the last arg contains the PRD template content
+    // (no --append-system-prompt or -p flags)
     std::fs::write(
         &script_path,
         r#"#!/bin/bash
-found_asp=false
+# Should NOT have --append-system-prompt or -p
 for arg in "$@"; do
-    if [ "$arg" = "--append-system-prompt" ]; then
-        found_asp=true
+    if [ "$arg" = "--append-system-prompt" ] || [ "$arg" = "-p" ]; then
+        echo "ERROR: unexpected flag $arg" >&2
+        exit 1
     fi
 done
-if [ "$found_asp" = "false" ]; then
-    echo "ERROR: --append-system-prompt not found" >&2
-    exit 1
+# Last arg should be the rendered template (contains submission instructions)
+last_arg="${@: -1}"
+if echo "$last_arg" | grep -q "gh issue create\|Linear\|configured task source"; then
+    exit 0
 fi
-exit 0
+echo "ERROR: last arg doesn't look like the PRD template" >&2
+exit 1
 "#,
     )
     .unwrap();
@@ -189,34 +195,22 @@ async fn test_prd_exit_code_propagation() {
     assert_eq!(exit_code, 42);
 }
 
-/// Verify -p flag is passed when description is provided.
+/// Verify description is appended to the positional prompt arg.
 #[tokio::test]
 #[cfg(unix)]
-async fn test_prd_passes_description_as_p_flag() {
+async fn test_prd_passes_description_in_positional_arg() {
     let tmp = tempfile::tempdir().unwrap();
     let script_path = tmp.path().join("mock_claude");
-    // Script checks for -p flag followed by the description
+    // Script checks last arg contains both the template and the description
     std::fs::write(
         &script_path,
         r#"#!/bin/bash
-found_p=false
-next_is_desc=false
-for arg in "$@"; do
-    if [ "$next_is_desc" = "true" ]; then
-        if [ "$arg" = "add auth" ]; then
-            found_p=true
-        fi
-        next_is_desc=false
-    fi
-    if [ "$arg" = "-p" ]; then
-        next_is_desc=true
-    fi
-done
-if [ "$found_p" = "false" ]; then
-    echo "ERROR: -p 'add auth' not found" >&2
-    exit 1
+last_arg="${@: -1}"
+if echo "$last_arg" | grep -q "Desired Objective" && echo "$last_arg" | grep -q "add auth"; then
+    exit 0
 fi
-exit 0
+echo "ERROR: last arg missing description" >&2
+exit 1
 "#,
     )
     .unwrap();
