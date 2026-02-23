@@ -15,7 +15,7 @@ use crate::runner::{AgentRunner, AnyRunner, Phase, build_runner};
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
 use crate::submission::SubmissionBackend;
-use crate::worktree::{WorktreeInfo, WorktreeManager};
+use crate::worktree::{WorktreeInfo, WorktreeManager, validate_branch_name};
 
 #[derive(Debug)]
 struct ReviewPhaseOutput {
@@ -635,11 +635,9 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
     }
 
     fn push_branch_to(&self, worktree: &WorktreeInfo, remote_branch: &str) -> Result<()> {
-        if remote_branch.trim().is_empty() {
-            return Err(Error::Orchestrator(
-                "remote branch for push must not be empty".to_string(),
-            ));
-        }
+        validate_branch_name(remote_branch).map_err(|e| {
+            Error::Orchestrator(format!("invalid remote branch name: {e}"))
+        })?;
 
         let refspec = format!("HEAD:{remote_branch}");
         let output = Command::new("git")
