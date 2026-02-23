@@ -237,7 +237,7 @@ fn test_create_for_branch() {
     );
 
     let info = mgr.create_for_branch(77, "feature/review-pr").unwrap();
-    assert_eq!(info.branch, "feature/review-pr");
+    assert_eq!(info.branch, "rlph-pr-77-feature-review-pr");
     assert!(info.path.exists());
     assert!(info.path.ends_with("rlph-pr-77-feature-review-pr"));
     assert!(info.path.join("branch.txt").exists());

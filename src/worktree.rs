@@ -187,6 +187,7 @@ impl WorktreeManager {
             }
         };
         let name = format!("rlph-pr-{pr_number}-{slug}");
+        let local_branch = name.clone();
 
         if let Some(existing) = self.find_existing_by_name(&name)? {
             info!(
@@ -243,23 +244,23 @@ impl WorktreeManager {
         }
 
         let remote_ref = format!("origin/{branch}");
-        let local_ref = format!("refs/heads/{branch}");
-        let branch_exists = self
+        let local_ref = format!("refs/heads/{local_branch}");
+        let local_branch_exists = self
             .git(&["show-ref", "--verify", "--quiet", &local_ref])
             .is_ok();
-        if branch_exists {
-            self.git(&["branch", "-f", branch, &remote_ref])
+        if local_branch_exists {
+            self.git(&["branch", "-f", &local_branch, &remote_ref])
                 .map_err(|e| {
                     Error::Worktree(format!(
-                        "failed to fast-forward local branch '{branch}' to {remote_ref}: {e}"
+                        "failed to fast-forward local branch '{local_branch}' to {remote_ref}: {e}"
                     ))
                 })?;
         }
 
-        let create_result = if branch_exists {
-            self.git_worktree_add(&path, branch, false, None)
+        let create_result = if local_branch_exists {
+            self.git_worktree_add(&path, &local_branch, false, None)
         } else {
-            self.git_worktree_add(&path, branch, true, Some(&remote_ref))
+            self.git_worktree_add(&path, &local_branch, true, Some(&remote_ref))
         };
 
         create_result?;
@@ -283,7 +284,7 @@ impl WorktreeManager {
         );
         Ok(WorktreeInfo {
             path: canonical_path,
-            branch: branch.to_string(),
+            branch: local_branch,
         })
     }
 
@@ -314,6 +315,13 @@ impl WorktreeManager {
 
         // Clean up the branch
         if let Some(branch) = branch {
+            if !branch.starts_with("rlph-") {
+                info!(
+                    branch = %branch,
+                    "skipping deletion for non-rlph branch after worktree removal"
+                );
+                return Ok(());
+            }
             match self.git(&["branch", "-D", &branch]) {
                 Ok(_) => info!(branch = %branch, "deleted branch"),
                 Err(e) => warn!(branch = %branch, error = %e, "failed to delete branch"),

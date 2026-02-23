@@ -1140,6 +1140,7 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
         worktree_info: worktree_info.clone(),
         vars,
         comment_pr_number: Some(77),
+        push_remote_branch: None,
     };
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1203,6 +1204,7 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
         worktree_info,
         vars,
         comment_pr_number: Some(88),
+        push_remote_branch: None,
     };
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1262,6 +1264,7 @@ async fn test_review_only_exhaustion_preserves_state() {
         worktree_info: worktree_info.clone(),
         vars,
         comment_pr_number: Some(99),
+        push_remote_branch: None,
     };
     let err = orchestrator
         .run_review_for_existing_pr(invocation)

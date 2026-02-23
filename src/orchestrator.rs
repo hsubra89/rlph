@@ -41,6 +41,7 @@ pub struct ReviewInvocation {
     pub worktree_info: WorktreeInfo,
     pub vars: HashMap<String, String>,
     pub comment_pr_number: Option<u64>,
+    pub push_remote_branch: Option<String>,
 }
 
 /// Factory for creating review-phase runners. Defaults to `build_runner`.
@@ -224,6 +225,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 &invocation.vars,
                 &invocation.worktree_info,
                 invocation.comment_pr_number,
+                invocation.push_remote_branch.as_deref(),
             )
             .await;
 
@@ -438,7 +440,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             self.source.mark_in_review(&task.id)?;
         }
 
-        self.run_review_pipeline(&vars, worktree_info, pr_number)
+        self.run_review_pipeline(&vars, worktree_info, pr_number, None)
             .await
     }
 
@@ -447,6 +449,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
         vars: &HashMap<String, String>,
         worktree_info: &WorktreeInfo,
         pr_number: Option<u64>,
+        push_remote_branch: Option<&str>,
     ) -> Result<()> {
         self.state_mgr.update_phase("review")?;
         let max_reviews = self.config.max_review_rounds;
@@ -558,10 +561,15 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 .run(Phase::ReviewFix, &fix_prompt, &worktree_info.path)
                 .await?;
 
-            if !self.config.dry_run
-                && let Err(e) = self.push_branch(worktree_info)
-            {
-                warn!("[rlph:orchestrator] Failed to push review fixes: {e}");
+            if !self.config.dry_run {
+                let push_result = if let Some(remote_branch) = push_remote_branch {
+                    self.push_branch_to(worktree_info, remote_branch)
+                } else {
+                    self.push_branch(worktree_info)
+                };
+                if let Err(e) = push_result {
+                    warn!("[rlph:orchestrator] Failed to push review fixes: {e}");
+                }
             }
         }
 
@@ -623,6 +631,32 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
         }
 
         info!("[rlph:orchestrator] Pushed branch {}", worktree.branch);
+        Ok(())
+    }
+
+    fn push_branch_to(&self, worktree: &WorktreeInfo, remote_branch: &str) -> Result<()> {
+        if remote_branch.trim().is_empty() {
+            return Err(Error::Orchestrator(
+                "remote branch for push must not be empty".to_string(),
+            ));
+        }
+
+        let refspec = format!("HEAD:{remote_branch}");
+        let output = Command::new("git")
+            .args(["push", "-u", "origin", &refspec])
+            .current_dir(&worktree.path)
+            .output()
+            .map_err(|e| Error::Orchestrator(format!("failed to run git push: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Orchestrator(format!("git push failed: {stderr}")));
+        }
+
+        info!(
+            "[rlph:orchestrator] Pushed branch {} to origin/{remote_branch}",
+            worktree.branch
+        );
         Ok(())
     }
 }
