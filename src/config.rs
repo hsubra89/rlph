@@ -26,6 +26,50 @@ pub struct LinearConfig {
     pub done_state: String,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewPhaseConfigFile {
+    pub name: String,
+    pub prompt: String,
+    pub runner: Option<String>,
+    pub agent_binary: Option<String>,
+    pub agent_model: Option<String>,
+    pub agent_effort: Option<String>,
+    pub agent_timeout: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewPhaseConfig {
+    pub name: String,
+    pub prompt: String,
+    pub runner: String,
+    pub agent_binary: String,
+    pub agent_model: Option<String>,
+    pub agent_effort: Option<String>,
+    pub agent_timeout: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewStepConfigFile {
+    pub prompt: Option<String>,
+    pub runner: Option<String>,
+    pub agent_binary: Option<String>,
+    pub agent_model: Option<String>,
+    pub agent_effort: Option<String>,
+    pub agent_timeout: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewStepConfig {
+    pub prompt: String,
+    pub runner: String,
+    pub agent_binary: String,
+    pub agent_model: Option<String>,
+    pub agent_effort: Option<String>,
+    pub agent_timeout: Option<u64>,
+}
+
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigFile {
@@ -45,6 +89,9 @@ pub struct ConfigFile {
     pub agent_effort: Option<String>,
     pub max_review_rounds: Option<u32>,
     pub agent_timeout_retries: Option<u32>,
+    pub review_phases: Option<Vec<ReviewPhaseConfigFile>>,
+    pub review_aggregate: Option<ReviewStepConfigFile>,
+    pub review_fix: Option<ReviewStepConfigFile>,
     pub linear: Option<LinearConfigFile>,
 }
 
@@ -67,6 +114,9 @@ pub struct Config {
     pub agent_effort: Option<String>,
     pub max_review_rounds: u32,
     pub agent_timeout_retries: u32,
+    pub review_phases: Vec<ReviewPhaseConfig>,
+    pub review_aggregate: ReviewStepConfig,
+    pub review_fix: ReviewStepConfig,
     pub linear: Option<LinearConfig>,
 }
 
@@ -77,6 +127,51 @@ pub struct InitConfig {
 }
 
 const DEFAULT_CONFIG_FILE: &str = ".rlph/config.toml";
+
+/// Default review phases for use in tests and when no config is provided.
+pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {
+    vec![
+        ReviewPhaseConfig {
+            name: "correctness".to_string(),
+            prompt: "correctness-review".to_string(),
+            runner: "claude".to_string(),
+            agent_binary: "claude".to_string(),
+            agent_model: None,
+            agent_effort: None,
+            agent_timeout: None,
+        },
+        ReviewPhaseConfig {
+            name: "security".to_string(),
+            prompt: "security-review".to_string(),
+            runner: "claude".to_string(),
+            agent_binary: "claude".to_string(),
+            agent_model: None,
+            agent_effort: None,
+            agent_timeout: None,
+        },
+        ReviewPhaseConfig {
+            name: "style".to_string(),
+            prompt: "style-review".to_string(),
+            runner: "claude".to_string(),
+            agent_binary: "claude".to_string(),
+            agent_model: None,
+            agent_effort: None,
+            agent_timeout: None,
+        },
+    ]
+}
+
+/// Default review step config for use in tests.
+pub fn default_review_step(prompt: &str) -> ReviewStepConfig {
+    ReviewStepConfig {
+        prompt: prompt.to_string(),
+        runner: "claude".to_string(),
+        agent_binary: "claude".to_string(),
+        agent_model: None,
+        agent_effort: None,
+        agent_timeout: None,
+    }
+}
 
 impl Config {
     pub fn load(cli: &Cli) -> Result<Self> {
@@ -182,6 +277,92 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         done_state: lc.done_state.unwrap_or_else(|| "Done".to_string()),
     });
 
+    let global_runner = &runner;
+    let global_binary = cli
+        .agent_binary
+        .clone()
+        .or(file.agent_binary.clone())
+        .unwrap_or_else(|| default_binary.to_string());
+    let global_model = cli
+        .agent_model
+        .clone()
+        .or(file.agent_model.clone())
+        .or_else(|| default_model.map(str::to_string));
+    let global_effort = cli
+        .agent_effort
+        .clone()
+        .or(file.agent_effort.clone())
+        .or_else(|| default_effort.map(str::to_string));
+    let global_timeout = cli.agent_timeout.or(file.agent_timeout).or(Some(600));
+
+    let review_phases: Vec<ReviewPhaseConfig> = file
+        .review_phases
+        .unwrap_or_else(|| {
+            vec![
+                ReviewPhaseConfigFile {
+                    name: "correctness".to_string(),
+                    prompt: "correctness-review".to_string(),
+                    runner: None,
+                    agent_binary: None,
+                    agent_model: None,
+                    agent_effort: None,
+                    agent_timeout: None,
+                },
+                ReviewPhaseConfigFile {
+                    name: "security".to_string(),
+                    prompt: "security-review".to_string(),
+                    runner: None,
+                    agent_binary: None,
+                    agent_model: None,
+                    agent_effort: None,
+                    agent_timeout: None,
+                },
+                ReviewPhaseConfigFile {
+                    name: "style".to_string(),
+                    prompt: "style-review".to_string(),
+                    runner: None,
+                    agent_binary: None,
+                    agent_model: None,
+                    agent_effort: None,
+                    agent_timeout: None,
+                },
+            ]
+        })
+        .into_iter()
+        .map(|p| ReviewPhaseConfig {
+            name: p.name,
+            prompt: p.prompt,
+            runner: p.runner.unwrap_or_else(|| global_runner.clone()),
+            agent_binary: p
+                .agent_binary
+                .unwrap_or_else(|| global_binary.clone()),
+            agent_model: p.agent_model.or_else(|| global_model.clone()),
+            agent_effort: p.agent_effort.or_else(|| global_effort.clone()),
+            agent_timeout: p.agent_timeout.or(global_timeout),
+        })
+        .collect();
+
+    let resolve_step = |step: Option<ReviewStepConfigFile>,
+                        default_prompt: &str|
+     -> ReviewStepConfig {
+        let s = step.unwrap_or_default();
+        ReviewStepConfig {
+            prompt: s
+                .prompt
+                .unwrap_or_else(|| default_prompt.to_string()),
+            runner: s.runner.unwrap_or_else(|| global_runner.clone()),
+            agent_binary: s
+                .agent_binary
+                .unwrap_or_else(|| global_binary.clone()),
+            agent_model: s.agent_model.or_else(|| global_model.clone()),
+            agent_effort: s.agent_effort.or_else(|| global_effort.clone()),
+            agent_timeout: s.agent_timeout.or(global_timeout),
+        }
+    };
+
+    let review_aggregate = resolve_step(file.review_aggregate, "review-aggregate");
+    let review_fix = resolve_step(file.review_fix, "review-fix");
+
     let config = Config {
         source: cli
             .source
@@ -214,22 +395,10 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         dry_run: cli.dry_run || file.dry_run.unwrap_or(false),
         once: cli.once,
         continuous: cli.continuous,
-        agent_binary: cli
-            .agent_binary
-            .clone()
-            .or(file.agent_binary)
-            .unwrap_or_else(|| default_binary.to_string()),
-        agent_model: cli
-            .agent_model
-            .clone()
-            .or(file.agent_model)
-            .or_else(|| default_model.map(str::to_string)),
-        agent_timeout: cli.agent_timeout.or(file.agent_timeout).or(Some(600)),
-        agent_effort: cli
-            .agent_effort
-            .clone()
-            .or(file.agent_effort)
-            .or_else(|| default_effort.map(str::to_string)),
+        agent_binary: global_binary,
+        agent_model: global_model,
+        agent_timeout: global_timeout,
+        agent_effort: global_effort,
         max_review_rounds: cli
             .max_review_rounds
             .or(file.max_review_rounds)
@@ -238,6 +407,9 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .agent_timeout_retries
             .or(file.agent_timeout_retries)
             .unwrap_or(2),
+        review_phases,
+        review_aggregate,
+        review_fix,
         linear,
     };
     validate(&config)?;
@@ -273,6 +445,42 @@ fn validate(config: &Config) -> Result<()> {
         return Err(Error::ConfigValidation(
             "poll_seconds must be > 0".to_string(),
         ));
+    }
+    if config.review_phases.is_empty() {
+        return Err(Error::ConfigValidation(
+            "at least one review phase is required".to_string(),
+        ));
+    }
+    {
+        let mut seen_names = std::collections::HashSet::new();
+        for phase in &config.review_phases {
+            if phase.name.is_empty() {
+                return Err(Error::ConfigValidation(
+                    "review phase name must not be empty".to_string(),
+                ));
+            }
+            if phase.prompt.is_empty() {
+                return Err(Error::ConfigValidation(format!(
+                    "review phase '{}' prompt must not be empty",
+                    phase.name
+                )));
+            }
+            if !seen_names.insert(&phase.name) {
+                return Err(Error::ConfigValidation(format!(
+                    "duplicate review phase name: {}",
+                    phase.name
+                )));
+            }
+            match phase.runner.as_str() {
+                "claude" | "codex" => {}
+                other => {
+                    return Err(Error::ConfigValidation(format!(
+                        "unknown runner '{}' in review phase '{}'",
+                        other, phase.name
+                    )));
+                }
+            }
+        }
     }
     if config.source == "linear" {
         match &config.linear {
@@ -591,5 +799,198 @@ worktree_dir = "/tmp/wt"
         let cli = Cli::parse_from(["rlph", "--once", "--runner", "docker"]);
         let err = Config::load_from(&cli, tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown runner: docker"));
+    }
+
+    #[test]
+    fn test_review_phases_parsed_from_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+[[review_phases]]
+name = "correctness"
+prompt = "correctness-review"
+
+[[review_phases]]
+name = "security"
+prompt = "security-review"
+agent_model = "claude-opus-4-6"
+agent_effort = "high"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.review_phases.len(), 2);
+        assert_eq!(config.review_phases[0].name, "correctness");
+        assert_eq!(config.review_phases[0].prompt, "correctness-review");
+        assert_eq!(config.review_phases[0].runner, "claude"); // falls back to global
+        assert_eq!(config.review_phases[1].name, "security");
+        assert_eq!(
+            config.review_phases[1].agent_model.as_deref(),
+            Some("claude-opus-4-6")
+        );
+        assert_eq!(
+            config.review_phases[1].agent_effort.as_deref(),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn test_review_phases_duplicate_name_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+
+[[review_phases]]
+name = "check"
+prompt = "other-review"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("duplicate review phase name"));
+    }
+
+    #[test]
+    fn test_review_aggregate_and_fix_parsed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+
+[review_aggregate]
+prompt = "my-aggregate"
+agent_model = "claude-opus-4-6"
+
+[review_fix]
+prompt = "my-fix"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.review_aggregate.prompt, "my-aggregate");
+        assert_eq!(
+            config.review_aggregate.agent_model.as_deref(),
+            Some("claude-opus-4-6")
+        );
+        assert_eq!(config.review_fix.prompt, "my-fix");
+    }
+
+    #[test]
+    fn test_review_aggregate_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.review_aggregate.prompt, "review-aggregate");
+        assert_eq!(config.review_fix.prompt, "review-fix");
+        assert_eq!(config.review_aggregate.runner, "claude");
+        assert_eq!(config.review_fix.runner, "claude");
+    }
+
+    #[test]
+    fn test_default_review_phases_provided() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.review_phases.len(), 3);
+        assert_eq!(config.review_phases[0].name, "correctness");
+        assert_eq!(config.review_phases[1].name, "security");
+        assert_eq!(config.review_phases[2].name, "style");
+    }
+
+    #[test]
+    fn test_review_phase_empty_name_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+[[review_phases]]
+name = ""
+prompt = "check-review"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("name must not be empty"));
+    }
+
+    #[test]
+    fn test_review_phase_empty_prompt_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+[[review_phases]]
+name = "check"
+prompt = ""
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("prompt must not be empty"));
+    }
+
+    #[test]
+    fn test_review_phase_invalid_runner_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+runner = "podman"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("unknown runner 'podman'"));
+    }
+
+    #[test]
+    fn test_review_phase_inherits_global_runner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+runner = "codex"
+
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.review_phases[0].runner, "codex");
+        assert_eq!(config.review_phases[0].agent_binary, "codex");
     }
 }

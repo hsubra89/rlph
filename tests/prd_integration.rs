@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use rlph::config::Config;
+use rlph::config::{Config, default_review_phases, default_review_step};
 use rlph::prd::{build_prd_command, submission_instructions};
 use rlph::prompts::PromptEngine;
 
@@ -23,6 +23,9 @@ fn test_config(source: &str) -> Config {
         agent_effort: Some("high".to_string()),
         max_review_rounds: 3,
         agent_timeout_retries: 2,
+        review_phases: default_review_phases(),
+        review_aggregate: default_review_step("review-aggregate"),
+        review_fix: default_review_step("review-fix"),
         linear: None,
     }
 }

@@ -5,7 +5,12 @@ use crate::error::{Error, Result};
 
 const DEFAULT_CHOOSE: &str = include_str!("default_prompts/choose-issue.md");
 const DEFAULT_IMPLEMENT: &str = include_str!("default_prompts/implement-issue.md");
-const DEFAULT_REVIEW: &str = include_str!("default_prompts/review-issue.md");
+const DEFAULT_CORRECTNESS_REVIEW: &str =
+    include_str!("default_prompts/correctness-review-issue.md");
+const DEFAULT_SECURITY_REVIEW: &str = include_str!("default_prompts/security-review-issue.md");
+const DEFAULT_STYLE_REVIEW: &str = include_str!("default_prompts/style-review-issue.md");
+const DEFAULT_REVIEW_AGGREGATE: &str = include_str!("default_prompts/review-aggregate-issue.md");
+const DEFAULT_REVIEW_FIX: &str = include_str!("default_prompts/review-fix-issue.md");
 const DEFAULT_PRD: &str = include_str!("default_prompts/prd.md");
 
 /// Known template variable names for validation.
@@ -19,13 +24,20 @@ const KNOWN_VARIABLES: &[&str] = &[
     "worktree_path",
     "issues_json",
     "submission_instructions",
+    "review_outputs",
+    "review_phase_name",
+    "fix_instructions",
 ];
 
 fn default_template(phase: &str) -> Option<&'static str> {
     match phase {
         "choose" => Some(DEFAULT_CHOOSE),
         "implement" => Some(DEFAULT_IMPLEMENT),
-        "review" => Some(DEFAULT_REVIEW),
+        "correctness-review" => Some(DEFAULT_CORRECTNESS_REVIEW),
+        "security-review" => Some(DEFAULT_SECURITY_REVIEW),
+        "style-review" => Some(DEFAULT_STYLE_REVIEW),
+        "review-aggregate" => Some(DEFAULT_REVIEW_AGGREGATE),
+        "review-fix" => Some(DEFAULT_REVIEW_FIX),
         "prd" => Some(DEFAULT_PRD),
         _ => None,
     }
@@ -150,11 +162,42 @@ mod tests {
     }
 
     #[test]
-    fn test_load_default_review() {
+    fn test_load_default_correctness_review() {
         let engine = PromptEngine::new(None);
-        let template = engine.load_template("review").unwrap();
-        assert!(template.contains("Review Agent"));
+        let template = engine.load_template("correctness-review").unwrap();
+        assert!(template.contains("Correctness Review Agent"));
         assert!(template.contains("{{issue_title}}"));
+        assert!(template.contains("{{review_phase_name}}"));
+    }
+
+    #[test]
+    fn test_load_default_security_review() {
+        let engine = PromptEngine::new(None);
+        let template = engine.load_template("security-review").unwrap();
+        assert!(template.contains("Security Review Agent"));
+    }
+
+    #[test]
+    fn test_load_default_style_review() {
+        let engine = PromptEngine::new(None);
+        let template = engine.load_template("style-review").unwrap();
+        assert!(template.contains("Style Review Agent"));
+    }
+
+    #[test]
+    fn test_load_default_review_aggregate() {
+        let engine = PromptEngine::new(None);
+        let template = engine.load_template("review-aggregate").unwrap();
+        assert!(template.contains("Review Aggregation Agent"));
+        assert!(template.contains("{{review_outputs}}"));
+    }
+
+    #[test]
+    fn test_load_default_review_fix() {
+        let engine = PromptEngine::new(None);
+        let template = engine.load_template("review-fix").unwrap();
+        assert!(template.contains("Review Fix Agent"));
+        assert!(template.contains("{{fix_instructions}}"));
     }
 
     #[test]
