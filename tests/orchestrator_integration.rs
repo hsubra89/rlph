@@ -954,7 +954,7 @@ async fn test_max_iterations_stops_at_limit() {
 }
 
 #[tokio::test]
-async fn test_continuous_shutdown_exits_after_current_phase() {
+async fn test_continuous_shutdown_exits_between_iterations() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
     let counts = Arc::new(RunnerCounts::default());
@@ -985,7 +985,9 @@ async fn test_continuous_shutdown_exits_after_current_phase() {
 
     orchestrator.run_loop(Some(shutdown_rx)).await.unwrap();
 
+    // Shutdown signal fires during implement, but the current iteration
+    // completes fully. Shutdown is only checked between iterations.
     assert_eq!(counts.choose.load(Ordering::SeqCst), 1);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
-    assert_eq!(counts.review.load(Ordering::SeqCst), 0);
+    assert_eq!(counts.review.load(Ordering::SeqCst), 1);
 }

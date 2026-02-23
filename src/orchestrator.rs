@@ -26,7 +26,6 @@ struct TaskSelection {
 pub enum IterationOutcome {
     ProcessedTask,
     NoEligibleTasks,
-    ShutdownRequested,
 }
 
 pub struct Orchestrator<S, R, B> {
@@ -80,18 +79,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
                 break;
             }
 
-            if let Some(max) = self.config.max_iterations
-                && iterations >= max
-            {
-                info!("[rlph:orchestrator] Reached max iterations ({max}); exiting");
-                break;
-            }
-
-            let outcome = self.run_iteration(shutdown.as_ref()).await?;
-            if outcome == IterationOutcome::ShutdownRequested {
-                info!("[rlph:orchestrator] Shutdown requested; exiting loop");
-                break;
-            }
+            self.run_iteration().await?;
             iterations += 1;
 
             if let Some(max) = self.config.max_iterations
@@ -133,14 +121,11 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
 
     /// Run a single iteration of the orchestrator loop.
     pub async fn run_once(&self) -> Result<()> {
-        let _ = self.run_iteration(None).await?;
+        let _ = self.run_iteration().await?;
         Ok(())
     }
 
-    async fn run_iteration(
-        &self,
-        shutdown: Option<&watch::Receiver<bool>>,
-    ) -> Result<IterationOutcome> {
+    async fn run_iteration(&self) -> Result<IterationOutcome> {
         // 1. Fetch eligible tasks and filter by dependency graph
         info!("[rlph:orchestrator] Fetching eligible tasks...");
         let tasks = self.source.fetch_eligible_tasks()?;
@@ -157,10 +142,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             return Ok(IterationOutcome::NoEligibleTasks);
         }
         info!("[rlph:orchestrator] Found {} eligible task(s)", tasks.len());
-
-        if Self::shutdown_requested(shutdown) {
-            return Ok(IterationOutcome::ShutdownRequested);
-        }
 
         // 2. Choose phase — agent selects a task
         info!("[rlph:orchestrator] Running choose phase...");
@@ -181,18 +162,11 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             "[rlph:orchestrator] Choose phase complete in {}s",
             choose_started.elapsed().as_secs()
         );
-        if Self::shutdown_requested(shutdown) {
-            self.cleanup_task_selection_file();
-            return Ok(IterationOutcome::ShutdownRequested);
-        }
 
         // 3. Parse task selection from .ralph/task.toml
         let task_id = self.parse_task_selection()?;
         let issue_number = parse_issue_number(&task_id)?;
         info!("[rlph:orchestrator] Selected task: {task_id} (issue #{issue_number})");
-        if Self::shutdown_requested(shutdown) {
-            return Ok(IterationOutcome::ShutdownRequested);
-        }
         let existing_pr_number = if self.config.dry_run {
             info!("[rlph:orchestrator] Dry run — skipping existing PR lookup");
             None
@@ -205,24 +179,15 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             }
             pr_number
         };
-        if Self::shutdown_requested(shutdown) {
-            return Ok(IterationOutcome::ShutdownRequested);
-        }
 
         // 4. Get task details
         let task = self.source.get_task_details(&issue_number.to_string())?;
         info!("[rlph:orchestrator] Task: {} — {}", task.id, task.title);
-        if Self::shutdown_requested(shutdown) {
-            return Ok(IterationOutcome::ShutdownRequested);
-        }
 
         // 5. Mark in-progress
         if !self.config.dry_run {
             info!("[rlph:orchestrator] Marking task in-progress...");
             self.source.mark_in_progress(&task.id)?;
-        }
-        if Self::shutdown_requested(shutdown) {
-            return Ok(IterationOutcome::ShutdownRequested);
         }
 
         // 6. Create worktree
@@ -241,9 +206,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             "implement",
             &worktree_info.path.display().to_string(),
         )?;
-        if Self::shutdown_requested(shutdown) {
-            return Ok(IterationOutcome::ShutdownRequested);
-        }
 
         // Run the implement → submit → review pipeline, cleaning up on success
         let result = self
@@ -253,13 +215,11 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
                 issue_number,
                 &worktree_info,
                 existing_pr_number,
-                shutdown,
             )
             .await;
 
         match result {
-            Ok(IterationOutcome::ShutdownRequested) => Ok(IterationOutcome::ShutdownRequested),
-            Ok(IterationOutcome::ProcessedTask) => {
+            Ok(()) => {
                 // 11. Mark done — skipped; GitHub auto-closes the issue when the PR merges
                 self.state_mgr.complete_current_task()?;
 
@@ -273,7 +233,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
                 info!("[rlph:orchestrator] Iteration complete");
                 Ok(IterationOutcome::ProcessedTask)
             }
-            Ok(IterationOutcome::NoEligibleTasks) => Ok(IterationOutcome::NoEligibleTasks),
             Err(e) => {
                 warn!("[rlph:orchestrator] Iteration failed: {e}");
                 Err(e)
@@ -314,13 +273,8 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
         issue_number: u64,
         worktree_info: &WorktreeInfo,
         existing_pr_number: Option<u64>,
-        shutdown: Option<&watch::Receiver<bool>>,
-    ) -> Result<IterationOutcome> {
+    ) -> Result<()> {
         let vars = self.build_task_vars(task, worktree_info);
-
-        if Self::shutdown_requested(shutdown) {
-            return Ok(IterationOutcome::ShutdownRequested);
-        }
 
         // 7. Implement phase
         info!("[rlph:orchestrator] Running implement phase...");
@@ -328,9 +282,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
         self.runner
             .run(Phase::Implement, &impl_prompt, &worktree_info.path)
             .await?;
-        if Self::shutdown_requested(shutdown) {
-            return Ok(IterationOutcome::ShutdownRequested);
-        }
 
         // 8. Push branch
         if !self.config.dry_run {
@@ -384,10 +335,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
                 review_passed = true;
                 break;
             }
-
-            if Self::shutdown_requested(shutdown) {
-                return Ok(IterationOutcome::ShutdownRequested);
-            }
         }
 
         if !review_passed {
@@ -396,7 +343,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             )));
         }
 
-        Ok(IterationOutcome::ProcessedTask)
+        Ok(())
     }
 
     /// Parse the task selection from `.ralph/task.toml` written by the choose agent.
@@ -415,11 +362,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
         let _ = std::fs::remove_file(&path);
 
         Ok(selection.id)
-    }
-
-    fn cleanup_task_selection_file(&self) {
-        let path = self.repo_root.join(".ralph").join("task.toml");
-        let _ = std::fs::remove_file(path);
     }
 
     fn build_task_vars(&self, task: &Task, worktree: &WorktreeInfo) -> HashMap<String, String> {
