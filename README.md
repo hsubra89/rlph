@@ -27,7 +27,7 @@ source = "github"              # Task source: github, linear
 runner = "codex"               # Agent runner: claude, codex
 submission = "github"          # Submission backend: github, graphite
 label = "rlph"                 # Label to filter eligible tasks
-poll_interval = 60             # Poll interval in seconds (continuous mode)
+poll_seconds = 30              # Poll interval in seconds (continuous mode)
 worktree_dir = "../rlph-worktrees"  # Base directory for git worktrees
 max_iterations = 10            # Max iterations before stopping (continuous mode)
 dry_run = false                # Full loop without pushing or marking issues
@@ -47,13 +47,13 @@ Usage: rlph [OPTIONS]
 Options:
       --once                       Run a single iteration then exit
       --continuous                 Run continuously, polling for new tasks
-      --max-iterations <N>         Max iterations before stopping (continuous mode)
+      --max-iterations <N>         Maximum iterations before stopping
       --dry-run                    Go through the full loop without pushing changes or marking issues
       --runner <RUNNER>            Agent runner: claude, codex
       --source <SOURCE>            Task source: github, linear
       --submission <BACKEND>       Submission backend: github, graphite
       --label <LABEL>              Label to filter eligible tasks
-      --poll-interval <SECONDS>    Poll interval in seconds (continuous mode)
+      --poll-seconds <SECONDS>     Poll interval in seconds (continuous mode)
       --config <PATH>              Path to config file
       --worktree-dir <DIR>         Worktree base directory
       --agent-binary <NAME>        Agent binary name (default: codex)
@@ -64,7 +64,7 @@ Options:
   -V, --version                    Print version
 ```
 
-Either `--once` or `--continuous` is required. `--max-iterations` and `--poll-interval` are only valid in continuous mode.
+Specify one of `--once`, `--continuous`, or `--max-iterations`. `--continuous` and `--max-iterations` can be combined.
 
 ## How It Works
 

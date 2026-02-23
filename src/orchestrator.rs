@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::config::Config;
@@ -19,6 +20,12 @@ use crate::worktree::{WorktreeInfo, WorktreeManager};
 #[derive(Deserialize)]
 struct TaskSelection {
     id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IterationOutcome {
+    ProcessedTask,
+    NoEligibleTasks,
 }
 
 pub struct Orchestrator<S, R, B> {
@@ -56,14 +63,82 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
         }
     }
 
+    /// Run according to configured loop mode.
+    ///
+    /// When `shutdown` becomes true, the orchestrator exits between iterations.
+    pub async fn run_loop(&self, mut shutdown: Option<watch::Receiver<bool>>) -> Result<()> {
+        if self.config.once {
+            return self.run_once().await;
+        }
+
+        let mut iterations = 0u32;
+
+        loop {
+            if Self::shutdown_requested(shutdown.as_ref()) {
+                info!("[rlph:orchestrator] Shutdown requested; exiting loop");
+                break;
+            }
+
+            if let Some(max) = self.config.max_iterations
+                && iterations >= max
+            {
+                info!("[rlph:orchestrator] Reached max iterations ({max}); exiting");
+                break;
+            }
+
+            self.run_iteration().await?;
+            iterations += 1;
+
+            if let Some(max) = self.config.max_iterations
+                && iterations >= max
+            {
+                info!("[rlph:orchestrator] Reached max iterations ({max}); exiting");
+                break;
+            }
+
+            if !self.config.continuous {
+                if self.config.max_iterations.is_none() {
+                    break;
+                }
+                continue;
+            }
+
+            if Self::shutdown_requested(shutdown.as_ref()) {
+                info!("[rlph:orchestrator] Shutdown requested; exiting loop");
+                break;
+            }
+
+            info!(
+                "[rlph:orchestrator] Polling again in {}s...",
+                self.config.poll_seconds
+            );
+            let stop = Self::wait_for_poll_or_shutdown(
+                Duration::from_secs(self.config.poll_seconds),
+                &mut shutdown,
+            )
+            .await;
+            if stop {
+                info!("[rlph:orchestrator] Shutdown requested; exiting loop");
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Run a single iteration of the orchestrator loop.
     pub async fn run_once(&self) -> Result<()> {
+        let _ = self.run_iteration().await?;
+        Ok(())
+    }
+
+    async fn run_iteration(&self) -> Result<IterationOutcome> {
         // 1. Fetch eligible tasks and filter by dependency graph
         info!("[rlph:orchestrator] Fetching eligible tasks...");
         let tasks = self.source.fetch_eligible_tasks()?;
         if tasks.is_empty() {
             info!("[rlph:orchestrator] No eligible tasks found");
-            return Ok(());
+            return Ok(IterationOutcome::NoEligibleTasks);
         }
 
         let done_ids = self.source.fetch_closed_task_ids()?;
@@ -71,7 +146,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
         let tasks = graph.filter_eligible(tasks, &done_ids);
         if tasks.is_empty() {
             info!("[rlph:orchestrator] No unblocked tasks found");
-            return Ok(());
+            return Ok(IterationOutcome::NoEligibleTasks);
         }
         info!("[rlph:orchestrator] Found {} eligible task(s)", tasks.len());
 
@@ -163,12 +238,37 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
                 let _ = self.state_mgr.remove_worktree_mapping(&task_id);
 
                 info!("[rlph:orchestrator] Iteration complete");
-                Ok(())
+                Ok(IterationOutcome::ProcessedTask)
             }
             Err(e) => {
                 warn!("[rlph:orchestrator] Iteration failed: {e}");
                 Err(e)
             }
+        }
+    }
+
+    fn shutdown_requested(shutdown: Option<&watch::Receiver<bool>>) -> bool {
+        shutdown.is_some_and(|rx| *rx.borrow())
+    }
+
+    async fn wait_for_poll_or_shutdown(
+        poll_duration: Duration,
+        shutdown: &mut Option<watch::Receiver<bool>>,
+    ) -> bool {
+        if let Some(rx) = shutdown {
+            tokio::select! {
+                _ = tokio::time::sleep(poll_duration) => false,
+                changed = rx.changed() => {
+                    if changed.is_ok() {
+                        *rx.borrow()
+                    } else {
+                        false
+                    }
+                }
+            }
+        } else {
+            tokio::time::sleep(poll_duration).await;
+            false
         }
     }
 
