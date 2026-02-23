@@ -290,20 +290,18 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
     });
 
     let global_runner = &runner;
-    let global_binary = cli
-        .agent_binary
+    let global_binary_override = cli.agent_binary.clone().or(file.agent_binary.clone());
+    let global_model_override = cli.agent_model.clone().or(file.agent_model.clone());
+    let global_effort_override = cli.agent_effort.clone().or(file.agent_effort.clone());
+
+    let global_binary = global_binary_override
         .clone()
-        .or(file.agent_binary.clone())
         .unwrap_or_else(|| default_binary.to_string());
-    let global_model = cli
-        .agent_model
+    let global_model = global_model_override
         .clone()
-        .or(file.agent_model.clone())
         .or_else(|| default_model.map(str::to_string));
-    let global_effort = cli
-        .agent_effort
+    let global_effort = global_effort_override
         .clone()
-        .or(file.agent_effort.clone())
         .or_else(|| default_effort.map(str::to_string));
     let global_timeout = cli.agent_timeout.or(file.agent_timeout).or(Some(600));
 
@@ -332,9 +330,18 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             ReviewPhaseConfig {
                 name: p.name,
                 prompt: p.prompt,
-                agent_binary: p.agent_binary.unwrap_or_else(|| runner_binary.to_string()),
-                agent_model: p.agent_model.or_else(|| runner_model.map(str::to_string)),
-                agent_effort: p.agent_effort.or_else(|| runner_effort.map(str::to_string)),
+                agent_binary: p
+                    .agent_binary
+                    .or_else(|| global_binary_override.clone())
+                    .unwrap_or_else(|| runner_binary.to_string()),
+                agent_model: p
+                    .agent_model
+                    .or_else(|| global_model_override.clone())
+                    .or_else(|| runner_model.map(str::to_string)),
+                agent_effort: p
+                    .agent_effort
+                    .or_else(|| global_effort_override.clone())
+                    .or_else(|| runner_effort.map(str::to_string)),
                 agent_timeout: p.agent_timeout.or(global_timeout),
                 runner: effective_runner,
             }
@@ -350,9 +357,18 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             let runner_effort = runner_default_effort(&effective_runner);
             ReviewStepConfig {
                 prompt: s.prompt.unwrap_or_else(|| default_prompt.to_string()),
-                agent_binary: s.agent_binary.unwrap_or_else(|| runner_binary.to_string()),
-                agent_model: s.agent_model.or_else(|| runner_model.map(str::to_string)),
-                agent_effort: s.agent_effort.or_else(|| runner_effort.map(str::to_string)),
+                agent_binary: s
+                    .agent_binary
+                    .or_else(|| global_binary_override.clone())
+                    .unwrap_or_else(|| runner_binary.to_string()),
+                agent_model: s
+                    .agent_model
+                    .or_else(|| global_model_override.clone())
+                    .or_else(|| runner_model.map(str::to_string)),
+                agent_effort: s
+                    .agent_effort
+                    .or_else(|| global_effort_override.clone())
+                    .or_else(|| runner_effort.map(str::to_string)),
                 agent_timeout: s.agent_timeout.or(global_timeout),
                 runner: effective_runner,
             }
@@ -1052,5 +1068,83 @@ runner = "claude"
             config.review_aggregate.agent_model.as_deref(),
             Some("claude-opus-4-6")
         );
+    }
+
+    #[test]
+    fn test_review_phase_inherits_global_agent_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+runner = "codex"
+agent_binary = "/opt/agent-proxy"
+agent_model = "custom-model-v1"
+agent_effort = "medium"
+
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.review_phases[0].agent_binary, "/opt/agent-proxy");
+        assert_eq!(
+            config.review_phases[0].agent_model.as_deref(),
+            Some("custom-model-v1")
+        );
+        assert_eq!(
+            config.review_phases[0].agent_effort.as_deref(),
+            Some("medium")
+        );
+    }
+
+    #[test]
+    fn test_review_steps_inherit_global_agent_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+runner = "codex"
+agent_binary = "/opt/agent-proxy"
+agent_model = "custom-model-v1"
+agent_effort = "medium"
+
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+
+[review_aggregate]
+prompt = "review-aggregate"
+
+[review_fix]
+prompt = "review-fix"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+
+        assert_eq!(config.review_aggregate.agent_binary, "/opt/agent-proxy");
+        assert_eq!(
+            config.review_aggregate.agent_model.as_deref(),
+            Some("custom-model-v1")
+        );
+        assert_eq!(
+            config.review_aggregate.agent_effort.as_deref(),
+            Some("medium")
+        );
+
+        assert_eq!(config.review_fix.agent_binary, "/opt/agent-proxy");
+        assert_eq!(
+            config.review_fix.agent_model.as_deref(),
+            Some("custom-model-v1")
+        );
+        assert_eq!(config.review_fix.agent_effort.as_deref(), Some("medium"));
     }
 }
