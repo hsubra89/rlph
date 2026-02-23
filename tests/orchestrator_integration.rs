@@ -8,7 +8,7 @@ use rlph::config::{
     Config, ReviewPhaseConfig, ReviewStepConfig, default_review_phases, default_review_step,
 };
 use rlph::error::{Error, Result};
-use rlph::orchestrator::{Orchestrator, ReviewRunnerFactory};
+use rlph::orchestrator::{Orchestrator, ReviewInvocation, ReviewRunnerFactory};
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult};
 use rlph::sources::{Task, TaskSource};
@@ -28,6 +28,7 @@ struct SourceTracker {
 #[derive(Default)]
 struct SubmissionTracker {
     submissions: Vec<(String, String, String, String)>,
+    comments: Vec<(u64, String)>,
 }
 
 // --- Mock implementations ---
@@ -356,6 +357,11 @@ impl SubmissionBackend for MockSubmission {
     }
 
     fn comment_on_pr(&self, _pr_number: u64, _body: &str) -> Result<()> {
+        self.tracker
+            .lock()
+            .unwrap()
+            .comments
+            .push((_pr_number, _body.to_string()));
         Ok(())
     }
 }
@@ -506,6 +512,26 @@ fn make_config(dry_run: bool) -> Config {
         review_fix: default_review_step("review-fix"),
         linear: None,
     }
+}
+
+fn make_review_vars(
+    task: &Task,
+    repo_path: &Path,
+    branch: &str,
+    worktree_path: &Path,
+) -> HashMap<String, String> {
+    HashMap::from([
+        ("issue_title".to_string(), task.title.clone()),
+        ("issue_body".to_string(), task.body.clone()),
+        ("issue_number".to_string(), task.id.clone()),
+        ("issue_url".to_string(), task.url.clone()),
+        ("repo_path".to_string(), repo_path.display().to_string()),
+        ("branch_name".to_string(), branch.to_string()),
+        (
+            "worktree_path".to_string(),
+            worktree_path.display().to_string(),
+        ),
+    ])
 }
 
 /// Set up a git repo with a bare remote for testing.
@@ -1071,4 +1097,181 @@ async fn test_continuous_shutdown_exits_between_iterations() {
     // completes fully. Shutdown is only checked between iterations.
     assert_eq!(counts.choose.load(Ordering::SeqCst), 1);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_review_only_success_posts_comment_and_marks_review() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = MockSource::new(vec![task.clone()], Arc::clone(&source_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let worktree_info = worktree_mgr.create(42, "review-only").unwrap();
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let vars = make_review_vars(
+        &task,
+        repo_dir.path(),
+        &worktree_info.branch,
+        &worktree_info.path,
+    );
+
+    let orchestrator = Orchestrator::with_review_factory(
+        source,
+        MockRunner::new("gh-42"),
+        submission,
+        worktree_mgr,
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        make_config(false),
+        repo_dir.path().to_path_buf(),
+        ApprovedReviewFactory,
+    );
+
+    let invocation = ReviewInvocation {
+        task_id_for_state: "gh-42".to_string(),
+        mark_in_review_task_id: Some("42".to_string()),
+        worktree_info: worktree_info.clone(),
+        vars,
+        comment_pr_number: Some(77),
+    };
+    orchestrator
+        .run_review_for_existing_pr(invocation)
+        .await
+        .unwrap();
+
+    let source_data = source_tracker.lock().unwrap();
+    assert_eq!(source_data.marked_in_review, vec!["42".to_string()]);
+    drop(source_data);
+
+    let submission_data = sub_tracker.lock().unwrap();
+    assert_eq!(submission_data.comments.len(), 1);
+    assert_eq!(submission_data.comments[0].0, 77);
+    drop(submission_data);
+
+    let state = StateManager::new(&state_dir).load();
+    assert!(state.current_task.is_none());
+    assert_eq!(state.history.len(), 1);
+    assert_eq!(state.history[0].id, "gh-42");
+    assert!(!worktree_info.path.exists());
+}
+
+#[tokio::test]
+async fn test_review_only_without_linked_issue_skips_mark_in_review() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(88, "Review branch");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = MockSource::new(vec![task.clone()], Arc::clone(&source_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let worktree_info = worktree_mgr.create(88, "review-pr-only").unwrap();
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let vars = make_review_vars(
+        &task,
+        repo_dir.path(),
+        &worktree_info.branch,
+        &worktree_info.path,
+    );
+
+    let orchestrator = Orchestrator::with_review_factory(
+        source,
+        MockRunner::new("gh-88"),
+        submission,
+        worktree_mgr,
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        make_config(false),
+        repo_dir.path().to_path_buf(),
+        ApprovedReviewFactory,
+    );
+
+    let invocation = ReviewInvocation {
+        task_id_for_state: "pr-88".to_string(),
+        mark_in_review_task_id: None,
+        worktree_info,
+        vars,
+        comment_pr_number: Some(88),
+    };
+    orchestrator
+        .run_review_for_existing_pr(invocation)
+        .await
+        .unwrap();
+
+    let source_data = source_tracker.lock().unwrap();
+    assert!(source_data.marked_in_review.is_empty());
+    drop(source_data);
+
+    let state = StateManager::new(&state_dir).load();
+    assert!(state.current_task.is_none());
+    assert_eq!(state.history.len(), 1);
+    assert_eq!(state.history[0].id, "pr-88");
+}
+
+#[tokio::test]
+async fn test_review_only_exhaustion_preserves_state() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(99, "Needs fixes");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = MockSource::new(vec![task.clone()], Arc::clone(&source_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let worktree_info = worktree_mgr.create(99, "review-exhaustion").unwrap();
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let vars = make_review_vars(
+        &task,
+        repo_dir.path(),
+        &worktree_info.branch,
+        &worktree_info.path,
+    );
+
+    let mut config = make_config(true);
+    config.max_review_rounds = 2;
+    let orchestrator = Orchestrator::with_review_factory(
+        source,
+        MockRunner::new("gh-99"),
+        submission,
+        worktree_mgr,
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+        NeverApproveReviewFactory,
+    );
+
+    let invocation = ReviewInvocation {
+        task_id_for_state: "pr-99".to_string(),
+        mark_in_review_task_id: None,
+        worktree_info: worktree_info.clone(),
+        vars,
+        comment_pr_number: Some(99),
+    };
+    let err = orchestrator
+        .run_review_for_existing_pr(invocation)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("review did not complete"));
+
+    let state = StateManager::new(&state_dir).load();
+    assert!(state.current_task.is_some());
+    assert_eq!(state.current_task.unwrap().phase, "review");
+    assert!(state.history.is_empty());
+    assert!(worktree_info.path.exists());
 }

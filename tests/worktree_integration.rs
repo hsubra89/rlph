@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 use rlph::worktree::WorktreeManager;
@@ -37,6 +38,29 @@ fn init_temp_repo() -> TempDir {
     run(&["remote", "add", "origin", path_str]);
 
     dir
+}
+
+fn run_git(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn create_remote_branch(repo: &TempDir, branch: &str) {
+    run_git(repo.path(), &["checkout", "-b", branch]);
+    std::fs::write(repo.path().join("branch.txt"), branch).unwrap();
+    run_git(repo.path(), &["add", "."]);
+    run_git(repo.path(), &["commit", "-m", "branch commit"]);
+    run_git(repo.path(), &["push", "-u", "origin", branch]);
+    run_git(repo.path(), &["checkout", "main"]);
 }
 
 #[test]
@@ -198,4 +222,42 @@ fn test_create_multiple_worktrees() {
     // Finding each should work independently
     assert!(mgr.find_existing(1).unwrap().is_some());
     assert!(mgr.find_existing(2).unwrap().is_some());
+}
+
+#[test]
+fn test_create_for_branch() {
+    let repo = init_temp_repo();
+    let wt_base = TempDir::new().unwrap();
+    create_remote_branch(&repo, "feature/review-pr");
+
+    let mgr = WorktreeManager::new(
+        repo.path().to_path_buf(),
+        wt_base.path().to_path_buf(),
+        "main".to_string(),
+    );
+
+    let info = mgr.create_for_branch(77, "feature/review-pr").unwrap();
+    assert_eq!(info.branch, "feature/review-pr");
+    assert!(info.path.exists());
+    assert!(info.path.ends_with("rlph-pr-77-feature-review-pr"));
+    assert!(info.path.join("branch.txt").exists());
+}
+
+#[test]
+fn test_create_for_branch_reuses_existing() {
+    let repo = init_temp_repo();
+    let wt_base = TempDir::new().unwrap();
+    create_remote_branch(&repo, "feature/reuse-pr");
+
+    let mgr = WorktreeManager::new(
+        repo.path().to_path_buf(),
+        wt_base.path().to_path_buf(),
+        "main".to_string(),
+    );
+
+    let first = mgr.create_for_branch(88, "feature/reuse-pr").unwrap();
+    let second = mgr.create_for_branch(88, "feature/reuse-pr").unwrap();
+
+    assert_eq!(first.path, second.path);
+    assert_eq!(first.branch, second.branch);
 }

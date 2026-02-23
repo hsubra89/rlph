@@ -44,6 +44,9 @@ rlph --once
 
 # Run continuously, polling for new tasks
 rlph --continuous
+
+# Review an existing PR directly (skips choose/implement)
+rlph review 123
 ```
 
 ## Configuration
@@ -70,7 +73,7 @@ max_review_rounds = 3          # Max review rounds per task
 ```
 rlph — autonomous AI development loop
 
-Usage: rlph [OPTIONS]
+Usage: rlph [OPTIONS] [COMMAND]
 
 Options:
       --once                       Run a single iteration then exit
@@ -90,6 +93,11 @@ Options:
       --max-review-rounds <N>      Max review rounds per task
   -h, --help                       Print help
   -V, --version                    Print version
+
+Commands:
+  init                             Initialize project source integration
+  review <PR_NUMBER>               Run review phases directly for an existing GitHub PR
+  prd [DESCRIPTION]                Launch an interactive PRD-writing session
 ```
 
 Specify one of `--once`, `--continuous`, or `--max-iterations`. `--continuous` and `--max-iterations` can be combined.

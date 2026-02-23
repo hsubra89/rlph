@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -7,11 +8,12 @@ use tracing::info;
 
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
-use rlph::orchestrator::Orchestrator;
+use rlph::orchestrator::{Orchestrator, ReviewInvocation};
 use rlph::prd;
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AnyRunner, ClaudeRunner, CodexRunner};
 use rlph::sources::AnySource;
+use rlph::sources::TaskSource;
 use rlph::sources::github::GitHubSource;
 use rlph::sources::linear::LinearSource;
 use rlph::state::StateManager;
@@ -48,6 +50,120 @@ async fn main() {
                 }
             } else {
                 info!("init: nothing to do for source '{}'", init_cfg.source);
+            }
+            return;
+        }
+        Some(CliCommand::Review { pr_number }) => {
+            let config = match Config::load(&cli) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if config.source != "github" {
+                eprintln!("error: 'rlph review' supports only source = \"github\"");
+                std::process::exit(1);
+            }
+
+            let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let source: AnySource = AnySource::GitHub(GitHubSource::new(&config));
+            let timeout = config.agent_timeout.map(Duration::from_secs);
+            let runner = match config.runner.as_str() {
+                "codex" => AnyRunner::Codex(CodexRunner::new(
+                    config.agent_binary.clone(),
+                    config.agent_model.clone(),
+                    timeout,
+                    config.agent_timeout_retries,
+                )),
+                _ => AnyRunner::Claude(ClaudeRunner::new(
+                    config.agent_binary.clone(),
+                    config.agent_model.clone(),
+                    config.agent_effort.clone(),
+                    timeout,
+                    config.agent_timeout_retries,
+                )),
+            };
+
+            let submission = GitHubSubmission::new();
+            let pr_context = match submission.get_pr_context(pr_number) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+            let worktree_base = PathBuf::from(&config.worktree_dir);
+            let worktree_mgr =
+                WorktreeManager::new(repo_root.clone(), worktree_base, config.base_branch.clone());
+            let worktree_info =
+                match worktree_mgr.create_for_branch(pr_context.number, &pr_context.head_branch) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    }
+                };
+
+            let mut issue_title = pr_context.title.clone();
+            let mut issue_body = pr_context.body.clone();
+            let mut issue_number = pr_context.number.to_string();
+            let mut issue_url = pr_context.url.clone();
+            let mut task_id_for_state = format!("pr-{}", pr_context.number);
+            let mut mark_in_review_task_id: Option<String> = None;
+
+            if let Some(linked_issue_number) = pr_context.linked_issue_number {
+                let linked_issue_id = linked_issue_number.to_string();
+                if let Ok(task) = source.get_task_details(&linked_issue_id) {
+                    issue_title = task.title;
+                    issue_body = task.body;
+                    issue_number = task.id.clone();
+                    issue_url = task.url;
+                    task_id_for_state = format!("gh-{linked_issue_number}");
+                    mark_in_review_task_id = Some(task.id);
+                } else {
+                    task_id_for_state = format!("gh-{linked_issue_number}");
+                    mark_in_review_task_id = Some(linked_issue_id);
+                }
+            }
+
+            let mut vars = HashMap::new();
+            vars.insert("issue_title".to_string(), issue_title);
+            vars.insert("issue_body".to_string(), issue_body);
+            vars.insert("issue_number".to_string(), issue_number);
+            vars.insert("issue_url".to_string(), issue_url);
+            vars.insert("repo_path".to_string(), repo_root.display().to_string());
+            vars.insert("branch_name".to_string(), worktree_info.branch.clone());
+            vars.insert(
+                "worktree_path".to_string(),
+                worktree_info.path.display().to_string(),
+            );
+
+            let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
+            let prompt_engine = PromptEngine::new(None);
+            let orchestrator = Orchestrator::new(
+                source,
+                runner,
+                submission,
+                worktree_mgr,
+                state_mgr,
+                prompt_engine,
+                config,
+                repo_root,
+            );
+
+            let invocation = ReviewInvocation {
+                task_id_for_state,
+                mark_in_review_task_id,
+                worktree_info,
+                vars,
+                comment_pr_number: Some(pr_context.number),
+            };
+
+            if let Err(e) = orchestrator.run_review_for_existing_pr(invocation).await {
+                eprintln!("error: {e}");
+                std::process::exit(1);
             }
             return;
         }

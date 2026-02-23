@@ -35,6 +35,14 @@ pub enum IterationOutcome {
     NoEligibleTasks,
 }
 
+pub struct ReviewInvocation {
+    pub task_id_for_state: String,
+    pub mark_in_review_task_id: Option<String>,
+    pub worktree_info: WorktreeInfo,
+    pub vars: HashMap<String, String>,
+    pub comment_pr_number: Option<u64>,
+}
+
 /// Factory for creating review-phase runners. Defaults to `build_runner`.
 /// Override in tests to inject mock runners.
 pub trait ReviewRunnerFactory: Send + Sync {
@@ -195,6 +203,50 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
     pub async fn run_once(&self) -> Result<()> {
         let _ = self.run_iteration().await?;
         Ok(())
+    }
+
+    /// Run only the review pipeline for an already-selected PR/worktree context.
+    pub async fn run_review_for_existing_pr(&self, invocation: ReviewInvocation) -> Result<()> {
+        self.state_mgr.set_current_task(
+            &invocation.task_id_for_state,
+            "review",
+            &invocation.worktree_info.path.display().to_string(),
+        )?;
+
+        if !self.config.dry_run
+            && let Some(task_id) = invocation.mark_in_review_task_id.as_deref()
+        {
+            self.source.mark_in_review(task_id)?;
+        }
+
+        let result = self
+            .run_review_pipeline(
+                &invocation.vars,
+                &invocation.worktree_info,
+                invocation.comment_pr_number,
+            )
+            .await;
+
+        match result {
+            Ok(()) => {
+                self.state_mgr.complete_current_task()?;
+
+                info!("[rlph:orchestrator] Cleaning up worktree...");
+                if let Err(e) = self.worktree_mgr.remove(&invocation.worktree_info.path) {
+                    warn!("[rlph:orchestrator] Failed to clean up worktree: {e}");
+                }
+                let _ = self
+                    .state_mgr
+                    .remove_worktree_mapping(&invocation.task_id_for_state);
+
+                info!("[rlph:orchestrator] Review-only run complete");
+                Ok(())
+            }
+            Err(e) => {
+                warn!("[rlph:orchestrator] Review-only run failed: {e}");
+                Err(e)
+            }
+        }
     }
 
     async fn run_iteration(&self) -> Result<IterationOutcome> {
@@ -386,7 +438,16 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             self.source.mark_in_review(&task.id)?;
         }
 
-        // 11. Parallel multi-phase review loop
+        self.run_review_pipeline(&vars, worktree_info, pr_number)
+            .await
+    }
+
+    async fn run_review_pipeline(
+        &self,
+        vars: &HashMap<String, String>,
+        worktree_info: &WorktreeInfo,
+        pr_number: Option<u64>,
+    ) -> Result<()> {
         self.state_mgr.update_phase("review")?;
         let max_reviews = self.config.max_review_rounds;
         let mut review_passed = false;
@@ -394,7 +455,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
         for round in 1..=max_reviews {
             info!("[rlph:orchestrator] Review round {round}/{max_reviews}...");
 
-            // 11a. Run all review phases in parallel
+            // Run all configured review phases in parallel.
             let mut join_set = tokio::task::JoinSet::new();
             for phase_config in &self.config.review_phases {
                 let phase_runner = self
@@ -422,13 +483,11 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 });
             }
 
-            // Collect results, fail on any error
             let mut review_outputs = Vec::new();
             while let Some(result) = join_set.join_next().await {
                 review_outputs.push(result.map_err(|e| Error::AgentRunner(e.to_string()))??);
             }
 
-            // 11b. Run aggregation agent
             let review_outputs_text = review_outputs
                 .iter()
                 .map(|o| {
@@ -457,7 +516,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 .run(Phase::ReviewAggregate, &agg_prompt, &worktree_info.path)
                 .await?;
 
-            // 11c. Comment findings on PR
             if let Some(pr_num) = pr_number
                 && !self.config.dry_run
             {
@@ -467,14 +525,12 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 }
             }
 
-            // 11d. Check if approved
             if agg_result.stdout.contains("REVIEW_APPROVED") {
                 info!("[rlph:orchestrator] Review approved at round {round}");
                 review_passed = true;
                 break;
             }
 
-            // 11e. Extract fix instructions and run fix agent
             let fix_instructions = match extract_fix_instructions(&agg_result.stdout) {
                 Some(instructions) => instructions,
                 None => {
@@ -502,7 +558,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 .run(Phase::ReviewFix, &fix_prompt, &worktree_info.path)
                 .await?;
 
-            // Push fixes
             if !self.config.dry_run
                 && let Err(e) = self.push_branch(worktree_info)
             {

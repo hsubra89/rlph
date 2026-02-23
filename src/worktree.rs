@@ -175,6 +175,118 @@ impl WorktreeManager {
         })
     }
 
+    /// Create a worktree for a PR review against an existing branch.
+    /// Reuses an existing dedicated PR worktree when present.
+    pub fn create_for_branch(&self, pr_number: u64, branch: &str) -> Result<WorktreeInfo> {
+        let slug = {
+            let s = Self::slugify(branch);
+            if s.is_empty() {
+                "branch".to_string()
+            } else {
+                s
+            }
+        };
+        let name = format!("rlph-pr-{pr_number}-{slug}");
+
+        if let Some(existing) = self.find_existing_by_name(&name)? {
+            info!(
+                pr = pr_number,
+                branch,
+                path = %existing.path.display(),
+                "reusing existing PR review worktree"
+            );
+            return Ok(existing);
+        }
+
+        let path = self.base_dir.join(&name);
+
+        std::fs::create_dir_all(&self.base_dir).map_err(|e| {
+            Error::Worktree(format!(
+                "failed to create base dir {}: {e}",
+                self.base_dir.display()
+            ))
+        })?;
+
+        // Fetch latest branch from origin (mandatory, with retries)
+        {
+            let max_attempts = 3;
+            let mut last_err = String::new();
+            let mut fetched = false;
+            for attempt in 1..=max_attempts {
+                match self.git(&["fetch", "origin", branch]) {
+                    Ok(_) => {
+                        fetched = true;
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(
+                            attempt,
+                            max_attempts,
+                            error = %e.trim(),
+                            "git fetch origin {} failed",
+                            branch
+                        );
+                        last_err = e;
+                        if attempt < max_attempts {
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                        }
+                    }
+                }
+            }
+            if !fetched {
+                return Err(Error::Worktree(format!(
+                    "failed to fetch origin/{} after {max_attempts} attempts: {}",
+                    branch,
+                    last_err.trim()
+                )));
+            }
+        }
+
+        let remote_ref = format!("origin/{branch}");
+        let local_ref = format!("refs/heads/{branch}");
+        let branch_exists = self
+            .git(&["show-ref", "--verify", "--quiet", &local_ref])
+            .is_ok();
+        if branch_exists {
+            self.git(&["branch", "-f", branch, &remote_ref])
+                .map_err(|e| {
+                    Error::Worktree(format!(
+                        "failed to fast-forward local branch '{branch}' to {remote_ref}: {e}"
+                    ))
+                })?;
+        }
+
+        let create_result = if branch_exists {
+            self.git_worktree_add(&path, branch, false, None)
+        } else {
+            self.git_worktree_add(&path, branch, true, Some(&remote_ref))
+        };
+
+        create_result?;
+
+        let canonical_path = path.canonicalize().unwrap_or(path);
+        let commit_sha = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&canonical_path)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        info!(
+            pr = pr_number,
+            path = %canonical_path.display(),
+            branch,
+            commit = %commit_sha,
+            "created PR review worktree"
+        );
+        Ok(WorktreeInfo {
+            path: canonical_path,
+            branch: branch.to_string(),
+        })
+    }
+
     /// Remove a worktree and delete its branch.
     pub fn remove(&self, worktree_path: &Path) -> Result<()> {
         // Canonicalize to match git's output paths
@@ -250,6 +362,46 @@ impl WorktreeManager {
         if let Some(ref path) = current_path
             && let Some(name) = path.file_name().and_then(|n| n.to_str())
             && name.starts_with(&prefix)
+        {
+            return Ok(Some(WorktreeInfo {
+                path: path.clone(),
+                branch: current_branch.unwrap_or_else(|| name.to_string()),
+            }));
+        }
+
+        Ok(None)
+    }
+
+    fn find_existing_by_name(&self, name: &str) -> Result<Option<WorktreeInfo>> {
+        let _ = self.git(&["worktree", "prune"]);
+        let output = self
+            .git(&["worktree", "list", "--porcelain"])
+            .map_err(|e| Error::Worktree(format!("failed to list worktrees: {e}")))?;
+
+        let mut current_path: Option<PathBuf> = None;
+        let mut current_branch: Option<String> = None;
+
+        for line in output.lines() {
+            if let Some(path_str) = line.strip_prefix("worktree ") {
+                if let Some(ref path) = current_path
+                    && path.file_name().and_then(|n| n.to_str()) == Some(name)
+                {
+                    return Ok(Some(WorktreeInfo {
+                        path: path.clone(),
+                        branch: current_branch.unwrap_or_else(|| name.to_string()),
+                    }));
+                }
+                current_path = Some(PathBuf::from(path_str));
+                current_branch = None;
+            } else if let Some(branch_ref) = line.strip_prefix("branch ") {
+                current_branch = branch_ref
+                    .strip_prefix("refs/heads/")
+                    .map(|b| b.to_string());
+            }
+        }
+
+        if let Some(ref path) = current_path
+            && path.file_name().and_then(|n| n.to_str()) == Some(name)
         {
             return Ok(Some(WorktreeInfo {
                 path: path.clone(),

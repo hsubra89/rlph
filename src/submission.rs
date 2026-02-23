@@ -1,5 +1,6 @@
 use std::process::Command;
 
+use serde::Deserialize;
 use tracing::info;
 
 use crate::error::{Error, Result};
@@ -8,6 +9,16 @@ use crate::error::{Error, Result};
 pub struct SubmitResult {
     pub url: String,
     pub number: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrContext {
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+    pub url: String,
+    pub head_branch: String,
+    pub linked_issue_number: Option<u64>,
 }
 
 pub trait SubmissionBackend {
@@ -105,6 +116,29 @@ impl GitHubSubmission {
 
         Ok(None)
     }
+
+    pub fn get_pr_context(&self, pr_number: u64) -> Result<PrContext> {
+        let number_str = pr_number.to_string();
+        let output = Command::new("gh")
+            .args([
+                "pr",
+                "view",
+                &number_str,
+                "--json",
+                "number,title,body,url,headRefName,closingIssuesReferences",
+            ])
+            .output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Submission(format!("gh pr view failed: {stderr}")));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_pr_context_json(&stdout)
+            .map_err(|e| Error::Submission(format!("failed to parse gh pr view output: {e}")))
+    }
 }
 
 impl SubmissionBackend for GitHubSubmission {
@@ -167,9 +201,44 @@ fn pr_body_references_issue(body: &str, issue_number: u64) -> bool {
     })
 }
 
+#[derive(Debug, Deserialize)]
+struct GhIssueRef {
+    number: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhPrView {
+    number: u64,
+    title: String,
+    #[serde(default)]
+    body: String,
+    url: String,
+    #[serde(rename = "headRefName")]
+    head_ref_name: String,
+    #[serde(rename = "closingIssuesReferences", default)]
+    closing_issues_references: Vec<GhIssueRef>,
+}
+
+fn parse_pr_context_json(json: &str) -> std::result::Result<PrContext, String> {
+    let pr: GhPrView =
+        serde_json::from_str(json).map_err(|e| format!("invalid json payload: {e}"))?;
+    if pr.head_ref_name.trim().is_empty() {
+        return Err("missing headRefName".to_string());
+    }
+
+    Ok(PrContext {
+        number: pr.number,
+        title: pr.title,
+        body: pr.body,
+        url: pr.url,
+        head_branch: pr.head_ref_name,
+        linked_issue_number: pr.closing_issues_references.first().map(|i| i.number),
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_pr_number_from_url, pr_body_references_issue};
+    use super::{parse_pr_context_json, parse_pr_number_from_url, pr_body_references_issue};
 
     #[test]
     fn test_pr_body_references_issue_exact_match() {
@@ -197,5 +266,56 @@ mod tests {
             Some(1)
         );
         assert_eq!(parse_pr_number_from_url("not-a-url"), None);
+    }
+
+    #[test]
+    fn test_parse_pr_context_json_with_linked_issue() {
+        let json = r#"{
+            "number": 9,
+            "title": "Fix race condition",
+            "body": "Resolves #42",
+            "url": "https://github.com/o/r/pull/9",
+            "headRefName": "feature/fix-race",
+            "closingIssuesReferences": [{"number": 42}]
+        }"#;
+
+        let ctx = parse_pr_context_json(json).unwrap();
+        assert_eq!(ctx.number, 9);
+        assert_eq!(ctx.title, "Fix race condition");
+        assert_eq!(ctx.body, "Resolves #42");
+        assert_eq!(ctx.url, "https://github.com/o/r/pull/9");
+        assert_eq!(ctx.head_branch, "feature/fix-race");
+        assert_eq!(ctx.linked_issue_number, Some(42));
+    }
+
+    #[test]
+    fn test_parse_pr_context_json_without_linked_issue() {
+        let json = r#"{
+            "number": 11,
+            "title": "Refactor worker",
+            "body": "",
+            "url": "https://github.com/o/r/pull/11",
+            "headRefName": "refactor/worker",
+            "closingIssuesReferences": []
+        }"#;
+
+        let ctx = parse_pr_context_json(json).unwrap();
+        assert_eq!(ctx.number, 11);
+        assert_eq!(ctx.linked_issue_number, None);
+    }
+
+    #[test]
+    fn test_parse_pr_context_json_missing_head_ref_rejected() {
+        let json = r#"{
+            "number": 11,
+            "title": "Refactor worker",
+            "body": "",
+            "url": "https://github.com/o/r/pull/11",
+            "headRefName": "",
+            "closingIssuesReferences": []
+        }"#;
+
+        let err = parse_pr_context_json(json).unwrap_err();
+        assert!(err.contains("headRefName"));
     }
 }
