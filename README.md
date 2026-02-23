@@ -2,6 +2,20 @@
 
 Autonomous AI development loop CLI. Fetches tasks from issue trackers, spins up an AI agent to implement them, reviews the output, and submits pull requests — all in a single command.
 
+## What is a Ralph Loop?
+
+A ralph loop is a fully autonomous cycle where an AI agent picks up a task, implements it, reviews its own work, and submits the result — without human intervention. The loop looks like this:
+
+```
+fetch task → choose → implement → self-review → submit PR → repeat
+```
+
+Each iteration is self-contained: the agent works in an isolated git worktree, so the main branch stays clean regardless of what the agent produces. If the self-review fails, the agent iterates on its own changes up to a configurable number of rounds before giving up.
+
+In practice, you label issues in your tracker (GitHub, Linear), point `rlph` at the repo, and walk away. The tool handles task selection (including dependency ordering), worktree lifecycle, agent orchestration across choose/implement/review phases, branch pushing, and PR creation.
+
+`rlph` is agent-agnostic — it shells out to any CLI-based coding agent (Claude Code, OpenAI Codex) via a simple trait interface, so you can swap models without changing your workflow.
+
 ## Installation
 
 ```bash
