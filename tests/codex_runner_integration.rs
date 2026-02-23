@@ -121,7 +121,11 @@ async fn test_codex_nonzero_exit_detected() {
         .run(Phase::Implement, "fail", tmp.as_ref())
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("agent exited with code 1"));
+    let msg = err.to_string();
+    assert!(
+        msg.contains("agent exited with code 1"),
+        "expected 'agent exited with code 1', got: {msg}"
+    );
 }
 
 #[tokio::test]

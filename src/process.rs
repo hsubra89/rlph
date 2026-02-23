@@ -220,11 +220,14 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
         match t.await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                if status.success() || e.kind() != std::io::ErrorKind::BrokenPipe {
+                if status.success() {
                     return Err(Error::Process(format!("failed to write stdin: {e}")));
                 }
+                // Process exited non-zero — stdin write failures (BrokenPipe,
+                // ConnectionReset, etc.) are expected side-effects; the exit
+                // code is the real error.
                 warn!(
-                    "[{log_prefix}] stdin write hit broken pipe (ignored, process exited non-zero)"
+                    "[{log_prefix}] stdin write failed ({e}), ignored — process exited non-zero"
                 );
             }
             Err(e) => {
