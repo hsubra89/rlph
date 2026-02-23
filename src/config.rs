@@ -242,6 +242,27 @@ pub fn parse_config(content: &str) -> Result<ConfigFile> {
     Ok(config)
 }
 
+fn runner_default_binary(runner: &str) -> &'static str {
+    match runner {
+        "codex" => "codex",
+        _ => "claude",
+    }
+}
+
+fn runner_default_model(runner: &str) -> Option<&'static str> {
+    match runner {
+        "codex" => Some("gpt-5.3-codex"),
+        _ => Some("claude-opus-4-6"),
+    }
+}
+
+fn runner_default_effort(runner: &str) -> Option<&'static str> {
+    match runner {
+        "claude" => Some("high"),
+        _ => None,
+    }
+}
+
 pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
     let runner = cli
         .runner
@@ -249,18 +270,9 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         .or(file.runner)
         .unwrap_or_else(|| "claude".to_string());
 
-    let default_binary = match runner.as_str() {
-        "codex" => "codex",
-        _ => "claude",
-    };
-    let default_model = match runner.as_str() {
-        "codex" => Some("gpt-5.3-codex"),
-        _ => Some("claude-opus-4-6"),
-    };
-    let default_effort = match runner.as_str() {
-        "claude" => Some("high"),
-        _ => None,
-    };
+    let default_binary = runner_default_binary(&runner);
+    let default_model = runner_default_model(&runner);
+    let default_effort = runner_default_effort(&runner);
 
     let linear = file.linear.map(|lc| LinearConfig {
         team: lc.team.unwrap_or_default(),
@@ -312,16 +324,20 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
                 .collect()
         })
         .into_iter()
-        .map(|p| ReviewPhaseConfig {
-            name: p.name,
-            prompt: p.prompt,
-            runner: p.runner.unwrap_or_else(|| global_runner.clone()),
-            agent_binary: p
-                .agent_binary
-                .unwrap_or_else(|| global_binary.clone()),
-            agent_model: p.agent_model.or_else(|| global_model.clone()),
-            agent_effort: p.agent_effort.or_else(|| global_effort.clone()),
-            agent_timeout: p.agent_timeout.or(global_timeout),
+        .map(|p| {
+            let effective_runner = p.runner.unwrap_or_else(|| global_runner.clone());
+            let runner_binary = runner_default_binary(&effective_runner);
+            let runner_model = runner_default_model(&effective_runner);
+            let runner_effort = runner_default_effort(&effective_runner);
+            ReviewPhaseConfig {
+                name: p.name,
+                prompt: p.prompt,
+                agent_binary: p.agent_binary.unwrap_or_else(|| runner_binary.to_string()),
+                agent_model: p.agent_model.or_else(|| runner_model.map(str::to_string)),
+                agent_effort: p.agent_effort.or_else(|| runner_effort.map(str::to_string)),
+                agent_timeout: p.agent_timeout.or(global_timeout),
+                runner: effective_runner,
+            }
         })
         .collect();
 
@@ -329,17 +345,19 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
                         default_prompt: &str|
      -> ReviewStepConfig {
         let s = step.unwrap_or_default();
+        let effective_runner = s.runner.unwrap_or_else(|| global_runner.clone());
+        let runner_binary = runner_default_binary(&effective_runner);
+        let runner_model = runner_default_model(&effective_runner);
+        let runner_effort = runner_default_effort(&effective_runner);
         ReviewStepConfig {
             prompt: s
                 .prompt
                 .unwrap_or_else(|| default_prompt.to_string()),
-            runner: s.runner.unwrap_or_else(|| global_runner.clone()),
-            agent_binary: s
-                .agent_binary
-                .unwrap_or_else(|| global_binary.clone()),
-            agent_model: s.agent_model.or_else(|| global_model.clone()),
-            agent_effort: s.agent_effort.or_else(|| global_effort.clone()),
+            agent_binary: s.agent_binary.unwrap_or_else(|| runner_binary.to_string()),
+            agent_model: s.agent_model.or_else(|| runner_model.map(str::to_string)),
+            agent_effort: s.agent_effort.or_else(|| runner_effort.map(str::to_string)),
             agent_timeout: s.agent_timeout.or(global_timeout),
+            runner: effective_runner,
         }
     };
 
@@ -985,5 +1003,65 @@ prompt = "check-review"
         let config = Config::load_from(&cli, tmp.path()).unwrap();
         assert_eq!(config.review_phases[0].runner, "codex");
         assert_eq!(config.review_phases[0].agent_binary, "codex");
+    }
+
+    #[test]
+    fn test_review_phase_overrides_runner_gets_correct_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+runner = "codex"
+
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+runner = "claude"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.review_phases[0].runner, "claude");
+        assert_eq!(config.review_phases[0].agent_binary, "claude");
+        assert_eq!(
+            config.review_phases[0].agent_model.as_deref(),
+            Some("claude-opus-4-6")
+        );
+        assert_eq!(
+            config.review_phases[0].agent_effort.as_deref(),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn test_review_step_overrides_runner_gets_correct_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+runner = "codex"
+
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+
+[review_aggregate]
+runner = "claude"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.review_aggregate.runner, "claude");
+        assert_eq!(config.review_aggregate.agent_binary, "claude");
+        assert_eq!(
+            config.review_aggregate.agent_model.as_deref(),
+            Some("claude-opus-4-6")
+        );
     }
 }

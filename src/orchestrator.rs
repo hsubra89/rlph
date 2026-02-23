@@ -437,10 +437,12 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             let review_outputs_text = review_outputs
                 .iter()
                 .map(|o| {
-                    format!(
-                        "## Review Phase: {}\n\n### stdout\n{}\n\n### stderr\n{}",
-                        o.name, o.stdout, o.stderr
-                    )
+                    let mut section =
+                        format!("## Review Phase: {}\n\n### stdout\n{}", o.name, o.stdout);
+                    if !o.stderr.trim().is_empty() {
+                        section.push_str(&format!("\n\n### stderr\n{}", o.stderr));
+                    }
+                    section
                 })
                 .collect::<Vec<_>>()
                 .join("\n\n---\n\n");
