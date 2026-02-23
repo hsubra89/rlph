@@ -21,6 +21,7 @@ pub struct ConfigFile {
     pub agent_binary: Option<String>,
     pub agent_model: Option<String>,
     pub agent_timeout: Option<u64>,
+    pub agent_effort: Option<String>,
     pub max_review_rounds: Option<u32>,
     pub agent_timeout_retries: Option<u32>,
 }
@@ -41,6 +42,7 @@ pub struct Config {
     pub agent_binary: String,
     pub agent_model: Option<String>,
     pub agent_timeout: Option<u64>,
+    pub agent_effort: Option<String>,
     pub max_review_rounds: u32,
     pub agent_timeout_retries: u32,
 }
@@ -95,6 +97,10 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
     };
     let default_model = match runner.as_str() {
         "codex" => Some("gpt-5.3-codex"),
+        _ => Some("claude-opus-4-6"),
+    };
+    let default_effort = match runner.as_str() {
+        "claude" => Some("high"),
         _ => None,
     };
 
@@ -141,6 +147,11 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .or(file.agent_model)
             .or_else(|| default_model.map(str::to_string)),
         agent_timeout: cli.agent_timeout.or(file.agent_timeout).or(Some(600)),
+        agent_effort: cli
+            .agent_effort
+            .clone()
+            .or(file.agent_effort)
+            .or_else(|| default_effort.map(str::to_string)),
         max_review_rounds: cli
             .max_review_rounds
             .or(file.max_review_rounds)
@@ -307,7 +318,8 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.label, "rlph");
         assert_eq!(config.poll_seconds, 30);
         assert_eq!(config.agent_binary, "claude");
-        assert_eq!(config.agent_model, None);
+        assert_eq!(config.agent_model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(config.agent_effort.as_deref(), Some("high"));
         assert_eq!(config.agent_timeout, Some(600));
         assert_eq!(config.agent_timeout_retries, 2);
     }
@@ -336,7 +348,8 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.label, "rlph");
         assert_eq!(config.poll_seconds, 30);
         assert_eq!(config.agent_binary, "claude");
-        assert_eq!(config.agent_model, None);
+        assert_eq!(config.agent_model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(config.agent_effort.as_deref(), Some("high"));
         assert!(config.once);
     }
 

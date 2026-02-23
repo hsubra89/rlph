@@ -52,17 +52,21 @@ pub struct Cli {
     #[arg(long)]
     pub base_branch: Option<String>,
 
-    /// Agent binary to use (default: codex)
+    /// Agent binary to use (default: claude)
     #[arg(long)]
     pub agent_binary: Option<String>,
 
-    /// Model for the agent to use (default for codex: gpt-5.3-codex)
+    /// Model for the agent to use (default for claude: claude-opus-4-6)
     #[arg(long)]
     pub agent_model: Option<String>,
 
     /// Agent timeout in seconds
     #[arg(long)]
     pub agent_timeout: Option<u64>,
+
+    /// Effort level for the agent (low, medium, high) — Claude runner only
+    #[arg(long)]
+    pub agent_effort: Option<String>,
 
     /// Maximum review rounds per task
     #[arg(long)]
