@@ -1,5 +1,7 @@
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tracing::{info, warn};
@@ -12,6 +14,8 @@ pub enum Phase {
     Choose,
     Implement,
     Review,
+    ReviewAggregate,
+    ReviewFix,
 }
 
 impl fmt::Display for Phase {
@@ -20,7 +24,35 @@ impl fmt::Display for Phase {
             Phase::Choose => write!(f, "choose"),
             Phase::Implement => write!(f, "implement"),
             Phase::Review => write!(f, "review"),
+            Phase::ReviewAggregate => write!(f, "review-aggregate"),
+            Phase::ReviewFix => write!(f, "review-fix"),
         }
+    }
+}
+
+/// Build an `AnyRunner` from config values.
+pub fn build_runner(
+    runner: &str,
+    agent_binary: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    timeout: Option<Duration>,
+    timeout_retries: u32,
+) -> AnyRunner {
+    match runner {
+        "codex" => AnyRunner::Codex(CodexRunner::new(
+            agent_binary.to_string(),
+            model.map(str::to_string),
+            timeout,
+            timeout_retries,
+        )),
+        _ => AnyRunner::Claude(ClaudeRunner::new(
+            agent_binary.to_string(),
+            model.map(str::to_string),
+            effort.map(str::to_string),
+            timeout,
+            timeout_retries,
+        )),
     }
 }
 
@@ -231,10 +263,38 @@ impl AgentRunner for ClaudeRunner {
     }
 }
 
-/// Enum dispatching to either Claude or Codex runner.
+/// Type alias for a callback function used in `CallbackRunner`.
+pub type RunnerCallbackFn = dyn Fn(
+        Phase,
+        String,
+        PathBuf,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<RunResult>> + Send>>
+    + Send
+    + Sync;
+
+/// A runner backed by a callback function, primarily for testing.
+pub struct CallbackRunner {
+    callback: Arc<RunnerCallbackFn>,
+}
+
+impl CallbackRunner {
+    pub fn new(callback: Arc<RunnerCallbackFn>) -> Self {
+        Self { callback }
+    }
+}
+
+impl AgentRunner for CallbackRunner {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        let fut = (self.callback)(phase, prompt.to_string(), working_dir.to_path_buf());
+        fut.await
+    }
+}
+
+/// Enum dispatching to either Claude, Codex, or callback runner.
 pub enum AnyRunner {
     Claude(ClaudeRunner),
     Codex(CodexRunner),
+    Callback(CallbackRunner),
 }
 
 impl AgentRunner for AnyRunner {
@@ -242,6 +302,7 @@ impl AgentRunner for AnyRunner {
         match self {
             AnyRunner::Claude(r) => r.run(phase, prompt, working_dir).await,
             AnyRunner::Codex(r) => r.run(phase, prompt, working_dir).await,
+            AnyRunner::Callback(r) => r.run(phase, prompt, working_dir).await,
         }
     }
 }
@@ -510,6 +571,20 @@ mod tests {
         assert_eq!(Phase::Choose.to_string(), "choose");
         assert_eq!(Phase::Implement.to_string(), "implement");
         assert_eq!(Phase::Review.to_string(), "review");
+        assert_eq!(Phase::ReviewAggregate.to_string(), "review-aggregate");
+        assert_eq!(Phase::ReviewFix.to_string(), "review-fix");
+    }
+
+    #[test]
+    fn test_build_runner_claude() {
+        let runner = build_runner("claude", "claude", Some("opus"), Some("high"), None, 2);
+        assert!(matches!(runner, AnyRunner::Claude(_)));
+    }
+
+    #[test]
+    fn test_build_runner_codex() {
+        let runner = build_runner("codex", "codex", Some("gpt-5.3"), None, None, 2);
+        assert!(matches!(runner, AnyRunner::Codex(_)));
     }
 
     #[test]

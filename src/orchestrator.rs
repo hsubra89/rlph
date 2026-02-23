@@ -7,15 +7,22 @@ use serde::Deserialize;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
 use crate::deps::DependencyGraph;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
-use crate::runner::{AgentRunner, Phase};
+use crate::runner::{AgentRunner, AnyRunner, Phase, build_runner};
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
 use crate::submission::SubmissionBackend;
 use crate::worktree::{WorktreeInfo, WorktreeManager};
+
+#[derive(Debug)]
+struct ReviewPhaseOutput {
+    name: String,
+    stdout: String,
+    stderr: String,
+}
 
 #[derive(Deserialize)]
 struct TaskSelection {
@@ -28,7 +35,41 @@ pub enum IterationOutcome {
     NoEligibleTasks,
 }
 
-pub struct Orchestrator<S, R, B> {
+/// Factory for creating review-phase runners. Defaults to `build_runner`.
+/// Override in tests to inject mock runners.
+pub trait ReviewRunnerFactory: Send + Sync {
+    fn create_phase_runner(&self, phase: &ReviewPhaseConfig, timeout_retries: u32) -> AnyRunner;
+    fn create_step_runner(&self, step: &ReviewStepConfig, timeout_retries: u32) -> AnyRunner;
+}
+
+/// Default factory that creates real runners from config.
+pub struct DefaultReviewRunnerFactory;
+
+impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
+    fn create_phase_runner(&self, phase: &ReviewPhaseConfig, timeout_retries: u32) -> AnyRunner {
+        build_runner(
+            &phase.runner,
+            &phase.agent_binary,
+            phase.agent_model.as_deref(),
+            phase.agent_effort.as_deref(),
+            phase.agent_timeout.map(Duration::from_secs),
+            timeout_retries,
+        )
+    }
+
+    fn create_step_runner(&self, step: &ReviewStepConfig, timeout_retries: u32) -> AnyRunner {
+        build_runner(
+            &step.runner,
+            &step.agent_binary,
+            step.agent_model.as_deref(),
+            step.agent_effort.as_deref(),
+            step.agent_timeout.map(Duration::from_secs),
+            timeout_retries,
+        )
+    }
+}
+
+pub struct Orchestrator<S, R, B, F = DefaultReviewRunnerFactory> {
     source: S,
     runner: R,
     submission: B,
@@ -37,6 +78,7 @@ pub struct Orchestrator<S, R, B> {
     prompt_engine: PromptEngine,
     config: Config,
     repo_root: PathBuf,
+    review_factory: F,
 }
 
 impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> {
@@ -60,6 +102,36 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             prompt_engine,
             config,
             repo_root,
+            review_factory: DefaultReviewRunnerFactory,
+        }
+    }
+}
+
+impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory>
+    Orchestrator<S, R, B, F>
+{
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_review_factory(
+        source: S,
+        runner: R,
+        submission: B,
+        worktree_mgr: WorktreeManager,
+        state_mgr: StateManager,
+        prompt_engine: PromptEngine,
+        config: Config,
+        repo_root: PathBuf,
+        review_factory: F,
+    ) -> Self {
+        Self {
+            source,
+            runner,
+            submission,
+            worktree_mgr,
+            state_mgr,
+            prompt_engine,
+            config,
+            repo_root,
+            review_factory,
         }
     }
 
@@ -290,8 +362,9 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
         }
 
         // 9. Submit PR (skip if choose agent reported an existing PR)
-        if let Some(pr) = existing_pr_number {
+        let pr_number = if let Some(pr) = existing_pr_number {
             info!("[rlph:orchestrator] Skipping PR submission — existing PR #{pr}");
+            Some(pr)
         } else if !self.config.dry_run {
             info!("[rlph:orchestrator] Submitting PR...");
             let pr_body = format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.");
@@ -302,38 +375,138 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
                 &pr_body,
             )?;
             info!("[rlph:orchestrator] PR: {}", result.url);
+            result.number
         } else {
             info!("[rlph:orchestrator] Dry run — skipping PR submission");
-        }
+            None
+        };
 
         // 10. Mark in-review
         if !self.config.dry_run {
             self.source.mark_in_review(&task.id)?;
         }
 
-        // 11. Review loop
+        // 11. Parallel multi-phase review loop
         self.state_mgr.update_phase("review")?;
         let max_reviews = self.config.max_review_rounds;
         let mut review_passed = false;
+
         for round in 1..=max_reviews {
             info!("[rlph:orchestrator] Review round {round}/{max_reviews}...");
-            let review_prompt = self.prompt_engine.render_phase("review", &vars)?;
-            let review_result = self
-                .runner
-                .run(Phase::Review, &review_prompt, &worktree_info.path)
+
+            // 11a. Run all review phases in parallel
+            let mut join_set = tokio::task::JoinSet::new();
+            for phase_config in &self.config.review_phases {
+                let phase_runner = self
+                    .review_factory
+                    .create_phase_runner(phase_config, self.config.agent_timeout_retries);
+
+                let mut phase_vars = vars.clone();
+                phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());
+
+                let prompt = self
+                    .prompt_engine
+                    .render_phase(&phase_config.prompt, &phase_vars)?;
+                let working_dir = worktree_info.path.clone();
+                let phase_name = phase_config.name.clone();
+
+                join_set.spawn(async move {
+                    let result = phase_runner
+                        .run(Phase::Review, &prompt, &working_dir)
+                        .await?;
+                    Ok::<ReviewPhaseOutput, Error>(ReviewPhaseOutput {
+                        name: phase_name,
+                        stdout: result.stdout,
+                        stderr: result.stderr,
+                    })
+                });
+            }
+
+            // Collect results, fail on any error
+            let mut review_outputs = Vec::new();
+            while let Some(result) = join_set.join_next().await {
+                review_outputs.push(result.map_err(|e| Error::AgentRunner(e.to_string()))??);
+            }
+
+            // 11b. Run aggregation agent
+            let review_outputs_text = review_outputs
+                .iter()
+                .map(|o| {
+                    let mut section =
+                        format!("## Review Phase: {}\n\n### stdout\n{}", o.name, o.stdout);
+                    if !o.stderr.trim().is_empty() {
+                        section.push_str(&format!("\n\n### stderr\n{}", o.stderr));
+                    }
+                    section
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n");
+
+            let agg_config = &self.config.review_aggregate;
+            let agg_runner = self
+                .review_factory
+                .create_step_runner(agg_config, self.config.agent_timeout_retries);
+
+            let mut agg_vars = vars.clone();
+            agg_vars.insert("review_outputs".to_string(), review_outputs_text);
+
+            let agg_prompt = self
+                .prompt_engine
+                .render_phase(&agg_config.prompt, &agg_vars)?;
+            let agg_result = agg_runner
+                .run(Phase::ReviewAggregate, &agg_prompt, &worktree_info.path)
                 .await?;
 
-            // Push any review fixes
+            // 11c. Comment findings on PR
+            if let Some(pr_num) = pr_number
+                && !self.config.dry_run
+            {
+                let comment_body = extract_comment_body(&agg_result.stdout);
+                if let Err(e) = self.submission.comment_on_pr(pr_num, &comment_body) {
+                    warn!("[rlph:orchestrator] Failed to comment on PR: {e}");
+                }
+            }
+
+            // 11d. Check if approved
+            if agg_result.stdout.contains("REVIEW_APPROVED") {
+                info!("[rlph:orchestrator] Review approved at round {round}");
+                review_passed = true;
+                break;
+            }
+
+            // 11e. Extract fix instructions and run fix agent
+            let fix_instructions = match extract_fix_instructions(&agg_result.stdout) {
+                Some(instructions) => instructions,
+                None => {
+                    warn!(
+                        "[rlph:orchestrator] Aggregator produced neither REVIEW_APPROVED nor REVIEW_NEEDS_FIX — retrying"
+                    );
+                    continue;
+                }
+            };
+
+            info!("[rlph:orchestrator] Review needs fix at round {round}, running fix agent...");
+
+            let fix_config = &self.config.review_fix;
+            let fix_runner = self
+                .review_factory
+                .create_step_runner(fix_config, self.config.agent_timeout_retries);
+
+            let mut fix_vars = vars.clone();
+            fix_vars.insert("fix_instructions".to_string(), fix_instructions);
+
+            let fix_prompt = self
+                .prompt_engine
+                .render_phase(&fix_config.prompt, &fix_vars)?;
+            fix_runner
+                .run(Phase::ReviewFix, &fix_prompt, &worktree_info.path)
+                .await?;
+
+            // Push fixes
             if !self.config.dry_run
                 && let Err(e) = self.push_branch(worktree_info)
             {
                 warn!("[rlph:orchestrator] Failed to push review fixes: {e}");
-            }
-
-            if review_result.stdout.contains("REVIEW_COMPLETE:") {
-                info!("[rlph:orchestrator] Review complete at round {round}");
-                review_passed = true;
-                break;
             }
         }
 
@@ -399,6 +572,33 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
     }
 }
 
+/// Extract the comment body from aggregation output (everything before the REVIEW_ signal).
+fn extract_comment_body(stdout: &str) -> String {
+    if let Some(pos) = stdout.find("REVIEW_APPROVED") {
+        stdout[..pos].trim().to_string()
+    } else if let Some(pos) = stdout.find("REVIEW_NEEDS_FIX:") {
+        stdout[..pos].trim().to_string()
+    } else {
+        stdout.trim().to_string()
+    }
+}
+
+/// Extract fix instructions from `REVIEW_NEEDS_FIX: <instructions>`.
+/// Captures everything from the marker to end of output (multi-line).
+fn extract_fix_instructions(stdout: &str) -> Option<String> {
+    if let Some(pos) = stdout.find("REVIEW_NEEDS_FIX:") {
+        let after = &stdout[pos + "REVIEW_NEEDS_FIX:".len()..];
+        let trimmed = after.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    } else {
+        None
+    }
+}
+
 /// Extract the issue number from a task ID like "gh-42".
 pub fn parse_issue_number(task_id: &str) -> Result<u64> {
     task_id
@@ -427,5 +627,37 @@ mod tests {
         assert!(parse_issue_number("gh-abc").is_err());
         assert!(parse_issue_number("").is_err());
         assert!(parse_issue_number("linear-42").is_err());
+    }
+
+    #[test]
+    fn test_extract_comment_body_approved() {
+        let stdout = "Some findings here\n\nREVIEW_APPROVED";
+        assert_eq!(extract_comment_body(stdout), "Some findings here");
+    }
+
+    #[test]
+    fn test_extract_comment_body_needs_fix() {
+        let stdout = "Findings\nREVIEW_NEEDS_FIX: fix stuff";
+        assert_eq!(extract_comment_body(stdout), "Findings");
+    }
+
+    #[test]
+    fn test_extract_comment_body_no_signal() {
+        let stdout = "Just some output";
+        assert_eq!(extract_comment_body(stdout), "Just some output");
+    }
+
+    #[test]
+    fn test_extract_fix_instructions() {
+        assert_eq!(
+            extract_fix_instructions("REVIEW_NEEDS_FIX: fix the bug"),
+            Some("fix the bug".to_string())
+        );
+        assert_eq!(
+            extract_fix_instructions("Some output\nREVIEW_NEEDS_FIX: do stuff\nmore lines\nhere"),
+            Some("do stuff\nmore lines\nhere".to_string())
+        );
+        assert_eq!(extract_fix_instructions("REVIEW_APPROVED"), None);
+        assert_eq!(extract_fix_instructions("REVIEW_NEEDS_FIX:   "), None);
     }
 }

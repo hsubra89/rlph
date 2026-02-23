@@ -4,11 +4,13 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rlph::config::Config;
+use rlph::config::{
+    Config, ReviewPhaseConfig, ReviewStepConfig, default_review_phases, default_review_step,
+};
 use rlph::error::{Error, Result};
-use rlph::orchestrator::Orchestrator;
+use rlph::orchestrator::{Orchestrator, ReviewRunnerFactory};
 use rlph::prompts::PromptEngine;
-use rlph::runner::{AgentRunner, Phase, RunResult};
+use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult};
 use rlph::sources::{Task, TaskSource};
 use rlph::state::StateManager;
 use rlph::submission::{SubmissionBackend, SubmitResult};
@@ -120,7 +122,17 @@ impl AgentRunner for MockRunner {
             }),
             Phase::Review => Ok(RunResult {
                 exit_code: 0,
-                stdout: "REVIEW_COMPLETE: no changes needed".into(),
+                stdout: "NO_ISSUES_FOUND".into(),
+                stderr: String::new(),
+            }),
+            Phase::ReviewAggregate => Ok(RunResult {
+                exit_code: 0,
+                stdout: "All looks good.\n\nREVIEW_APPROVED".into(),
+                stderr: String::new(),
+            }),
+            Phase::ReviewFix => Ok(RunResult {
+                exit_code: 0,
+                stdout: "FIX_COMPLETE: applied fixes".into(),
                 stderr: String::new(),
             }),
         }
@@ -242,10 +254,20 @@ impl AgentRunner for CountingRunner {
                 self.counts.review.fetch_add(1, Ordering::SeqCst);
                 Ok(RunResult {
                     exit_code: 0,
-                    stdout: "REVIEW_COMPLETE: no changes needed".into(),
+                    stdout: "NO_ISSUES_FOUND".into(),
                     stderr: String::new(),
                 })
             }
+            Phase::ReviewAggregate => Ok(RunResult {
+                exit_code: 0,
+                stdout: "REVIEW_APPROVED".into(),
+                stderr: String::new(),
+            }),
+            Phase::ReviewFix => Ok(RunResult {
+                exit_code: 0,
+                stdout: "FIX_COMPLETE: done".into(),
+                stderr: String::new(),
+            }),
         }
     }
 }
@@ -284,7 +306,17 @@ impl AgentRunner for FailAtPhaseRunner {
             }),
             Phase::Review => Ok(RunResult {
                 exit_code: 0,
-                stdout: "REVIEW_COMPLETE: ok".into(),
+                stdout: "NO_ISSUES_FOUND".into(),
+                stderr: String::new(),
+            }),
+            Phase::ReviewAggregate => Ok(RunResult {
+                exit_code: 0,
+                stdout: "REVIEW_APPROVED".into(),
+                stderr: String::new(),
+            }),
+            Phase::ReviewFix => Ok(RunResult {
+                exit_code: 0,
+                stdout: "FIX_COMPLETE: done".into(),
                 stderr: String::new(),
             }),
         }
@@ -315,48 +347,16 @@ impl SubmissionBackend for MockSubmission {
         ));
         Ok(SubmitResult {
             url: "https://github.com/test/repo/pull/1".to_string(),
+            number: Some(1),
         })
     }
 
     fn find_existing_pr_for_issue(&self, _issue_number: u64) -> Result<Option<u64>> {
         Ok(self.existing_pr_for_issue)
     }
-}
 
-/// Runner whose review phase never emits REVIEW_COMPLETE.
-struct ReviewNeverCompleteRunner {
-    task_id: String,
-}
-
-impl AgentRunner for ReviewNeverCompleteRunner {
-    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
-        match phase {
-            Phase::Choose => {
-                let ralph_dir = working_dir.join(".ralph");
-                std::fs::create_dir_all(&ralph_dir)
-                    .map_err(|e| Error::AgentRunner(e.to_string()))?;
-                std::fs::write(
-                    ralph_dir.join("task.toml"),
-                    format!("id = \"{}\"", self.task_id),
-                )
-                .map_err(|e| Error::AgentRunner(e.to_string()))?;
-                Ok(RunResult {
-                    exit_code: 0,
-                    stdout: "Selected task".into(),
-                    stderr: String::new(),
-                })
-            }
-            Phase::Implement => Ok(RunResult {
-                exit_code: 0,
-                stdout: "IMPLEMENTATION_COMPLETE: done".into(),
-                stderr: String::new(),
-            }),
-            Phase::Review => Ok(RunResult {
-                exit_code: 0,
-                stdout: "Some review feedback but not complete".into(),
-                stderr: String::new(),
-            }),
-        }
+    fn comment_on_pr(&self, _pr_number: u64, _body: &str) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -369,6 +369,103 @@ impl SubmissionBackend for FailSubmission {
 
     fn find_existing_pr_for_issue(&self, _issue_number: u64) -> Result<Option<u64>> {
         Ok(None)
+    }
+
+    fn comment_on_pr(&self, _pr_number: u64, _body: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Review runner factory that returns mock runners producing REVIEW_APPROVED.
+struct ApprovedReviewFactory;
+
+impl ReviewRunnerFactory for ApprovedReviewFactory {
+    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async {
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "NO_ISSUES_FOUND".into(),
+                    stderr: String::new(),
+                })
+            })
+        })))
+    }
+
+    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
+            Box::pin(async move {
+                let stdout = match phase {
+                    Phase::ReviewAggregate => "All good.\n\nREVIEW_APPROVED".to_string(),
+                    Phase::ReviewFix => "FIX_COMPLETE: done".to_string(),
+                    _ => String::new(),
+                };
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout,
+                    stderr: String::new(),
+                })
+            })
+        })))
+    }
+}
+
+/// Review runner factory where aggregation always requests fixes (never approves).
+struct NeverApproveReviewFactory;
+
+impl ReviewRunnerFactory for NeverApproveReviewFactory {
+    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async {
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "WARNING: issues found".into(),
+                    stderr: String::new(),
+                })
+            })
+        })))
+    }
+
+    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
+            Box::pin(async move {
+                let stdout = match phase {
+                    Phase::ReviewAggregate => {
+                        "Issues found\nREVIEW_NEEDS_FIX: fix everything".to_string()
+                    }
+                    Phase::ReviewFix => "FIX_COMPLETE: attempted fixes".to_string(),
+                    _ => String::new(),
+                };
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout,
+                    stderr: String::new(),
+                })
+            })
+        })))
+    }
+}
+
+/// Review runner factory where the review phase itself fails.
+struct FailReviewFactory;
+
+impl ReviewRunnerFactory for FailReviewFactory {
+    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async { Err(Error::AgentRunner("mock failure at review".to_string())) })
+        })))
+    }
+
+    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async {
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                })
+            })
+        })))
     }
 }
 
@@ -404,6 +501,9 @@ fn make_config(dry_run: bool) -> Config {
         agent_effort: None,
         max_review_rounds: 3,
         agent_timeout_retries: 2,
+        review_phases: default_review_phases(),
+        review_aggregate: default_review_step("review-aggregate"),
+        review_fix: default_review_step("review-fix"),
         linear: None,
     }
 }
@@ -466,7 +566,7 @@ async fn test_full_loop_dry_run() {
     let state_mgr = StateManager::new(&state_dir);
     let prompt_engine = PromptEngine::new(None);
 
-    let orchestrator = Orchestrator::new(
+    let orchestrator = Orchestrator::with_review_factory(
         source,
         runner,
         submission,
@@ -475,6 +575,7 @@ async fn test_full_loop_dry_run() {
         prompt_engine,
         make_config(true), // dry_run
         repo_dir.path().to_path_buf(),
+        ApprovedReviewFactory,
     );
 
     orchestrator.run_once().await.unwrap();
@@ -515,7 +616,7 @@ async fn test_full_loop_with_push() {
     let state_mgr = StateManager::new(&state_dir);
     let prompt_engine = PromptEngine::new(None);
 
-    let orchestrator = Orchestrator::new(
+    let orchestrator = Orchestrator::with_review_factory(
         source,
         runner,
         submission,
@@ -524,6 +625,7 @@ async fn test_full_loop_with_push() {
         prompt_engine,
         make_config(false), // not dry_run
         repo_dir.path().to_path_buf(),
+        ApprovedReviewFactory,
     );
 
     orchestrator.run_once().await.unwrap();
@@ -658,18 +760,13 @@ async fn test_error_at_review_phase() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let runner = FailAtPhaseRunner {
-        fail_at: Phase::Review,
-        task_id: "gh-42".to_string(),
-    };
-
     let state_dir = repo_dir.path().join(".rlph-test-state");
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
-    let orchestrator = Orchestrator::new(
+    let orchestrator = Orchestrator::with_review_factory(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
-        runner,
+        MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
         WorktreeManager::new(
             repo_dir.path().to_path_buf(),
@@ -680,6 +777,7 @@ async fn test_error_at_review_phase() {
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
+        FailReviewFactory,
     );
 
     let err = orchestrator.run_once().await.unwrap_err();
@@ -727,7 +825,7 @@ async fn test_state_transitions_through_phases() {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
-    let orchestrator = Orchestrator::new(
+    let orchestrator = Orchestrator::with_review_factory(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-7"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -740,6 +838,7 @@ async fn test_state_transitions_through_phases() {
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
+        ApprovedReviewFactory,
     );
 
     orchestrator.run_once().await.unwrap();
@@ -760,7 +859,7 @@ async fn test_worktree_cleaned_up_after_success() {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
-    let orchestrator = Orchestrator::new(
+    let orchestrator = Orchestrator::with_review_factory(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -773,6 +872,7 @@ async fn test_worktree_cleaned_up_after_success() {
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
+        ApprovedReviewFactory,
     );
 
     orchestrator.run_once().await.unwrap();
@@ -798,11 +898,9 @@ async fn test_review_exhaustion_preserves_state() {
     let mut config = make_config(true);
     config.max_review_rounds = 2;
 
-    let orchestrator = Orchestrator::new(
+    let orchestrator = Orchestrator::with_review_factory(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
-        ReviewNeverCompleteRunner {
-            task_id: "gh-42".to_string(),
-        },
+        MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
         WorktreeManager::new(
             repo_dir.path().to_path_buf(),
@@ -813,6 +911,7 @@ async fn test_review_exhaustion_preserves_state() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
+        NeverApproveReviewFactory,
     );
 
     let err = orchestrator.run_once().await.unwrap_err();
@@ -837,7 +936,7 @@ async fn test_existing_pr_skips_submission() {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
-    let orchestrator = Orchestrator::new(
+    let orchestrator = Orchestrator::with_review_factory(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), Some(99)),
@@ -850,6 +949,7 @@ async fn test_existing_pr_skips_submission() {
         PromptEngine::new(None),
         make_config(false), // non-dry-run so submission would normally fire
         repo_dir.path().to_path_buf(),
+        ApprovedReviewFactory,
     );
 
     orchestrator.run_once().await.unwrap();
@@ -877,7 +977,7 @@ async fn test_continuous_mode_polls_with_empty_results() {
     config.max_iterations = Some(2);
     config.poll_seconds = 1;
 
-    let orchestrator = Orchestrator::new(
+    let orchestrator = Orchestrator::with_review_factory(
         source,
         CountingRunner::new("gh-42", Arc::clone(&counts)),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -890,13 +990,13 @@ async fn test_continuous_mode_polls_with_empty_results() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
+        ApprovedReviewFactory,
     );
 
     orchestrator.run_loop(None).await.unwrap();
 
     assert_eq!(counts.choose.load(Ordering::SeqCst), 1);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
-    assert_eq!(counts.review.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -912,7 +1012,7 @@ async fn test_max_iterations_stops_at_limit() {
     config.continuous = false;
     config.max_iterations = Some(3);
 
-    let orchestrator = Orchestrator::new(
+    let orchestrator = Orchestrator::with_review_factory(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         CountingRunner::new("gh-42", Arc::clone(&counts)),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -925,13 +1025,13 @@ async fn test_max_iterations_stops_at_limit() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
+        ApprovedReviewFactory,
     );
 
     orchestrator.run_loop(None).await.unwrap();
 
     assert_eq!(counts.choose.load(Ordering::SeqCst), 3);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 3);
-    assert_eq!(counts.review.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test]
@@ -949,7 +1049,7 @@ async fn test_continuous_shutdown_exits_between_iterations() {
     config.max_iterations = None;
     config.poll_seconds = 1;
 
-    let orchestrator = Orchestrator::new(
+    let orchestrator = Orchestrator::with_review_factory(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         CountingRunner::with_shutdown("gh-42", Arc::clone(&counts), shutdown_tx),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -962,6 +1062,7 @@ async fn test_continuous_shutdown_exits_between_iterations() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
+        ApprovedReviewFactory,
     );
 
     orchestrator.run_loop(Some(shutdown_rx)).await.unwrap();
@@ -970,5 +1071,4 @@ async fn test_continuous_shutdown_exits_between_iterations() {
     // completes fully. Shutdown is only checked between iterations.
     assert_eq!(counts.choose.load(Ordering::SeqCst), 1);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
-    assert_eq!(counts.review.load(Ordering::SeqCst), 1);
 }

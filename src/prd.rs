@@ -203,6 +203,7 @@ mod tests {
     }
 
     fn test_config(binary: &str, source: &str, model: Option<&str>) -> Config {
+        use crate::config::{default_review_phases, default_review_step};
         Config {
             source: source.to_string(),
             runner: "claude".to_string(),
@@ -221,6 +222,9 @@ mod tests {
             agent_effort: Some("high".to_string()),
             max_review_rounds: 3,
             agent_timeout_retries: 2,
+            review_phases: default_review_phases(),
+            review_aggregate: default_review_step("review-aggregate"),
+            review_fix: default_review_step("review-fix"),
             linear: None,
         }
     }
