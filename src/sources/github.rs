@@ -161,12 +161,6 @@ impl TaskSource for GitHubSource {
         Ok(())
     }
 
-    fn mark_done(&self, task_id: &str) -> Result<()> {
-        self.client.run(&["issue", "close", task_id])?;
-        debug!(task_id, "marked done");
-        Ok(())
-    }
-
     fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
         let json = self.client.run(&[
             "issue", "list", "--state", "closed", "--json", "number", "--limit", "200",
@@ -320,13 +314,6 @@ mod tests {
         let client = MockGhClient::new(vec![Ok(String::new()), Ok(String::new())]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
         source.mark_in_progress("42").unwrap();
-    }
-
-    #[test]
-    fn test_mark_done() {
-        let client = MockGhClient::new(vec![Ok(String::new())]);
-        let source = GitHubSource::with_client("rlph", Box::new(client));
-        source.mark_done("42").unwrap();
     }
 
     #[test]

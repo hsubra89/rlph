@@ -226,9 +226,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
                 // Process exited non-zero — stdin write failures (BrokenPipe,
                 // ConnectionReset, etc.) are expected side-effects; the exit
                 // code is the real error.
-                warn!(
-                    "[{log_prefix}] stdin write failed ({e}), ignored — process exited non-zero"
-                );
+                warn!("[{log_prefix}] stdin write failed ({e}), ignored — process exited non-zero");
             }
             Err(e) => {
                 return Err(Error::Process(format!("stdin writer task failed: {e}")));
@@ -321,14 +319,14 @@ async fn wait_for_exit_unix(
             _ = &mut timer => handle_timeout_unix(child_pid, log_prefix, dur, use_process_group, wait_task).await,
             signal = sigint.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGINT, "SIGINT", use_process_group, wait_task, &mut sigint, &mut sigterm).await
+                    handle_interrupt_unix(InterruptContext { child_pid, log_prefix, use_process_group, wait_task, sigint: &mut sigint, sigterm: &mut sigterm }, libc::SIGINT, "SIGINT").await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
             }
             signal = sigterm.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGTERM, "SIGTERM", use_process_group, wait_task, &mut sigint, &mut sigterm).await
+                    handle_interrupt_unix(InterruptContext { child_pid, log_prefix, use_process_group, wait_task, sigint: &mut sigint, sigterm: &mut sigterm }, libc::SIGTERM, "SIGTERM").await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
@@ -339,14 +337,14 @@ async fn wait_for_exit_unix(
             result = &mut *wait_task => wait_join_result(result),
             signal = sigint.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGINT, "SIGINT", use_process_group, wait_task, &mut sigint, &mut sigterm).await
+                    handle_interrupt_unix(InterruptContext { child_pid, log_prefix, use_process_group, wait_task, sigint: &mut sigint, sigterm: &mut sigterm }, libc::SIGINT, "SIGINT").await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
             }
             signal = sigterm.recv() => {
                 if signal.is_some() {
-                    handle_interrupt_unix(child_pid, log_prefix, libc::SIGTERM, "SIGTERM", use_process_group, wait_task, &mut sigint, &mut sigterm).await
+                    handle_interrupt_unix(InterruptContext { child_pid, log_prefix, use_process_group, wait_task, sigint: &mut sigint, sigterm: &mut sigterm }, libc::SIGTERM, "SIGTERM").await
                 } else {
                     wait_join_result((&mut *wait_task).await)
                 }
@@ -378,16 +376,29 @@ async fn wait_for_exit_non_unix(
 }
 
 #[cfg(unix)]
-async fn handle_interrupt_unix(
+struct InterruptContext<'a> {
     child_pid: i32,
-    log_prefix: &str,
+    log_prefix: &'a str,
+    use_process_group: bool,
+    wait_task: &'a mut JoinHandle<std::io::Result<ExitStatus>>,
+    sigint: &'a mut tokio::signal::unix::Signal,
+    sigterm: &'a mut tokio::signal::unix::Signal,
+}
+
+#[cfg(unix)]
+async fn handle_interrupt_unix(
+    ctx: InterruptContext<'_>,
     signal: i32,
     signal_name: &str,
-    use_process_group: bool,
-    wait_task: &mut JoinHandle<std::io::Result<ExitStatus>>,
-    sigint: &mut tokio::signal::unix::Signal,
-    sigterm: &mut tokio::signal::unix::Signal,
 ) -> Result<ExitStatus> {
+    let InterruptContext {
+        child_pid,
+        log_prefix,
+        use_process_group,
+        wait_task,
+        sigint,
+        sigterm,
+    } = ctx;
     warn!("[{log_prefix}] received {signal_name}; forwarding to child pid {child_pid}");
     eprintln!("[{log_prefix}] received {signal_name}; press Ctrl-C again to force exit");
     send_signal_unix(

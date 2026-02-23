@@ -1,9 +1,12 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 /// rlph — autonomous AI development loop
 #[derive(Parser, Debug)]
 #[command(name = "rlph", version, about)]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<CliCommand>,
+
     /// Run a single iteration then exit
     #[arg(long)]
     pub once: bool,
@@ -75,6 +78,12 @@ pub struct Cli {
     /// Maximum retries when agent times out (session resume)
     #[arg(long)]
     pub agent_timeout_retries: Option<u32>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CliCommand {
+    /// Initialize the project for the configured task source (e.g., create labels)
+    Init,
 }
 
 #[cfg(test)]

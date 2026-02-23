@@ -43,6 +43,16 @@ pub struct DependencyGraph {
     edges: HashMap<u64, HashSet<u64>>,
 }
 
+#[derive(Default)]
+struct TarjanState {
+    index: usize,
+    indices: HashMap<u64, usize>,
+    lowlink: HashMap<u64, usize>,
+    stack: Vec<u64>,
+    on_stack: HashSet<u64>,
+    components: Vec<Vec<u64>>,
+}
+
 impl DependencyGraph {
     /// Build a dependency graph from tasks by parsing each task's body for dependency patterns.
     pub fn build(tasks: &[Task]) -> Self {
@@ -71,31 +81,18 @@ impl DependencyGraph {
         let mut nodes: Vec<u64> = all_nodes.into_iter().collect();
         nodes.sort_unstable();
 
-        let mut index = 0usize;
-        let mut indices: HashMap<u64, usize> = HashMap::new();
-        let mut lowlink: HashMap<u64, usize> = HashMap::new();
-        let mut stack = Vec::new();
-        let mut on_stack = HashSet::new();
-        let mut components = Vec::new();
+        let mut state = TarjanState::default();
 
         for node in nodes {
-            if !indices.contains_key(&node) {
-                self.tarjan_strong_connect(
-                    node,
-                    &mut index,
-                    &mut indices,
-                    &mut lowlink,
-                    &mut stack,
-                    &mut on_stack,
-                    &mut components,
-                );
+            if !state.indices.contains_key(&node) {
+                self.tarjan_strong_connect(node, &mut state);
             }
         }
 
         let mut cycle_peers: HashMap<u64, HashSet<u64>> = HashMap::new();
         let mut cycles_for_log = Vec::new();
 
-        for component in components {
+        for component in state.components {
             let has_self_loop = component
                 .iter()
                 .any(|node| self.edges.get(node).is_some_and(|deps| deps.contains(node)));
@@ -123,54 +120,43 @@ impl DependencyGraph {
         (cycle_peers, cycles_for_log)
     }
 
-    fn tarjan_strong_connect(
-        &self,
-        node: u64,
-        index: &mut usize,
-        indices: &mut HashMap<u64, usize>,
-        lowlink: &mut HashMap<u64, usize>,
-        stack: &mut Vec<u64>,
-        on_stack: &mut HashSet<u64>,
-        components: &mut Vec<Vec<u64>>,
-    ) {
-        indices.insert(node, *index);
-        lowlink.insert(node, *index);
-        *index += 1;
-        stack.push(node);
-        on_stack.insert(node);
+    fn tarjan_strong_connect(&self, node: u64, state: &mut TarjanState) {
+        state.indices.insert(node, state.index);
+        state.lowlink.insert(node, state.index);
+        state.index += 1;
+        state.stack.push(node);
+        state.on_stack.insert(node);
 
         if let Some(deps) = self.edges.get(&node) {
             let mut sorted_deps: Vec<u64> = deps.iter().copied().collect();
             sorted_deps.sort_unstable();
 
             for dep in sorted_deps {
-                if !indices.contains_key(&dep) {
-                    self.tarjan_strong_connect(
-                        dep, index, indices, lowlink, stack, on_stack, components,
-                    );
-                    let dep_low = lowlink[&dep];
-                    if let Some(node_low) = lowlink.get_mut(&node) {
+                if !state.indices.contains_key(&dep) {
+                    self.tarjan_strong_connect(dep, state);
+                    let dep_low = state.lowlink[&dep];
+                    if let Some(node_low) = state.lowlink.get_mut(&node) {
                         *node_low = (*node_low).min(dep_low);
                     }
-                } else if on_stack.contains(&dep) {
-                    let dep_index = indices[&dep];
-                    if let Some(node_low) = lowlink.get_mut(&node) {
+                } else if state.on_stack.contains(&dep) {
+                    let dep_index = state.indices[&dep];
+                    if let Some(node_low) = state.lowlink.get_mut(&node) {
                         *node_low = (*node_low).min(dep_index);
                     }
                 }
             }
         }
 
-        if lowlink[&node] == indices[&node] {
+        if state.lowlink[&node] == state.indices[&node] {
             let mut component = Vec::new();
-            while let Some(stack_node) = stack.pop() {
-                on_stack.remove(&stack_node);
+            while let Some(stack_node) = state.stack.pop() {
+                state.on_stack.remove(&stack_node);
                 component.push(stack_node);
                 if stack_node == node {
                     break;
                 }
             }
-            components.push(component);
+            state.components.push(component);
         }
     }
 
