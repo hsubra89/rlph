@@ -21,7 +21,6 @@ use tokio::sync::watch;
 struct SourceTracker {
     marked_in_progress: Vec<String>,
     marked_in_review: Vec<String>,
-    marked_done: Vec<String>,
 }
 
 #[derive(Default)]
@@ -68,15 +67,6 @@ impl TaskSource for MockSource {
             .lock()
             .unwrap()
             .marked_in_review
-            .push(task_id.to_string());
-        Ok(())
-    }
-
-    fn mark_done(&self, task_id: &str) -> Result<()> {
-        self.tracker
-            .lock()
-            .unwrap()
-            .marked_done
             .push(task_id.to_string());
         Ok(())
     }
@@ -168,10 +158,6 @@ impl TaskSource for SequenceSource {
     }
 
     fn mark_in_review(&self, _task_id: &str) -> Result<()> {
-        Ok(())
-    }
-
-    fn mark_done(&self, _task_id: &str) -> Result<()> {
         Ok(())
     }
 
@@ -496,7 +482,6 @@ async fn test_full_loop_dry_run() {
     // In dry_run, source should NOT be marked
     let tracker = source_tracker.lock().unwrap();
     assert!(tracker.marked_in_progress.is_empty());
-    assert!(tracker.marked_done.is_empty());
     drop(tracker);
 
     // State should be completed
@@ -546,7 +531,6 @@ async fn test_full_loop_with_push() {
     // Source should be marked in-progress (done is handled by GitHub on PR merge)
     let tracker = source_tracker.lock().unwrap();
     assert_eq!(tracker.marked_in_progress, vec!["42".to_string()]);
-    assert!(tracker.marked_done.is_empty());
     drop(tracker);
 
     // Submission should have been called
@@ -803,7 +787,7 @@ async fn test_worktree_cleaned_up_after_success() {
 }
 
 #[tokio::test]
-async fn test_review_exhaustion_does_not_mark_done() {
+async fn test_review_exhaustion_preserves_state() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
@@ -836,11 +820,6 @@ async fn test_review_exhaustion_does_not_mark_done() {
         err.to_string().contains("review did not complete"),
         "unexpected error: {err}"
     );
-
-    // Task must NOT be marked done
-    let tracker = source_tracker.lock().unwrap();
-    assert!(tracker.marked_done.is_empty());
-    drop(tracker);
 
     // State should still show current task in review phase (resumable)
     let state_mgr = StateManager::new(&state_dir);

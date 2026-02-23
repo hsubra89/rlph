@@ -347,12 +347,6 @@ impl TaskSource for LinearSource {
         Ok(())
     }
 
-    fn mark_done(&self, task_id: &str) -> Result<()> {
-        self.update_issue_state(task_id, &self.done_state)?;
-        debug!(task_id, "marked done on Linear");
-        Ok(())
-    }
-
     fn get_task_details(&self, task_id: &str) -> Result<Task> {
         let number: f64 = task_id
             .parse::<u64>()
@@ -761,27 +755,6 @@ mod tests {
         let client = MockLinearClient::new(vec![Ok(issue_data), Ok(state_data), Ok(update_data)]);
         let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
         source.mark_in_progress("42").unwrap();
-    }
-
-    #[test]
-    fn test_mark_done() {
-        let issue_data = issues_response(vec![serde_json::json!({
-            "id": "uuid-42", "identifier": "ENG-42", "number": 42,
-            "title": "t", "description": null, "url": "u", "priority": 0,
-            "state": { "name": "In Progress", "type": "started" },
-            "labels": { "nodes": [] }
-        })]);
-        let state_data = serde_json::json!({
-            "workflowStates": { "nodes": [
-                { "id": "state-1", "name": "In Progress" },
-                { "id": "state-2", "name": "Done" },
-            ]}
-        });
-        let update_data = serde_json::json!({ "issueUpdate": { "success": true } });
-
-        let client = MockLinearClient::new(vec![Ok(issue_data), Ok(state_data), Ok(update_data)]);
-        let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
-        source.mark_done("42").unwrap();
     }
 
     #[test]
