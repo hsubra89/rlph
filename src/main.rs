@@ -8,7 +8,7 @@ use tracing::info;
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
 use rlph::orchestrator::Orchestrator;
-use rlph::plan;
+use rlph::prd;
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AnyRunner, ClaudeRunner, CodexRunner};
 use rlph::sources::AnySource;
@@ -51,7 +51,7 @@ async fn main() {
             }
             return;
         }
-        Some(CliCommand::Plan {
+        Some(CliCommand::Prd {
             ref description,
             ref runner,
             ref source,
@@ -59,30 +59,31 @@ async fn main() {
             ref agent_binary,
             ref agent_model,
         }) => {
-            // Merge plan-specific CLI overrides into a Cli-compatible form for config loading.
-            let plan_cli = Cli {
-                command: None,
-                once: false,
-                continuous: false,
-                max_iterations: None,
-                dry_run: false,
-                runner: runner.clone().or(cli.runner.clone()),
-                source: source.clone().or(cli.source.clone()),
-                submission: cli.submission.clone(),
-                label: cli.label.clone(),
-                poll_seconds: cli.poll_seconds,
-                config: config.clone().or(cli.config.clone()),
-                worktree_dir: cli.worktree_dir.clone(),
-                base_branch: cli.base_branch.clone(),
-                agent_binary: agent_binary.clone().or(cli.agent_binary.clone()),
-                agent_model: agent_model.clone().or(cli.agent_model.clone()),
-                agent_timeout: cli.agent_timeout,
-                agent_effort: cli.agent_effort.clone(),
-                max_review_rounds: cli.max_review_rounds,
-                agent_timeout_retries: cli.agent_timeout_retries,
-            };
+            // Clone top-level CLI and merge prd-specific overrides.
+            // Using clone ensures new Cli fields are automatically preserved.
+            let mut prd_cli = cli.clone();
+            prd_cli.command = None;
+            prd_cli.once = false;
+            prd_cli.continuous = false;
+            prd_cli.max_iterations = None;
+            prd_cli.dry_run = false;
+            if let Some(r) = runner {
+                prd_cli.runner = Some(r.clone());
+            }
+            if let Some(s) = source {
+                prd_cli.source = Some(s.clone());
+            }
+            if let Some(c) = config {
+                prd_cli.config = Some(c.clone());
+            }
+            if let Some(b) = agent_binary {
+                prd_cli.agent_binary = Some(b.clone());
+            }
+            if let Some(m) = agent_model {
+                prd_cli.agent_model = Some(m.clone());
+            }
 
-            let cfg = match Config::load(&plan_cli) {
+            let cfg = match Config::load(&prd_cli) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -90,9 +91,9 @@ async fn main() {
                 }
             };
 
-            info!(?cfg, "config loaded for plan");
+            info!(?cfg, "config loaded for prd");
 
-            let exit_code = match plan::run_plan(&cfg, description.as_deref()).await {
+            let exit_code = match prd::run_prd(&cfg, description.as_deref()).await {
                 Ok(code) => code,
                 Err(e) => {
                     eprintln!("error: {e}");

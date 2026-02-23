@@ -7,6 +7,8 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 
+const PROMPT_OVERRIDE_DIR: &str = ".rlph/prompts";
+
 /// Build the submission instructions string for the given task source.
 pub fn submission_instructions(source: &str, label: &str) -> String {
     match source {
@@ -28,10 +30,10 @@ pub fn submission_instructions(source: &str, label: &str) -> String {
     }
 }
 
-/// Build the agent command for an interactive plan session.
+/// Build the agent command for an interactive PRD session.
 ///
 /// Returns `(binary, args)` suitable for spawning with inherited stdio.
-pub fn build_plan_command(
+pub fn build_prd_command(
     config: &Config,
     rendered_prompt: &str,
     description: Option<&str>,
@@ -54,31 +56,37 @@ pub fn build_plan_command(
     (config.agent_binary.clone(), args)
 }
 
-/// Run an interactive plan session.
+/// Run an interactive PRD session.
 ///
-/// Launches the configured agent with the plan prompt and inherited stdio.
+/// Launches the configured agent with the PRD prompt and inherited stdio.
 /// Blocks until the agent exits, then propagates the exit code.
-pub async fn run_plan(config: &Config, description: Option<&str>) -> Result<i32> {
-    let engine = PromptEngine::new(None);
+pub async fn run_prd(config: &Config, description: Option<&str>) -> Result<i32> {
+    let override_dir = std::path::Path::new(PROMPT_OVERRIDE_DIR);
+    let engine = PromptEngine::new(
+        override_dir
+            .is_dir()
+            .then(|| override_dir.to_string_lossy().to_string()),
+    );
 
     let mut vars = HashMap::new();
     vars.insert(
         "submission_instructions".to_string(),
         submission_instructions(&config.source, &config.label),
     );
-    vars.insert(
-        "description".to_string(),
-        description.unwrap_or("").to_string(),
-    );
+    let description_section = match description {
+        Some(desc) if !desc.is_empty() => format!("## Seed Description\n\n{desc}"),
+        _ => String::new(),
+    };
+    vars.insert("description".to_string(), description_section);
 
-    let rendered = engine.render_phase("plan", &vars)?;
+    let rendered = engine.render_phase("prd", &vars)?;
 
-    let (binary, args) = build_plan_command(config, &rendered, description);
+    let (binary, args) = build_prd_command(config, &rendered, description);
 
     info!(
         binary = %binary,
         args = ?args.iter().take(3).collect::<Vec<_>>(),
-        "launching interactive plan session"
+        "launching interactive PRD session"
     );
 
     let mut cmd = tokio::process::Command::new(&binary);
@@ -135,9 +143,9 @@ mod tests {
     }
 
     #[test]
-    fn test_build_plan_command_basic() {
+    fn test_build_prd_command_basic() {
         let config = test_config("claude", "github", None);
-        let (cmd, args) = build_plan_command(&config, "rendered prompt", None);
+        let (cmd, args) = build_prd_command(&config, "rendered prompt", None);
         assert_eq!(cmd, "claude");
         assert!(args.contains(&"--append-system-prompt".to_string()));
         assert!(args.contains(&"rendered prompt".to_string()));
@@ -145,32 +153,32 @@ mod tests {
     }
 
     #[test]
-    fn test_build_plan_command_with_description() {
+    fn test_build_prd_command_with_description() {
         let config = test_config("claude", "github", None);
-        let (_, args) = build_plan_command(&config, "prompt", Some("add auth"));
+        let (_, args) = build_prd_command(&config, "prompt", Some("add auth"));
         assert!(args.contains(&"-p".to_string()));
         assert!(args.contains(&"add auth".to_string()));
     }
 
     #[test]
-    fn test_build_plan_command_without_description() {
+    fn test_build_prd_command_without_description() {
         let config = test_config("claude", "github", None);
-        let (_, args) = build_plan_command(&config, "prompt", None);
+        let (_, args) = build_prd_command(&config, "prompt", None);
         assert!(!args.contains(&"-p".to_string()));
     }
 
     #[test]
-    fn test_build_plan_command_with_model() {
+    fn test_build_prd_command_with_model() {
         let config = test_config("claude", "github", Some("opus"));
-        let (_, args) = build_plan_command(&config, "prompt", None);
+        let (_, args) = build_prd_command(&config, "prompt", None);
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"opus".to_string()));
     }
 
     #[test]
-    fn test_build_plan_command_without_model() {
+    fn test_build_prd_command_without_model() {
         let config = test_config_no_model("claude", "github");
-        let (_, args) = build_plan_command(&config, "prompt", None);
+        let (_, args) = build_prd_command(&config, "prompt", None);
         assert!(!args.contains(&"--model".to_string()));
     }
 

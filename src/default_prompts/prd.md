@@ -60,6 +60,4 @@ When the PRD is complete and the developer approves it:
 
 {{submission_instructions}}
 
-## Seed Description
-
 {{description}}

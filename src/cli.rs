@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 /// rlph — autonomous AI development loop
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "rlph", version, about)]
 pub struct Cli {
     #[command(subcommand)]
@@ -80,13 +80,13 @@ pub struct Cli {
     pub agent_timeout_retries: Option<u32>,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum CliCommand {
     /// Initialize the project for the configured task source (e.g., create labels)
     Init,
 
     /// Launch an interactive PRD-writing session
-    Plan {
+    Prd {
         /// Seed description for the PRD (optional)
         description: Option<String>,
 
@@ -180,30 +180,30 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_plan_no_description() {
-        let cli = Cli::parse_from(["rlph", "plan"]);
+    fn test_parse_prd_no_description() {
+        let cli = Cli::parse_from(["rlph", "prd"]);
         match cli.command {
-            Some(CliCommand::Plan { description, .. }) => assert!(description.is_none()),
-            _ => panic!("expected Plan subcommand"),
+            Some(CliCommand::Prd { description, .. }) => assert!(description.is_none()),
+            _ => panic!("expected Prd subcommand"),
         }
     }
 
     #[test]
-    fn test_parse_plan_with_description() {
-        let cli = Cli::parse_from(["rlph", "plan", "add auth support"]);
+    fn test_parse_prd_with_description() {
+        let cli = Cli::parse_from(["rlph", "prd", "add auth support"]);
         match cli.command {
-            Some(CliCommand::Plan { description, .. }) => {
+            Some(CliCommand::Prd { description, .. }) => {
                 assert_eq!(description.as_deref(), Some("add auth support"));
             }
-            _ => panic!("expected Plan subcommand"),
+            _ => panic!("expected Prd subcommand"),
         }
     }
 
     #[test]
-    fn test_parse_plan_with_overrides() {
+    fn test_parse_prd_with_overrides() {
         let cli = Cli::parse_from([
             "rlph",
-            "plan",
+            "prd",
             "--runner",
             "codex",
             "--source",
@@ -211,7 +211,7 @@ mod tests {
             "my feature",
         ]);
         match cli.command {
-            Some(CliCommand::Plan {
+            Some(CliCommand::Prd {
                 description,
                 runner,
                 source,
@@ -221,7 +221,7 @@ mod tests {
                 assert_eq!(runner.as_deref(), Some("codex"));
                 assert_eq!(source.as_deref(), Some("linear"));
             }
-            _ => panic!("expected Plan subcommand"),
+            _ => panic!("expected Prd subcommand"),
         }
     }
 

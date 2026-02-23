@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use rlph::config::Config;
-use rlph::plan::{build_plan_command, submission_instructions};
+use rlph::prd::{build_prd_command, submission_instructions};
 use rlph::prompts::PromptEngine;
 
 fn test_config(source: &str) -> Config {
@@ -28,39 +28,39 @@ fn test_config(source: &str) -> Config {
 }
 
 #[test]
-fn test_plan_command_includes_append_system_prompt() {
+fn test_prd_command_includes_append_system_prompt() {
     let config = test_config("github");
-    let (cmd, args) = build_plan_command(&config, "the rendered prompt", None);
+    let (cmd, args) = build_prd_command(&config, "the rendered prompt", None);
     assert_eq!(cmd, "claude");
     assert!(args.contains(&"--append-system-prompt".to_string()));
     assert!(args.contains(&"the rendered prompt".to_string()));
 }
 
 #[test]
-fn test_plan_command_with_description_includes_p_flag() {
+fn test_prd_command_with_description_includes_p_flag() {
     let config = test_config("github");
-    let (_, args) = build_plan_command(&config, "prompt", Some("add auth"));
+    let (_, args) = build_prd_command(&config, "prompt", Some("add auth"));
     assert!(args.contains(&"-p".to_string()));
     assert!(args.contains(&"add auth".to_string()));
 }
 
 #[test]
-fn test_plan_command_without_description_no_p_flag() {
+fn test_prd_command_without_description_no_p_flag() {
     let config = test_config("github");
-    let (_, args) = build_plan_command(&config, "prompt", None);
+    let (_, args) = build_prd_command(&config, "prompt", None);
     assert!(!args.contains(&"-p".to_string()));
 }
 
 #[test]
-fn test_plan_command_includes_model() {
+fn test_prd_command_includes_model() {
     let config = test_config("github");
-    let (_, args) = build_plan_command(&config, "prompt", None);
+    let (_, args) = build_prd_command(&config, "prompt", None);
     assert!(args.contains(&"--model".to_string()));
     assert!(args.contains(&"claude-opus-4-6".to_string()));
 }
 
 #[test]
-fn test_plan_template_renders_with_github_source() {
+fn test_prd_template_renders_with_github_source() {
     let engine = PromptEngine::new(None);
     let mut vars = HashMap::new();
     vars.insert(
@@ -69,14 +69,14 @@ fn test_plan_template_renders_with_github_source() {
     );
     vars.insert("description".to_string(), "add auth support".to_string());
 
-    let rendered = engine.render_phase("plan", &vars).unwrap();
+    let rendered = engine.render_phase("prd", &vars).unwrap();
     assert!(rendered.contains("gh issue create"));
     assert!(rendered.contains("add auth support"));
     assert!(!rendered.contains("{{"));
 }
 
 #[test]
-fn test_plan_template_renders_with_linear_source() {
+fn test_prd_template_renders_with_linear_source() {
     let engine = PromptEngine::new(None);
     let mut vars = HashMap::new();
     vars.insert(
@@ -85,7 +85,7 @@ fn test_plan_template_renders_with_linear_source() {
     );
     vars.insert("description".to_string(), String::new());
 
-    let rendered = engine.render_phase("plan", &vars).unwrap();
+    let rendered = engine.render_phase("prd", &vars).unwrap();
     assert!(rendered.contains("Linear"));
     assert!(!rendered.contains("{{"));
 }
@@ -93,7 +93,7 @@ fn test_plan_template_renders_with_linear_source() {
 /// End-to-end: mock agent binary verifies it receives the expected flags.
 #[tokio::test]
 #[cfg(unix)]
-async fn test_plan_end_to_end_with_mock_agent() {
+async fn test_prd_end_to_end_with_mock_agent() {
     let tmp = tempfile::tempdir().unwrap();
     let script_path = tmp.path().join("mock_claude");
     // Script verifies --append-system-prompt is present in args
@@ -125,14 +125,14 @@ exit 0
         ..test_config("github")
     };
 
-    let exit_code = rlph::plan::run_plan(&config, None).await.unwrap();
+    let exit_code = rlph::prd::run_prd(&config, None).await.unwrap();
     assert_eq!(exit_code, 0);
 }
 
 /// Verify exit code propagation when the agent exits non-zero.
 #[tokio::test]
 #[cfg(unix)]
-async fn test_plan_exit_code_propagation() {
+async fn test_prd_exit_code_propagation() {
     let tmp = tempfile::tempdir().unwrap();
     let script_path = tmp.path().join("mock_claude");
     std::fs::write(&script_path, "#!/bin/bash\nexit 42\n").unwrap();
@@ -147,14 +147,14 @@ async fn test_plan_exit_code_propagation() {
         ..test_config("github")
     };
 
-    let exit_code = rlph::plan::run_plan(&config, None).await.unwrap();
+    let exit_code = rlph::prd::run_prd(&config, None).await.unwrap();
     assert_eq!(exit_code, 42);
 }
 
 /// Verify -p flag is passed when description is provided.
 #[tokio::test]
 #[cfg(unix)]
-async fn test_plan_passes_description_as_p_flag() {
+async fn test_prd_passes_description_as_p_flag() {
     let tmp = tempfile::tempdir().unwrap();
     let script_path = tmp.path().join("mock_claude");
     // Script checks for -p flag followed by the description
@@ -193,8 +193,6 @@ exit 0
         ..test_config("github")
     };
 
-    let exit_code = rlph::plan::run_plan(&config, Some("add auth"))
-        .await
-        .unwrap();
+    let exit_code = rlph::prd::run_prd(&config, Some("add auth")).await.unwrap();
     assert_eq!(exit_code, 0);
 }
