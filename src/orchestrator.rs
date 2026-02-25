@@ -85,6 +85,8 @@ pub trait ProgressReporter: Send + Sync {
     fn tasks_found(&self, count: usize);
     fn task_selected(&self, issue_number: u64, title: &str);
     fn implement_started(&self);
+    /// Fires after a new PR is submitted (inside `run_implement_review`).
+    /// Skipped in dry-run mode and when an existing PR is reused.
     fn pr_created(&self, url: &str);
     fn iteration_complete(&self, issue_number: u64, title: &str);
 
@@ -92,12 +94,10 @@ pub trait ProgressReporter: Send + Sync {
     fn phases_started(&self, names: &[String]);
     fn phase_complete(&self, name: &str);
     fn review_summary(&self, body: &str);
+    /// Fires at the end of `run_review_pipeline` after all review rounds complete.
+    /// Fires even when an existing PR was reused.
     fn pr_url(&self, url: &str);
 }
-
-#[doc(hidden)]
-#[deprecated(note = "renamed to ProgressReporter")]
-pub use ProgressReporter as ReviewReporter;
 
 /// Default reporter that prints to stderr.
 pub struct StderrReporter;
