@@ -128,7 +128,7 @@ impl AgentRunner for MockRunner {
             }),
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
-                stdout: "All looks good.\n\nREVIEW_APPROVED".into(),
+                stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
                 stderr: String::new(),
             }),
             Phase::ReviewFix => Ok(RunResult {
@@ -261,7 +261,7 @@ impl AgentRunner for CountingRunner {
             }
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
-                stdout: "REVIEW_APPROVED".into(),
+                stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
                 stderr: String::new(),
             }),
             Phase::ReviewFix => Ok(RunResult {
@@ -312,7 +312,7 @@ impl AgentRunner for FailAtPhaseRunner {
             }),
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
-                stdout: "REVIEW_APPROVED".into(),
+                stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
                 stderr: String::new(),
             }),
             Phase::ReviewFix => Ok(RunResult {
@@ -410,7 +410,7 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
             Box::pin(async move {
                 let stdout = match phase {
-                    Phase::ReviewAggregate => "All good.\n\nREVIEW_APPROVED".to_string(),
+                    Phase::ReviewAggregate => r#"{"verdict":"approved","comment":"All good.","findings":[],"fix_instructions":null}"#.to_string(),
                     Phase::ReviewFix => "FIX_COMPLETE: done".to_string(),
                     _ => String::new(),
                 };
@@ -445,7 +445,7 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
             Box::pin(async move {
                 let stdout = match phase {
                     Phase::ReviewAggregate => {
-                        "Issues found\nREVIEW_NEEDS_FIX: fix everything".to_string()
+                        r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"issue"}],"fix_instructions":"fix everything"}"#.to_string()
                     }
                     Phase::ReviewFix => "FIX_COMPLETE: attempted fixes".to_string(),
                     _ => String::new(),
@@ -486,19 +486,10 @@ impl ReviewRunnerFactory for FailReviewFactory {
 /// Events captured by `CapturingReporter` for test assertions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ReviewEvent {
-    PhasesStarted {
-        count: usize,
-        names: Vec<String>,
-    },
-    PhaseComplete {
-        name: String,
-    },
-    ReviewSummary {
-        body: String,
-    },
-    PrUrl {
-        url: String,
-    },
+    PhasesStarted { count: usize, names: Vec<String> },
+    PhaseComplete { name: String },
+    ReviewSummary { body: String },
+    PrUrl { url: String },
 }
 
 /// Test-only reporter that collects events into a shared vec.
@@ -612,10 +603,7 @@ fn make_review_vars(
         ),
         (
             "pr_url".to_string(),
-            format!(
-                "https://github.com/test/repo/pull/{}",
-                task.id
-            ),
+            format!("https://github.com/test/repo/pull/{}", task.id),
         ),
     ])
 }
@@ -1425,8 +1413,13 @@ async fn test_review_reports_phases_started() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let (orchestrator, invocation, events) =
-        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+    let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        ApprovedReviewFactory,
+        false,
+    );
 
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1454,8 +1447,13 @@ async fn test_review_reports_phase_completions() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let (orchestrator, invocation, events) =
-        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+    let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        ApprovedReviewFactory,
+        false,
+    );
 
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1470,7 +1468,11 @@ async fn test_review_reports_phase_completions() {
             _ => None,
         })
         .collect();
-    assert_eq!(completions.len(), 3, "expected 3 phase completions, got {completions:?}");
+    assert_eq!(
+        completions.len(),
+        3,
+        "expected 3 phase completions, got {completions:?}"
+    );
     let completion_set: HashSet<_> = completions.into_iter().collect();
     assert!(completion_set.contains("correctness"));
     assert!(completion_set.contains("security"));
@@ -1482,8 +1484,13 @@ async fn test_review_reports_summary() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let (orchestrator, invocation, events) =
-        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+    let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        ApprovedReviewFactory,
+        false,
+    );
 
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1506,8 +1513,13 @@ async fn test_review_reports_pr_url() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let (orchestrator, invocation, events) =
-        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+    let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        ApprovedReviewFactory,
+        false,
+    );
 
     orchestrator
         .run_review_for_existing_pr(invocation)

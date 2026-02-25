@@ -11,6 +11,7 @@ use crate::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
 use crate::deps::DependencyGraph;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
+use crate::review_schema::{Verdict, parse_aggregator_output};
 use crate::runner::{AgentRunner, AnyRunner, Phase, build_runner};
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
@@ -183,13 +184,8 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P> Orchestrator<S, 
     }
 }
 
-impl<
-        S: TaskSource,
-        R: AgentRunner,
-        B: SubmissionBackend,
-        F: ReviewRunnerFactory,
-        P: ReviewReporter,
-    > Orchestrator<S, R, B, F, P>
+impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory, P: ReviewReporter>
+    Orchestrator<S, R, B, F, P>
 {
     /// Run according to configured loop mode.
     ///
@@ -329,7 +325,10 @@ impl<
         self.runner
             .run(Phase::Choose, &choose_prompt, &self.repo_root)
             .await?;
-        info!(elapsed_secs = choose_started.elapsed().as_secs(), "choose phase complete");
+        info!(
+            elapsed_secs = choose_started.elapsed().as_secs(),
+            "choose phase complete"
+        );
 
         // 3. Parse task selection from .ralph/task.toml
         let task_id = self.parse_task_selection()?;
@@ -589,11 +588,16 @@ impl<
                 .run(Phase::ReviewAggregate, &agg_prompt, &worktree_info.path)
                 .await?;
 
-            let comment_body = extract_comment_body(&agg_result.stdout);
-            let summary = comment_body
-                .strip_prefix(REVIEW_MARKER)
-                .unwrap_or(&comment_body)
-                .trim();
+            let agg_output = match parse_aggregator_output(&agg_result.stdout) {
+                Ok(output) => output,
+                Err(e) => {
+                    warn!(error = %e, "failed to parse aggregator JSON — retrying");
+                    continue;
+                }
+            };
+
+            let comment_body = format!("{REVIEW_MARKER}\n{}", agg_output.comment);
+            let summary = agg_output.comment.trim();
             if !summary.is_empty() {
                 self.reporter.review_summary(summary);
             }
@@ -605,7 +609,7 @@ impl<
                 warn!(error = %e, "failed to comment on PR");
             }
 
-            if agg_result.stdout.contains("REVIEW_APPROVED") {
+            if agg_output.verdict == Verdict::Approved {
                 info!(round, "review approved");
                 review_passed = true;
                 break;
@@ -616,10 +620,12 @@ impl<
                 break;
             }
 
-            let fix_instructions = match extract_fix_instructions(&agg_result.stdout) {
-                Some(instructions) => instructions,
-                None => {
-                    warn!("aggregator produced neither REVIEW_APPROVED nor REVIEW_NEEDS_FIX — retrying");
+            let fix_instructions = match agg_output.fix_instructions {
+                Some(instructions) if !instructions.trim().is_empty() => instructions,
+                _ => {
+                    warn!(
+                        "aggregator verdict is needs_fix but fix_instructions is empty — retrying"
+                    );
                     continue;
                 }
             };
@@ -744,35 +750,6 @@ impl<
     }
 }
 
-/// Extract the comment body from aggregation output (everything before the REVIEW_ signal),
-/// prepended with the rlph review marker for upsert identification.
-fn extract_comment_body(stdout: &str) -> String {
-    let body = if let Some(pos) = stdout.find("REVIEW_APPROVED") {
-        stdout[..pos].trim()
-    } else if let Some(pos) = stdout.find("REVIEW_NEEDS_FIX:") {
-        stdout[..pos].trim()
-    } else {
-        stdout.trim()
-    };
-    format!("{REVIEW_MARKER}\n{body}")
-}
-
-/// Extract fix instructions from `REVIEW_NEEDS_FIX: <instructions>`.
-/// Captures everything from the marker to end of output (multi-line).
-fn extract_fix_instructions(stdout: &str) -> Option<String> {
-    if let Some(pos) = stdout.find("REVIEW_NEEDS_FIX:") {
-        let after = &stdout[pos + "REVIEW_NEEDS_FIX:".len()..];
-        let trimmed = after.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    } else {
-        None
-    }
-}
-
 /// Extract the issue number from a task ID like "gh-42".
 pub fn parse_issue_number(task_id: &str) -> Result<u64> {
     task_id
@@ -804,43 +781,31 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_comment_body_approved() {
-        let stdout = "Some findings here\n\nREVIEW_APPROVED";
-        assert_eq!(
-            extract_comment_body(stdout),
-            "<!-- rlph-review -->\nSome findings here"
-        );
+    fn test_parse_aggregator_approved_json() {
+        use crate::review_schema::{Verdict, parse_aggregator_output};
+
+        let json = r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#;
+        let output = parse_aggregator_output(json).unwrap();
+        assert_eq!(output.verdict, Verdict::Approved);
+        assert_eq!(output.comment, "All looks good.");
+        assert!(output.findings.is_empty());
+        assert!(output.fix_instructions.is_none());
     }
 
     #[test]
-    fn test_extract_comment_body_needs_fix() {
-        let stdout = "Findings\nREVIEW_NEEDS_FIX: fix stuff";
-        assert_eq!(
-            extract_comment_body(stdout),
-            "<!-- rlph-review -->\nFindings"
-        );
+    fn test_parse_aggregator_needs_fix_json() {
+        use crate::review_schema::{Verdict, parse_aggregator_output};
+
+        let json = r#"{"verdict":"needs_fix","comment":"Issues found.","findings":[{"file":"src/main.rs","line":42,"severity":"critical","description":"bug"}],"fix_instructions":"Fix the bug."}"#;
+        let output = parse_aggregator_output(json).unwrap();
+        assert_eq!(output.verdict, Verdict::NeedsFix);
+        assert_eq!(output.fix_instructions.as_deref(), Some("Fix the bug."));
     }
 
     #[test]
-    fn test_extract_comment_body_no_signal() {
-        let stdout = "Just some output";
-        assert_eq!(
-            extract_comment_body(stdout),
-            "<!-- rlph-review -->\nJust some output"
-        );
-    }
+    fn test_parse_aggregator_invalid_json_errors() {
+        use crate::review_schema::parse_aggregator_output;
 
-    #[test]
-    fn test_extract_fix_instructions() {
-        assert_eq!(
-            extract_fix_instructions("REVIEW_NEEDS_FIX: fix the bug"),
-            Some("fix the bug".to_string())
-        );
-        assert_eq!(
-            extract_fix_instructions("Some output\nREVIEW_NEEDS_FIX: do stuff\nmore lines\nhere"),
-            Some("do stuff\nmore lines\nhere".to_string())
-        );
-        assert_eq!(extract_fix_instructions("REVIEW_APPROVED"), None);
-        assert_eq!(extract_fix_instructions("REVIEW_NEEDS_FIX:   "), None);
+        assert!(parse_aggregator_output("not json at all").is_err());
     }
 }

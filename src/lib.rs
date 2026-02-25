@@ -6,6 +6,7 @@ pub mod orchestrator;
 pub mod prd;
 pub mod process;
 pub mod prompts;
+pub mod review_schema;
 pub mod runner;
 pub mod sources;
 pub mod state;
