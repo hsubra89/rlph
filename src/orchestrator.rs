@@ -11,7 +11,9 @@ use crate::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
 use crate::deps::DependencyGraph;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
-use crate::review_schema::{Verdict, parse_aggregator_output};
+use crate::review_schema::{
+    Verdict, parse_aggregator_output, parse_phase_output, render_findings_for_prompt,
+};
 use crate::runner::{AgentRunner, AnyRunner, Phase, build_runner};
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
@@ -22,7 +24,6 @@ use crate::worktree::{WorktreeInfo, WorktreeManager, validate_branch_name};
 struct ReviewPhaseOutput {
     name: String,
     stdout: String,
-    stderr: String,
 }
 
 #[derive(Deserialize)]
@@ -594,7 +595,6 @@ impl<
                     Ok::<ReviewPhaseOutput, Error>(ReviewPhaseOutput {
                         name: phase_name,
                         stdout: result.stdout,
-                        stderr: result.stderr,
                     })
                 });
             }
@@ -609,12 +609,14 @@ impl<
             let review_outputs_text = review_outputs
                 .iter()
                 .map(|o| {
-                    let mut section =
-                        format!("## Review Phase: {}\n\n### stdout\n{}", o.name, o.stdout);
-                    if !o.stderr.trim().is_empty() {
-                        section.push_str(&format!("\n\n### stderr\n{}", o.stderr));
-                    }
-                    section
+                    let rendered = match parse_phase_output(&o.stdout) {
+                        Ok(phase) => render_findings_for_prompt(&phase.findings),
+                        Err(e) => {
+                            warn!(phase = %o.name, error = %e, "failed to parse phase JSON, using raw stdout");
+                            o.stdout.clone()
+                        }
+                    };
+                    format!("## Review Phase: {}\n\n{}", o.name, rendered)
                 })
                 .collect::<Vec<_>>()
                 .join("\n\n---\n\n");
