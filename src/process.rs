@@ -31,6 +31,8 @@ pub struct ProcessConfig {
     /// Data to write to the child's stdin. When `Some`, stdin is piped and the
     /// data is written before closing. When `None`, stdin is connected to /dev/null.
     pub stdin_data: Option<String>,
+    /// Suppress process-level noise (launch, heartbeat) on stderr.
+    pub quiet: bool,
 }
 
 /// Output from a completed child process.
@@ -86,8 +88,11 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
 
     let command_preview = format_command_preview(&config.command, &config.args);
     let log_prefix = config.log_prefix.clone();
+    let quiet = config.quiet;
     info!("[{}] launching command={command_preview}", log_prefix);
-    eprintln!("[{}] launching: {command_preview}", log_prefix);
+    if !quiet {
+        eprintln!("[{}] launching: {command_preview}", log_prefix);
+    }
 
     let mut child = cmd
         .spawn()
@@ -100,7 +105,9 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
         "[{}] started pid={} command={command_preview}",
         log_prefix, pid
     );
-    eprintln!("[{}] started (pid {pid}): {command_preview}", log_prefix);
+    if !quiet {
+        eprintln!("[{}] started (pid {pid}): {command_preview}", log_prefix);
+    }
 
     // Spawn stdin write concurrently so it cannot block the timeout/select path
     // if the child stalls or the data exceeds the OS pipe buffer.
@@ -170,8 +177,10 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let heartbeat_task = tokio::spawn(async move {
         loop {
             tokio::time::sleep(HEARTBEAT_INTERVAL).await;
-            let elapsed = heartbeat_started.elapsed().as_secs();
-            eprintln!("[{heartbeat_prefix}] still running ({elapsed}s elapsed)");
+            if !quiet {
+                let elapsed = heartbeat_started.elapsed().as_secs();
+                eprintln!("[{heartbeat_prefix}] still running ({elapsed}s elapsed)");
+            }
         }
     });
 

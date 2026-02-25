@@ -232,6 +232,7 @@ impl AgentRunner for ClaudeRunner {
                 stream_output: false,
                 env: vec![],
                 stdin_data: None,
+                quiet: true,
             };
 
             match spawn_and_stream(config).await {
@@ -422,6 +423,7 @@ impl AgentRunner for CodexRunner {
                 stream_output: false,
                 env: vec![],
                 stdin_data,
+                quiet: true,
             };
 
             match spawn_and_stream(config).await {

@@ -78,7 +78,40 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
     }
 }
 
-pub struct Orchestrator<S, R, B, F = DefaultReviewRunnerFactory> {
+/// Observer for structured review-pipeline progress events.
+pub trait ReviewReporter: Send + Sync {
+    fn phases_started(&self, names: &[String]);
+    fn phase_complete(&self, name: &str);
+    fn review_summary(&self, body: &str);
+    fn pr_url(&self, url: &str);
+}
+
+/// Default reporter that prints to stderr.
+pub struct StderrReporter;
+
+impl ReviewReporter for StderrReporter {
+    fn phases_started(&self, names: &[String]) {
+        eprintln!(
+            "[rlph] Running {} review agents: {}",
+            names.len(),
+            names.join(", ")
+        );
+    }
+
+    fn phase_complete(&self, name: &str) {
+        eprintln!("[rlph] Review phase complete: {name}");
+    }
+
+    fn review_summary(&self, body: &str) {
+        eprintln!("[rlph] Review summary:\n{body}");
+    }
+
+    fn pr_url(&self, url: &str) {
+        eprintln!("[rlph] PR: {url}");
+    }
+}
+
+pub struct Orchestrator<S, R, B, F = DefaultReviewRunnerFactory, P = StderrReporter> {
     source: S,
     runner: R,
     submission: B,
@@ -88,6 +121,7 @@ pub struct Orchestrator<S, R, B, F = DefaultReviewRunnerFactory> {
     config: Config,
     repo_root: PathBuf,
     review_factory: F,
+    reporter: P,
 }
 
 impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> {
@@ -112,6 +146,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             config,
             repo_root,
             review_factory: DefaultReviewRunnerFactory,
+            reporter: StderrReporter,
         }
     }
 }
@@ -141,6 +176,43 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             config,
             repo_root,
             review_factory,
+            reporter: StderrReporter,
+        }
+    }
+}
+
+impl<
+        S: TaskSource,
+        R: AgentRunner,
+        B: SubmissionBackend,
+        F: ReviewRunnerFactory,
+        P: ReviewReporter,
+    > Orchestrator<S, R, B, F, P>
+{
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_reporter(
+        source: S,
+        runner: R,
+        submission: B,
+        worktree_mgr: WorktreeManager,
+        state_mgr: StateManager,
+        prompt_engine: PromptEngine,
+        config: Config,
+        repo_root: PathBuf,
+        review_factory: F,
+        reporter: P,
+    ) -> Self {
+        Self {
+            source,
+            runner,
+            submission,
+            worktree_mgr,
+            state_mgr,
+            prompt_engine,
+            config,
+            repo_root,
+            review_factory,
+            reporter,
         }
     }
 
@@ -473,6 +545,14 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             let pr_number_str = pr_number.map(|n| n.to_string()).unwrap_or_default();
 
             // Run all configured review phases in parallel.
+            let phase_names: Vec<String> = self
+                .config
+                .review_phases
+                .iter()
+                .map(|p| p.name.clone())
+                .collect();
+            self.reporter.phases_started(&phase_names);
+
             let mut join_set = tokio::task::JoinSet::new();
             for phase_config in &self.config.review_phases {
                 let phase_runner = self
@@ -504,7 +584,9 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
 
             let mut review_outputs = Vec::new();
             while let Some(result) = join_set.join_next().await {
-                review_outputs.push(result.map_err(|e| Error::AgentRunner(e.to_string()))??);
+                let output = result.map_err(|e| Error::AgentRunner(e.to_string()))??;
+                self.reporter.phase_complete(&output.name);
+                review_outputs.push(output);
             }
 
             let review_outputs_text = review_outputs
@@ -537,13 +619,26 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 .run(Phase::ReviewAggregate, &agg_prompt, &worktree_info.path)
                 .await?;
 
+            let comment_body = extract_comment_body(&agg_result.stdout);
+            let summary = comment_body
+                .strip_prefix(REVIEW_MARKER)
+                .unwrap_or(&comment_body)
+                .trim();
+            if !summary.is_empty() {
+                self.reporter.review_summary(summary);
+            }
+
             if let Some(pr_num) = pr_number
                 && !self.config.dry_run
+                && let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body)
             {
-                let comment_body = extract_comment_body(&agg_result.stdout);
-                if let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body) {
-                    warn!("[rlph:orchestrator] Failed to comment on PR: {e}");
-                }
+                warn!("[rlph:orchestrator] Failed to comment on PR: {e}");
+            }
+
+            if let Some(url) = vars.get("pr_url")
+                && !url.is_empty()
+            {
+                self.reporter.pr_url(url);
             }
 
             if agg_result.stdout.contains("REVIEW_APPROVED") {

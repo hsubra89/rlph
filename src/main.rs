@@ -119,6 +119,7 @@ async fn main() {
             vars.insert("issue_url".to_string(), issue_url);
             vars.insert("pr_number".to_string(), pr_context.number.to_string());
             vars.insert("pr_branch".to_string(), pr_context.head_branch.clone());
+            vars.insert("pr_url".to_string(), pr_context.url.clone());
             vars.insert("repo_path".to_string(), repo_root.display().to_string());
             vars.insert("branch_name".to_string(), worktree_info.branch.clone());
             vars.insert(
