@@ -487,34 +487,15 @@ impl ReviewRunnerFactory for FailReviewFactory {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PipelineEvent {
     FetchingTasks,
-    TasksFound {
-        count: usize,
-    },
-    TaskSelected {
-        issue_number: u64,
-        title: String,
-    },
+    TasksFound { count: usize },
+    TaskSelected { issue_number: u64, title: String },
     ImplementStarted,
-    PrCreated {
-        url: String,
-    },
-    IterationComplete {
-        issue_number: u64,
-        title: String,
-    },
-    PhasesStarted {
-        count: usize,
-        names: Vec<String>,
-    },
-    PhaseComplete {
-        name: String,
-    },
-    ReviewSummary {
-        body: String,
-    },
-    PrUrl {
-        url: String,
-    },
+    PrCreated { url: String },
+    IterationComplete { issue_number: u64, title: String },
+    PhasesStarted { count: usize, names: Vec<String> },
+    PhaseComplete { name: String },
+    ReviewSummary { body: String },
+    PrUrl { url: String },
 }
 
 /// Test-only reporter that collects events into a shared vec.
@@ -536,22 +517,34 @@ impl CapturingReporter {
 
 impl ProgressReporter for CapturingReporter {
     fn fetching_tasks(&self) {
-        self.events.lock().unwrap().push(PipelineEvent::FetchingTasks);
+        self.events
+            .lock()
+            .unwrap()
+            .push(PipelineEvent::FetchingTasks);
     }
 
     fn tasks_found(&self, count: usize) {
-        self.events.lock().unwrap().push(PipelineEvent::TasksFound { count });
+        self.events
+            .lock()
+            .unwrap()
+            .push(PipelineEvent::TasksFound { count });
     }
 
     fn task_selected(&self, issue_number: u64, title: &str) {
-        self.events.lock().unwrap().push(PipelineEvent::TaskSelected {
-            issue_number,
-            title: title.to_string(),
-        });
+        self.events
+            .lock()
+            .unwrap()
+            .push(PipelineEvent::TaskSelected {
+                issue_number,
+                title: title.to_string(),
+            });
     }
 
     fn implement_started(&self) {
-        self.events.lock().unwrap().push(PipelineEvent::ImplementStarted);
+        self.events
+            .lock()
+            .unwrap()
+            .push(PipelineEvent::ImplementStarted);
     }
 
     fn pr_created(&self, url: &str) {
@@ -561,10 +554,13 @@ impl ProgressReporter for CapturingReporter {
     }
 
     fn iteration_complete(&self, issue_number: u64, title: &str) {
-        self.events.lock().unwrap().push(PipelineEvent::IterationComplete {
-            issue_number,
-            title: title.to_string(),
-        });
+        self.events
+            .lock()
+            .unwrap()
+            .push(PipelineEvent::IterationComplete {
+                issue_number,
+                title: title.to_string(),
+            });
     }
 
     fn phases_started(&self, names: &[String]) {
@@ -660,10 +656,7 @@ fn make_review_vars(
         ),
         (
             "pr_url".to_string(),
-            format!(
-                "https://github.com/test/repo/pull/{}",
-                task.id
-            ),
+            format!("https://github.com/test/repo/pull/{}", task.id),
         ),
     ])
 }
@@ -1473,8 +1466,13 @@ async fn test_review_reports_phases_started() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let (orchestrator, invocation, events) =
-        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+    let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        ApprovedReviewFactory,
+        false,
+    );
 
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1502,8 +1500,13 @@ async fn test_review_reports_phase_completions() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let (orchestrator, invocation, events) =
-        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+    let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        ApprovedReviewFactory,
+        false,
+    );
 
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1518,7 +1521,11 @@ async fn test_review_reports_phase_completions() {
             _ => None,
         })
         .collect();
-    assert_eq!(completions.len(), 3, "expected 3 phase completions, got {completions:?}");
+    assert_eq!(
+        completions.len(),
+        3,
+        "expected 3 phase completions, got {completions:?}"
+    );
     let completion_set: HashSet<_> = completions.into_iter().collect();
     assert!(completion_set.contains("correctness"));
     assert!(completion_set.contains("security"));
@@ -1530,8 +1537,13 @@ async fn test_review_reports_summary() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let (orchestrator, invocation, events) =
-        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+    let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        ApprovedReviewFactory,
+        false,
+    );
 
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1554,8 +1566,13 @@ async fn test_review_reports_pr_url() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let (orchestrator, invocation, events) =
-        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+    let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        ApprovedReviewFactory,
+        false,
+    );
 
     orchestrator
         .run_review_for_existing_pr(invocation)

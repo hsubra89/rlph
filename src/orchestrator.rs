@@ -221,12 +221,12 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P> Orchestrator<S, 
 }
 
 impl<
-        S: TaskSource,
-        R: AgentRunner,
-        B: SubmissionBackend,
-        F: ReviewRunnerFactory,
-        P: ProgressReporter,
-    > Orchestrator<S, R, B, F, P>
+    S: TaskSource,
+    R: AgentRunner,
+    B: SubmissionBackend,
+    F: ReviewRunnerFactory,
+    P: ProgressReporter,
+> Orchestrator<S, R, B, F, P>
 {
     /// Run according to configured loop mode.
     ///
@@ -368,7 +368,10 @@ impl<
         self.runner
             .run(Phase::Choose, &choose_prompt, &self.repo_root)
             .await?;
-        info!(elapsed_secs = choose_started.elapsed().as_secs(), "choose phase complete");
+        info!(
+            elapsed_secs = choose_started.elapsed().as_secs(),
+            "choose phase complete"
+        );
 
         // 3. Parse task selection from .ralph/task.toml
         let task_id = self.parse_task_selection()?;
@@ -662,7 +665,9 @@ impl<
             let fix_instructions = match extract_fix_instructions(&agg_result.stdout) {
                 Some(instructions) => instructions,
                 None => {
-                    warn!("aggregator produced neither REVIEW_APPROVED nor REVIEW_NEEDS_FIX — retrying");
+                    warn!(
+                        "aggregator produced neither REVIEW_APPROVED nor REVIEW_NEEDS_FIX — retrying"
+                    );
                     continue;
                 }
             };
