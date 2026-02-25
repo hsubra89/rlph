@@ -678,7 +678,7 @@ async fn test_full_loop_dry_run() {
     let state_mgr = StateManager::new(&state_dir);
     let prompt_engine = PromptEngine::new(None);
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         source,
         runner,
         submission,
@@ -687,8 +687,8 @@ async fn test_full_loop_dry_run() {
         prompt_engine,
         make_config(true), // dry_run
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_once().await.unwrap();
 
@@ -728,7 +728,7 @@ async fn test_full_loop_with_push() {
     let state_mgr = StateManager::new(&state_dir);
     let prompt_engine = PromptEngine::new(None);
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         source,
         runner,
         submission,
@@ -737,8 +737,8 @@ async fn test_full_loop_with_push() {
         prompt_engine,
         make_config(false), // not dry_run
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_once().await.unwrap();
 
@@ -876,7 +876,7 @@ async fn test_error_at_review_phase() {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -889,8 +889,8 @@ async fn test_error_at_review_phase() {
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
-        FailReviewFactory,
-    );
+    )
+    .with_review_factory(FailReviewFactory);
 
     let err = orchestrator.run_once().await.unwrap_err();
     assert!(err.to_string().contains("mock failure at review"));
@@ -937,7 +937,7 @@ async fn test_state_transitions_through_phases() {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-7"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -950,8 +950,8 @@ async fn test_state_transitions_through_phases() {
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_once().await.unwrap();
 
@@ -971,7 +971,7 @@ async fn test_worktree_cleaned_up_after_success() {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -984,8 +984,8 @@ async fn test_worktree_cleaned_up_after_success() {
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_once().await.unwrap();
 
@@ -1010,7 +1010,7 @@ async fn test_review_exhaustion_preserves_state() {
     let mut config = make_config(true);
     config.max_review_rounds = 2;
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -1023,8 +1023,8 @@ async fn test_review_exhaustion_preserves_state() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
-        NeverApproveReviewFactory,
-    );
+    )
+    .with_review_factory(NeverApproveReviewFactory);
 
     let err = orchestrator.run_once().await.unwrap_err();
     assert!(
@@ -1048,7 +1048,7 @@ async fn test_existing_pr_skips_submission() {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), Some(99)),
@@ -1061,8 +1061,8 @@ async fn test_existing_pr_skips_submission() {
         PromptEngine::new(None),
         make_config(false), // non-dry-run so submission would normally fire
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_once().await.unwrap();
 
@@ -1089,7 +1089,7 @@ async fn test_continuous_mode_polls_with_empty_results() {
     config.max_iterations = Some(2);
     config.poll_seconds = 1;
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         source,
         CountingRunner::new("gh-42", Arc::clone(&counts)),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -1102,8 +1102,8 @@ async fn test_continuous_mode_polls_with_empty_results() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_loop(None).await.unwrap();
 
@@ -1124,7 +1124,7 @@ async fn test_max_iterations_stops_at_limit() {
     config.continuous = false;
     config.max_iterations = Some(3);
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         CountingRunner::new("gh-42", Arc::clone(&counts)),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -1137,8 +1137,8 @@ async fn test_max_iterations_stops_at_limit() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_loop(None).await.unwrap();
 
@@ -1161,7 +1161,7 @@ async fn test_continuous_shutdown_exits_between_iterations() {
     config.max_iterations = None;
     config.poll_seconds = 1;
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         CountingRunner::with_shutdown("gh-42", Arc::clone(&counts), shutdown_tx),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -1174,8 +1174,8 @@ async fn test_continuous_shutdown_exits_between_iterations() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_loop(Some(shutdown_rx)).await.unwrap();
 
@@ -1208,7 +1208,7 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
         &worktree_info.path,
     );
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         source,
         MockRunner::new("gh-42"),
         submission,
@@ -1217,8 +1217,8 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
         PromptEngine::new(None),
         make_config(false),
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     let invocation = ReviewInvocation {
         task_id_for_state: "gh-42".to_string(),
@@ -1272,7 +1272,7 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
         &worktree_info.path,
     );
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         source,
         MockRunner::new("gh-88"),
         submission,
@@ -1281,8 +1281,8 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
         PromptEngine::new(None),
         make_config(false),
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     let invocation = ReviewInvocation {
         task_id_for_state: "pr-88".to_string(),
@@ -1332,7 +1332,7 @@ async fn test_review_only_exhaustion_preserves_state() {
 
     let mut config = make_config(true);
     config.max_review_rounds = 2;
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         source,
         MockRunner::new("gh-99"),
         submission,
@@ -1341,8 +1341,8 @@ async fn test_review_only_exhaustion_preserves_state() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
-        NeverApproveReviewFactory,
-    );
+    )
+    .with_review_factory(NeverApproveReviewFactory);
 
     let invocation = ReviewInvocation {
         task_id_for_state: "pr-99".to_string(),
@@ -1395,7 +1395,7 @@ fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
 
     let (reporter, events) = CapturingReporter::new();
 
-    let orchestrator = Orchestrator::with_reporter(
+    let orchestrator = Orchestrator::new(
         source,
         MockRunner::new("gh-42"),
         submission,
@@ -1404,9 +1404,9 @@ fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
         PromptEngine::new(None),
         make_config(dry_run),
         repo_dir.to_path_buf(),
-        factory,
-        reporter,
-    );
+    )
+    .with_review_factory(factory)
+    .with_reporter(reporter);
 
     let invocation = ReviewInvocation {
         task_id_for_state: "gh-42".to_string(),

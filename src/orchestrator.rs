@@ -151,32 +151,34 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
     }
 }
 
-impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory>
-    Orchestrator<S, R, B, F>
-{
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_review_factory(
-        source: S,
-        runner: R,
-        submission: B,
-        worktree_mgr: WorktreeManager,
-        state_mgr: StateManager,
-        prompt_engine: PromptEngine,
-        config: Config,
-        repo_root: PathBuf,
-        review_factory: F,
-    ) -> Self {
-        Self {
-            source,
-            runner,
-            submission,
-            worktree_mgr,
-            state_mgr,
-            prompt_engine,
-            config,
-            repo_root,
+impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P> Orchestrator<S, R, B, F, P> {
+    pub fn with_review_factory<F2>(self, review_factory: F2) -> Orchestrator<S, R, B, F2, P> {
+        Orchestrator {
+            source: self.source,
+            runner: self.runner,
+            submission: self.submission,
+            worktree_mgr: self.worktree_mgr,
+            state_mgr: self.state_mgr,
+            prompt_engine: self.prompt_engine,
+            config: self.config,
+            repo_root: self.repo_root,
             review_factory,
-            reporter: StderrReporter,
+            reporter: self.reporter,
+        }
+    }
+
+    pub fn with_reporter<P2>(self, reporter: P2) -> Orchestrator<S, R, B, F, P2> {
+        Orchestrator {
+            source: self.source,
+            runner: self.runner,
+            submission: self.submission,
+            worktree_mgr: self.worktree_mgr,
+            state_mgr: self.state_mgr,
+            prompt_engine: self.prompt_engine,
+            config: self.config,
+            repo_root: self.repo_root,
+            review_factory: self.review_factory,
+            reporter,
         }
     }
 }
@@ -189,33 +191,6 @@ impl<
         P: ReviewReporter,
     > Orchestrator<S, R, B, F, P>
 {
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_reporter(
-        source: S,
-        runner: R,
-        submission: B,
-        worktree_mgr: WorktreeManager,
-        state_mgr: StateManager,
-        prompt_engine: PromptEngine,
-        config: Config,
-        repo_root: PathBuf,
-        review_factory: F,
-        reporter: P,
-    ) -> Self {
-        Self {
-            source,
-            runner,
-            submission,
-            worktree_mgr,
-            state_mgr,
-            prompt_engine,
-            config,
-            repo_root,
-            review_factory,
-            reporter,
-        }
-    }
-
     /// Run according to configured loop mode.
     ///
     /// When `shutdown` becomes true, the orchestrator exits between iterations.
