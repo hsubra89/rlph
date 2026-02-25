@@ -128,7 +128,7 @@ impl AgentRunner for MockRunner {
             }),
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
-                stdout: "All looks good.\n\nREVIEW_APPROVED".into(),
+                stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
                 stderr: String::new(),
             }),
             Phase::ReviewFix => Ok(RunResult {
@@ -261,7 +261,7 @@ impl AgentRunner for CountingRunner {
             }
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
-                stdout: "REVIEW_APPROVED".into(),
+                stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
                 stderr: String::new(),
             }),
             Phase::ReviewFix => Ok(RunResult {
@@ -312,7 +312,7 @@ impl AgentRunner for FailAtPhaseRunner {
             }),
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
-                stdout: "REVIEW_APPROVED".into(),
+                stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
                 stderr: String::new(),
             }),
             Phase::ReviewFix => Ok(RunResult {
@@ -410,7 +410,7 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
             Box::pin(async move {
                 let stdout = match phase {
-                    Phase::ReviewAggregate => "All good.\n\nREVIEW_APPROVED".to_string(),
+                    Phase::ReviewAggregate => r#"{"verdict":"approved","comment":"All good.","findings":[],"fix_instructions":null}"#.to_string(),
                     Phase::ReviewFix => "FIX_COMPLETE: done".to_string(),
                     _ => String::new(),
                 };
@@ -445,7 +445,7 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
             Box::pin(async move {
                 let stdout = match phase {
                     Phase::ReviewAggregate => {
-                        "Issues found\nREVIEW_NEEDS_FIX: fix everything".to_string()
+                        r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"issue"}],"fix_instructions":"fix everything"}"#.to_string()
                     }
                     Phase::ReviewFix => "FIX_COMPLETE: attempted fixes".to_string(),
                     _ => String::new(),

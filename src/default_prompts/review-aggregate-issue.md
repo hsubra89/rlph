@@ -23,15 +23,31 @@ Multiple review agents have independently analyzed an implementation. Your job i
 
 1. Read all review outputs above carefully.
 2. De-duplicate findings that appear in multiple reviews.
-3. Prioritize by severity: CRITICAL > WARNING > INFO.
+3. Prioritize by severity: critical > warning > info.
 4. Compose a clear, actionable PR comment summarizing all findings.
-5. Decide: are there any CRITICAL or WARNING findings that require code changes?
+5. Decide: are there any critical or warning findings that require code changes?
 
 ## Output
 
-First, output the PR comment body (markdown formatted). List individual issues as a task list (`- [ ] ...`) so they can be checked off as they are fixed.
+Respond with a single JSON object (no markdown fences, no commentary outside the JSON). The schema:
 
-Then, on a new line, output exactly one of:
+```json
+{
+  "verdict": "approved" | "needs_fix",
+  "comment": "<markdown PR comment body — list issues as a task list (`- [ ] ...`)>",
+  "findings": [
+    {
+      "file": "<path>",
+      "line": <number>,
+      "severity": "critical" | "warning" | "info",
+      "description": "<what is wrong>"
+    }
+  ],
+  "fix_instructions": "<concise instructions for the fix agent, or null if approved>"
+}
+```
 
-- `REVIEW_APPROVED` — if there are no actionable findings requiring code changes.
-- `REVIEW_NEEDS_FIX: <instructions>` — if code changes are needed. Include concise fix instructions after the colon.
+- Set `verdict` to `"approved"` if there are no actionable findings requiring code changes.
+- Set `verdict` to `"needs_fix"` if code changes are needed, and populate `fix_instructions`.
+- `findings` may be empty when the code is clean.
+- `fix_instructions` must be `null` when `verdict` is `"approved"`.
