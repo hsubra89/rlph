@@ -198,9 +198,7 @@ impl WorktreeManager {
                 .current_dir(&existing.path)
                 .output()
                 .map_err(|e| {
-                    Error::Worktree(format!(
-                        "failed to reset worktree to {remote_ref}: {e}"
-                    ))
+                    Error::Worktree(format!("failed to reset worktree to {remote_ref}: {e}"))
                 })?;
             if !reset_output.status.success() {
                 let stderr = String::from_utf8_lossy(&reset_output.stderr);
@@ -314,10 +312,7 @@ impl WorktreeManager {
 
     /// Parse `git worktree list --porcelain` output, returning the first entry
     /// whose directory name satisfies `predicate`.
-    fn find_worktree(
-        &self,
-        predicate: impl Fn(&str) -> bool,
-    ) -> Result<Option<WorktreeInfo>> {
+    fn find_worktree(&self, predicate: impl Fn(&str) -> bool) -> Result<Option<WorktreeInfo>> {
         let _ = self.git(&["worktree", "prune"]);
         let output = self
             .git(&["worktree", "list", "--porcelain"])

@@ -336,12 +336,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
 
         // Run the implement → submit → review pipeline, cleaning up on success
         let result = self
-            .run_implement_review(
-                &task,
-                issue_number,
-                &worktree_info,
-                existing_pr_number,
-            )
+            .run_implement_review(&task, issue_number, &worktree_info, existing_pr_number)
             .await;
 
         match result {
@@ -665,9 +660,8 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
     }
 
     fn push_branch_to(&self, worktree: &WorktreeInfo, remote_branch: &str) -> Result<()> {
-        validate_branch_name(remote_branch).map_err(|e| {
-            Error::Orchestrator(format!("invalid remote branch name: {e}"))
-        })?;
+        validate_branch_name(remote_branch)
+            .map_err(|e| Error::Orchestrator(format!("invalid remote branch name: {e}")))?;
 
         let refspec = format!("HEAD:{remote_branch}");
         let output = Command::new("git")

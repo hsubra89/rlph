@@ -151,7 +151,12 @@ impl GitHubSubmission {
     fn find_review_comment(&self, pr_number: u64) -> Result<Option<u64>> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments");
         let output = Command::new("gh")
-            .args(["api", &endpoint, "--jq", ".[] | select(.body | contains(\"<!-- rlph-review -->\")) | .id"])
+            .args([
+                "api",
+                &endpoint,
+                "--jq",
+                ".[] | select(.body | contains(\"<!-- rlph-review -->\")) | .id",
+            ])
             .output()
             .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
 
@@ -164,7 +169,10 @@ impl GitHubSubmission {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         // Take the first (most recent won't matter — there should be at most one)
-        let comment_id = stdout.lines().next().and_then(|line| line.trim().parse::<u64>().ok());
+        let comment_id = stdout
+            .lines()
+            .next()
+            .and_then(|line| line.trim().parse::<u64>().ok());
         Ok(comment_id)
     }
 
@@ -245,7 +253,14 @@ impl SubmissionBackend for GitHubSubmission {
         if let Some(comment_id) = self.find_review_comment(pr_number)? {
             let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}");
             let output = Command::new("gh")
-                .args(["api", &endpoint, "-X", "PATCH", "-f", &format!("body={body}")])
+                .args([
+                    "api",
+                    &endpoint,
+                    "-X",
+                    "PATCH",
+                    "-f",
+                    &format!("body={body}"),
+                ])
                 .output()
                 .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
 
@@ -256,7 +271,11 @@ impl SubmissionBackend for GitHubSubmission {
                 )));
             }
 
-            info!(pr_number = pr_number, comment_id = comment_id, "updated review comment on PR");
+            info!(
+                pr_number = pr_number,
+                comment_id = comment_id,
+                "updated review comment on PR"
+            );
         } else {
             let number_str = pr_number.to_string();
             let output = Command::new("gh")
@@ -348,8 +367,8 @@ fn extract_issue_number_reference(body: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_issue_number_reference, format_pr_comments_for_prompt, parse_pr_context_json,
-        parse_pr_number_from_url, pr_body_references_issue, PrComment, PrCommentUser,
+        PrComment, PrCommentUser, extract_issue_number_reference, format_pr_comments_for_prompt,
+        parse_pr_context_json, parse_pr_number_from_url, pr_body_references_issue,
     };
 
     #[test]
