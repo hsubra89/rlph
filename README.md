@@ -18,6 +18,20 @@ In practice, you label issues in your tracker (GitHub, Linear), point `rlph` at 
 
 ## Installation
 
+### Quick install (macOS / Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hsubra89/rlph/main/install.sh | sh
+```
+
+To install to a custom directory (e.g. `/usr/local/bin`):
+
+```bash
+RLPH_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/hsubra89/rlph/main/install.sh | sh
+```
+
+### From source
+
 ```bash
 cargo install --path .
 ```
