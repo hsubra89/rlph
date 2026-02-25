@@ -312,26 +312,25 @@ impl WorktreeManager {
         Ok(())
     }
 
-    /// Find an existing worktree for an issue number.
-    pub fn find_existing(&self, issue_number: u64) -> Result<Option<WorktreeInfo>> {
-        // Prune stale entries
+    /// Parse `git worktree list --porcelain` output, returning the first entry
+    /// whose directory name satisfies `predicate`.
+    fn find_worktree(
+        &self,
+        predicate: impl Fn(&str) -> bool,
+    ) -> Result<Option<WorktreeInfo>> {
         let _ = self.git(&["worktree", "prune"]);
-
         let output = self
             .git(&["worktree", "list", "--porcelain"])
             .map_err(|e| Error::Worktree(format!("failed to list worktrees: {e}")))?;
-
-        let prefix = format!("rlph-{issue_number}-");
 
         let mut current_path: Option<PathBuf> = None;
         let mut current_branch: Option<String> = None;
 
         for line in output.lines() {
             if let Some(path_str) = line.strip_prefix("worktree ") {
-                // Save any previous match
                 if let Some(ref path) = current_path
                     && let Some(name) = path.file_name().and_then(|n| n.to_str())
-                    && name.starts_with(&prefix)
+                    && predicate(name)
                 {
                     return Ok(Some(WorktreeInfo {
                         path: path.clone(),
@@ -350,7 +349,7 @@ impl WorktreeManager {
         // Check last entry
         if let Some(ref path) = current_path
             && let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && name.starts_with(&prefix)
+            && predicate(name)
         {
             return Ok(Some(WorktreeInfo {
                 path: path.clone(),
@@ -361,44 +360,14 @@ impl WorktreeManager {
         Ok(None)
     }
 
+    /// Find an existing worktree for an issue number.
+    pub fn find_existing(&self, issue_number: u64) -> Result<Option<WorktreeInfo>> {
+        let prefix = format!("rlph-{issue_number}-");
+        self.find_worktree(|name| name.starts_with(&prefix))
+    }
+
     fn find_existing_by_name(&self, name: &str) -> Result<Option<WorktreeInfo>> {
-        let _ = self.git(&["worktree", "prune"]);
-        let output = self
-            .git(&["worktree", "list", "--porcelain"])
-            .map_err(|e| Error::Worktree(format!("failed to list worktrees: {e}")))?;
-
-        let mut current_path: Option<PathBuf> = None;
-        let mut current_branch: Option<String> = None;
-
-        for line in output.lines() {
-            if let Some(path_str) = line.strip_prefix("worktree ") {
-                if let Some(ref path) = current_path
-                    && path.file_name().and_then(|n| n.to_str()) == Some(name)
-                {
-                    return Ok(Some(WorktreeInfo {
-                        path: path.clone(),
-                        branch: current_branch.unwrap_or_else(|| name.to_string()),
-                    }));
-                }
-                current_path = Some(PathBuf::from(path_str));
-                current_branch = None;
-            } else if let Some(branch_ref) = line.strip_prefix("branch ") {
-                current_branch = branch_ref
-                    .strip_prefix("refs/heads/")
-                    .map(|b| b.to_string());
-            }
-        }
-
-        if let Some(ref path) = current_path
-            && path.file_name().and_then(|n| n.to_str()) == Some(name)
-        {
-            return Ok(Some(WorktreeInfo {
-                path: path.clone(),
-                branch: current_branch.unwrap_or_else(|| name.to_string()),
-            }));
-        }
-
-        Ok(None)
+        self.find_worktree(|n| n == name)
     }
 
     /// Run `git worktree add`. If `new_branch` is true, uses `-b` to create the branch.

@@ -337,7 +337,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
         let result = self
             .run_implement_review(
                 &task,
-                &task_id,
                 issue_number,
                 &worktree_info,
                 existing_pr_number,
@@ -395,7 +394,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
     async fn run_implement_review(
         &self,
         task: &Task,
-        _task_id: &str,
         issue_number: u64,
         worktree_info: &WorktreeInfo,
         existing_pr_number: Option<u64>,
