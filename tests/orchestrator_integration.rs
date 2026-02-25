@@ -8,7 +8,7 @@ use rlph::config::{
     Config, ReviewPhaseConfig, ReviewStepConfig, default_review_phases, default_review_step,
 };
 use rlph::error::{Error, Result};
-use rlph::orchestrator::{Orchestrator, ReviewInvocation, ReviewReporter, ReviewRunnerFactory};
+use rlph::orchestrator::{Orchestrator, ProgressReporter, ReviewInvocation, ReviewRunnerFactory};
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult};
 use rlph::sources::{Task, TaskSource};
@@ -485,29 +485,26 @@ impl ReviewRunnerFactory for FailReviewFactory {
 
 /// Events captured by `CapturingReporter` for test assertions.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ReviewEvent {
-    PhasesStarted {
-        count: usize,
-        names: Vec<String>,
-    },
-    PhaseComplete {
-        name: String,
-    },
-    ReviewSummary {
-        body: String,
-    },
-    PrUrl {
-        url: String,
-    },
+enum PipelineEvent {
+    FetchingTasks,
+    TasksFound { count: usize },
+    TaskSelected { issue_number: u64, title: String },
+    ImplementStarted,
+    PrCreated { url: String },
+    IterationComplete { issue_number: u64, title: String },
+    PhasesStarted { count: usize, names: Vec<String> },
+    PhaseComplete { name: String },
+    ReviewSummary { body: String },
+    PrUrl { url: String },
 }
 
 /// Test-only reporter that collects events into a shared vec.
 struct CapturingReporter {
-    events: Arc<Mutex<Vec<ReviewEvent>>>,
+    events: Arc<Mutex<Vec<PipelineEvent>>>,
 }
 
 impl CapturingReporter {
-    fn new() -> (Self, Arc<Mutex<Vec<ReviewEvent>>>) {
+    fn new() -> (Self, Arc<Mutex<Vec<PipelineEvent>>>) {
         let events = Arc::new(Mutex::new(Vec::new()));
         (
             Self {
@@ -518,12 +515,59 @@ impl CapturingReporter {
     }
 }
 
-impl ReviewReporter for CapturingReporter {
+impl ProgressReporter for CapturingReporter {
+    fn fetching_tasks(&self) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(PipelineEvent::FetchingTasks);
+    }
+
+    fn tasks_found(&self, count: usize) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(PipelineEvent::TasksFound { count });
+    }
+
+    fn task_selected(&self, issue_number: u64, title: &str) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(PipelineEvent::TaskSelected {
+                issue_number,
+                title: title.to_string(),
+            });
+    }
+
+    fn implement_started(&self) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(PipelineEvent::ImplementStarted);
+    }
+
+    fn pr_created(&self, url: &str) {
+        self.events.lock().unwrap().push(PipelineEvent::PrCreated {
+            url: url.to_string(),
+        });
+    }
+
+    fn iteration_complete(&self, issue_number: u64, title: &str) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(PipelineEvent::IterationComplete {
+                issue_number,
+                title: title.to_string(),
+            });
+    }
+
     fn phases_started(&self, names: &[String]) {
         self.events
             .lock()
             .unwrap()
-            .push(ReviewEvent::PhasesStarted {
+            .push(PipelineEvent::PhasesStarted {
                 count: names.len(),
                 names: names.to_vec(),
             });
@@ -533,7 +577,7 @@ impl ReviewReporter for CapturingReporter {
         self.events
             .lock()
             .unwrap()
-            .push(ReviewEvent::PhaseComplete {
+            .push(PipelineEvent::PhaseComplete {
                 name: name.to_string(),
             });
     }
@@ -542,13 +586,13 @@ impl ReviewReporter for CapturingReporter {
         self.events
             .lock()
             .unwrap()
-            .push(ReviewEvent::ReviewSummary {
+            .push(PipelineEvent::ReviewSummary {
                 body: body.to_string(),
             });
     }
 
     fn pr_url(&self, url: &str) {
-        self.events.lock().unwrap().push(ReviewEvent::PrUrl {
+        self.events.lock().unwrap().push(PipelineEvent::PrUrl {
             url: url.to_string(),
         });
     }
@@ -612,10 +656,7 @@ fn make_review_vars(
         ),
         (
             "pr_url".to_string(),
-            format!(
-                "https://github.com/test/repo/pull/{}",
-                task.id
-            ),
+            format!("https://github.com/test/repo/pull/{}", task.id),
         ),
     ])
 }
@@ -1365,7 +1406,7 @@ async fn test_review_only_exhaustion_preserves_state() {
     assert!(worktree_info.path.exists());
 }
 
-// --- ReviewReporter output tests ---
+// --- ProgressReporter output tests ---
 
 /// Creates orchestrator + invocation with capturing reporter, returning events handle.
 #[allow(clippy::type_complexity)]
@@ -1378,7 +1419,7 @@ fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
 ) -> (
     Orchestrator<MockSource, MockRunner, MockSubmission, F, CapturingReporter>,
     ReviewInvocation,
-    Arc<Mutex<Vec<ReviewEvent>>>,
+    Arc<Mutex<Vec<PipelineEvent>>>,
 ) {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
@@ -1425,8 +1466,13 @@ async fn test_review_reports_phases_started() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let (orchestrator, invocation, events) =
-        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+    let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        ApprovedReviewFactory,
+        false,
+    );
 
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1436,10 +1482,10 @@ async fn test_review_reports_phases_started() {
     let events = events.lock().unwrap();
     let started = events
         .iter()
-        .find(|e| matches!(e, ReviewEvent::PhasesStarted { .. }))
+        .find(|e| matches!(e, PipelineEvent::PhasesStarted { .. }))
         .expect("should have PhasesStarted event");
     match started {
-        ReviewEvent::PhasesStarted { count, names } => {
+        PipelineEvent::PhasesStarted { count, names } => {
             assert_eq!(*count, 3);
             assert!(names.contains(&"correctness".to_string()));
             assert!(names.contains(&"security".to_string()));
@@ -1454,8 +1500,13 @@ async fn test_review_reports_phase_completions() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let (orchestrator, invocation, events) =
-        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+    let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        ApprovedReviewFactory,
+        false,
+    );
 
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1466,11 +1517,15 @@ async fn test_review_reports_phase_completions() {
     let completions: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            ReviewEvent::PhaseComplete { name } => Some(name.clone()),
+            PipelineEvent::PhaseComplete { name } => Some(name.clone()),
             _ => None,
         })
         .collect();
-    assert_eq!(completions.len(), 3, "expected 3 phase completions, got {completions:?}");
+    assert_eq!(
+        completions.len(),
+        3,
+        "expected 3 phase completions, got {completions:?}"
+    );
     let completion_set: HashSet<_> = completions.into_iter().collect();
     assert!(completion_set.contains("correctness"));
     assert!(completion_set.contains("security"));
@@ -1482,8 +1537,13 @@ async fn test_review_reports_summary() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let (orchestrator, invocation, events) =
-        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+    let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        ApprovedReviewFactory,
+        false,
+    );
 
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1494,7 +1554,7 @@ async fn test_review_reports_summary() {
     let summary = events
         .iter()
         .find_map(|e| match e {
-            ReviewEvent::ReviewSummary { body } => Some(body.clone()),
+            PipelineEvent::ReviewSummary { body } => Some(body.clone()),
             _ => None,
         })
         .expect("should have ReviewSummary event");
@@ -1506,8 +1566,13 @@ async fn test_review_reports_pr_url() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
-    let (orchestrator, invocation, events) =
-        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+    let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        ApprovedReviewFactory,
+        false,
+    );
 
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1518,9 +1583,261 @@ async fn test_review_reports_pr_url() {
     let url = events
         .iter()
         .find_map(|e| match e {
-            ReviewEvent::PrUrl { url } => Some(url.clone()),
+            PipelineEvent::PrUrl { url } => Some(url.clone()),
             _ => None,
         })
         .expect("should have PrUrl event");
     assert_eq!(url, "https://github.com/test/repo/pull/42");
+}
+
+// --- Iteration-level ProgressReporter tests ---
+
+/// Creates orchestrator with capturing reporter for iteration-level (`run_once`) tests.
+fn build_iteration_orchestrator_with_reporter<F: ReviewRunnerFactory>(
+    repo_dir: &Path,
+    wt_dir: &Path,
+    tasks: Vec<Task>,
+    factory: F,
+    dry_run: bool,
+    existing_pr_for_issue: Option<u64>,
+) -> (
+    Orchestrator<MockSource, MockRunner, MockSubmission, F, CapturingReporter>,
+    Arc<Mutex<Vec<PipelineEvent>>>,
+) {
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = MockSource::new(tasks, Arc::clone(&source_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), existing_pr_for_issue);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.to_path_buf(),
+        wt_dir.to_path_buf(),
+        "main".to_string(),
+    );
+    let state_dir = repo_dir.join(".rlph-test-state");
+
+    let (reporter, events) = CapturingReporter::new();
+
+    let orchestrator = Orchestrator::new(
+        source,
+        MockRunner::new("gh-42"),
+        submission,
+        worktree_mgr,
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        make_config(dry_run),
+        repo_dir.to_path_buf(),
+    )
+    .with_review_factory(factory)
+    .with_reporter(reporter);
+
+    (orchestrator, events)
+}
+
+#[tokio::test]
+async fn test_iteration_reports_fetching_tasks() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        vec![task],
+        ApprovedReviewFactory,
+        true,
+        None,
+    );
+
+    orchestrator.run_once().await.unwrap();
+
+    let events = events.lock().unwrap();
+    assert!(
+        events.contains(&PipelineEvent::FetchingTasks),
+        "expected FetchingTasks event"
+    );
+}
+
+#[tokio::test]
+async fn test_iteration_reports_tasks_found() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        vec![task],
+        ApprovedReviewFactory,
+        true,
+        None,
+    );
+
+    orchestrator.run_once().await.unwrap();
+
+    let events = events.lock().unwrap();
+    assert!(
+        events.contains(&PipelineEvent::TasksFound { count: 1 }),
+        "expected TasksFound {{ count: 1 }}"
+    );
+}
+
+#[tokio::test]
+async fn test_iteration_reports_task_selected() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        vec![task],
+        ApprovedReviewFactory,
+        true,
+        None,
+    );
+
+    orchestrator.run_once().await.unwrap();
+
+    let events = events.lock().unwrap();
+    assert!(
+        events.contains(&PipelineEvent::TaskSelected {
+            issue_number: 42,
+            title: "Fix bug".to_string(),
+        }),
+        "expected TaskSelected event"
+    );
+}
+
+#[tokio::test]
+async fn test_iteration_reports_implement_started() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        vec![task],
+        ApprovedReviewFactory,
+        true,
+        None,
+    );
+
+    orchestrator.run_once().await.unwrap();
+
+    let events = events.lock().unwrap();
+    assert!(
+        events.contains(&PipelineEvent::ImplementStarted),
+        "expected ImplementStarted event"
+    );
+}
+
+#[tokio::test]
+async fn test_iteration_reports_pr_created() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        vec![task],
+        ApprovedReviewFactory,
+        false, // not dry_run — pr_created only fires on real submit
+        None,
+    );
+
+    orchestrator.run_once().await.unwrap();
+
+    let events = events.lock().unwrap();
+    let pr_created = events
+        .iter()
+        .find(|e| matches!(e, PipelineEvent::PrCreated { .. }))
+        .expect("expected PrCreated event");
+    match pr_created {
+        PipelineEvent::PrCreated { url } => {
+            assert!(
+                url.contains("github.com"),
+                "PR URL should contain github.com, got: {url}"
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[tokio::test]
+async fn test_iteration_reports_iteration_complete() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        vec![task],
+        ApprovedReviewFactory,
+        true,
+        None,
+    );
+
+    orchestrator.run_once().await.unwrap();
+
+    let events = events.lock().unwrap();
+    assert!(
+        events.contains(&PipelineEvent::IterationComplete {
+            issue_number: 42,
+            title: "Fix bug".to_string(),
+        }),
+        "expected IterationComplete event"
+    );
+}
+
+#[tokio::test]
+async fn test_iteration_reports_full_event_sequence() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
+        repo_dir.path(),
+        wt_dir.path(),
+        vec![task],
+        ApprovedReviewFactory,
+        true,
+        None,
+    );
+
+    orchestrator.run_once().await.unwrap();
+
+    let events = events.lock().unwrap();
+    // Extract only iteration-level events (exclude review-level events)
+    let iteration_events: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                PipelineEvent::FetchingTasks
+                    | PipelineEvent::TasksFound { .. }
+                    | PipelineEvent::TaskSelected { .. }
+                    | PipelineEvent::ImplementStarted
+                    | PipelineEvent::IterationComplete { .. }
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        iteration_events.len(),
+        5,
+        "expected 5 iteration events, got {iteration_events:?}"
+    );
+    assert_eq!(*iteration_events[0], PipelineEvent::FetchingTasks);
+    assert_eq!(*iteration_events[1], PipelineEvent::TasksFound { count: 1 });
+    assert_eq!(
+        *iteration_events[2],
+        PipelineEvent::TaskSelected {
+            issue_number: 42,
+            title: "Fix bug".to_string(),
+        }
+    );
+    assert_eq!(*iteration_events[3], PipelineEvent::ImplementStarted);
+    assert_eq!(
+        *iteration_events[4],
+        PipelineEvent::IterationComplete {
+            issue_number: 42,
+            title: "Fix bug".to_string(),
+        }
+    );
 }
