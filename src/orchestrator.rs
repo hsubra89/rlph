@@ -226,6 +226,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 &invocation.worktree_info,
                 invocation.comment_pr_number,
                 invocation.push_remote_branch.as_deref(),
+                true,
             )
             .await;
 
@@ -438,7 +439,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             self.source.mark_in_review(&task.id)?;
         }
 
-        self.run_review_pipeline(&vars, worktree_info, pr_number, None)
+        self.run_review_pipeline(&vars, worktree_info, pr_number, None, false)
             .await
     }
 
@@ -448,9 +449,14 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
         worktree_info: &WorktreeInfo,
         pr_number: Option<u64>,
         push_remote_branch: Option<&str>,
+        review_only: bool,
     ) -> Result<()> {
         self.state_mgr.update_phase("review")?;
-        let max_reviews = self.config.max_review_rounds;
+        let max_reviews = if review_only {
+            1
+        } else {
+            self.config.max_review_rounds
+        };
         let mut review_passed = false;
 
         for round in 1..=max_reviews {
@@ -532,6 +538,11 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 break;
             }
 
+            if review_only {
+                info!("[rlph:orchestrator] Review-only mode — skipping fix phase");
+                break;
+            }
+
             let fix_instructions = match extract_fix_instructions(&agg_result.stdout) {
                 Some(instructions) => instructions,
                 None => {
@@ -571,7 +582,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             }
         }
 
-        if !review_passed {
+        if !review_passed && !review_only {
             return Err(Error::Orchestrator(format!(
                 "review did not complete after {max_reviews} round(s)"
             )));
