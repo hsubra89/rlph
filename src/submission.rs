@@ -28,9 +28,13 @@ pub trait SubmissionBackend {
     /// Find an open PR that references the given issue number.
     fn find_existing_pr_for_issue(&self, issue_number: u64) -> Result<Option<u64>>;
 
-    /// Post a comment on an existing PR.
-    fn comment_on_pr(&self, pr_number: u64, body: &str) -> Result<()>;
+    /// Post or update a review comment on an existing PR.
+    /// If a previous rlph review comment exists, updates it; otherwise creates a new one.
+    fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()>;
 }
+
+/// HTML marker injected into review comments so we can find and update them.
+pub const REVIEW_MARKER: &str = "<!-- rlph-review -->";
 
 /// GitHub PR submission via `gh` CLI.
 #[derive(Default)]
@@ -117,6 +121,27 @@ impl GitHubSubmission {
         Ok(None)
     }
 
+    /// Find an existing rlph review comment on a PR, returning its ID if found.
+    fn find_review_comment(&self, pr_number: u64) -> Result<Option<u64>> {
+        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments");
+        let output = Command::new("gh")
+            .args(["api", &endpoint, "--jq", ".[] | select(.body | contains(\"<!-- rlph-review -->\")) | .id"])
+            .output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Submission(format!(
+                "gh api list comments failed: {stderr}"
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Take the first (most recent won't matter — there should be at most one)
+        let comment_id = stdout.lines().next().and_then(|line| line.trim().parse::<u64>().ok());
+        Ok(comment_id)
+    }
+
     pub fn get_pr_context(&self, pr_number: u64) -> Result<PrContext> {
         let number_str = pr_number.to_string();
         let output = Command::new("gh")
@@ -172,19 +197,37 @@ impl SubmissionBackend for GitHubSubmission {
         self.find_existing_pr_for_issue_impl(issue_number)
     }
 
-    fn comment_on_pr(&self, pr_number: u64, body: &str) -> Result<()> {
-        let number_str = pr_number.to_string();
-        let output = Command::new("gh")
-            .args(["pr", "comment", &number_str, "--body", body])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+    fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()> {
+        // Try to find an existing rlph review comment
+        if let Some(comment_id) = self.find_review_comment(pr_number)? {
+            let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}");
+            let output = Command::new("gh")
+                .args(["api", &endpoint, "-X", "PATCH", "-f", &format!("body={body}")])
+                .output()
+                .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!("gh pr comment failed: {stderr}")));
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(Error::Submission(format!(
+                    "gh api PATCH comment failed: {stderr}"
+                )));
+            }
+
+            info!(pr_number = pr_number, comment_id = comment_id, "updated review comment on PR");
+        } else {
+            let number_str = pr_number.to_string();
+            let output = Command::new("gh")
+                .args(["pr", "comment", &number_str, "--body", body])
+                .output()
+                .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(Error::Submission(format!("gh pr comment failed: {stderr}")));
+            }
+
+            info!(pr_number = pr_number, "created review comment on PR");
         }
-
-        info!(pr_number = pr_number, "commented on PR");
         Ok(())
     }
 }

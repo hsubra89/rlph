@@ -14,7 +14,7 @@ use crate::prompts::PromptEngine;
 use crate::runner::{AgentRunner, AnyRunner, Phase, build_runner};
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
-use crate::submission::SubmissionBackend;
+use crate::submission::{REVIEW_MARKER, SubmissionBackend};
 use crate::worktree::{WorktreeInfo, WorktreeManager, validate_branch_name};
 
 #[derive(Debug)]
@@ -527,7 +527,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 && !self.config.dry_run
             {
                 let comment_body = extract_comment_body(&agg_result.stdout);
-                if let Err(e) = self.submission.comment_on_pr(pr_num, &comment_body) {
+                if let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body) {
                     warn!("[rlph:orchestrator] Failed to comment on PR: {e}");
                 }
             }
@@ -670,15 +670,17 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
     }
 }
 
-/// Extract the comment body from aggregation output (everything before the REVIEW_ signal).
+/// Extract the comment body from aggregation output (everything before the REVIEW_ signal),
+/// prepended with the rlph review marker for upsert identification.
 fn extract_comment_body(stdout: &str) -> String {
-    if let Some(pos) = stdout.find("REVIEW_APPROVED") {
-        stdout[..pos].trim().to_string()
+    let body = if let Some(pos) = stdout.find("REVIEW_APPROVED") {
+        stdout[..pos].trim()
     } else if let Some(pos) = stdout.find("REVIEW_NEEDS_FIX:") {
-        stdout[..pos].trim().to_string()
+        stdout[..pos].trim()
     } else {
-        stdout.trim().to_string()
-    }
+        stdout.trim()
+    };
+    format!("{REVIEW_MARKER}\n{body}")
 }
 
 /// Extract fix instructions from `REVIEW_NEEDS_FIX: <instructions>`.
@@ -730,19 +732,28 @@ mod tests {
     #[test]
     fn test_extract_comment_body_approved() {
         let stdout = "Some findings here\n\nREVIEW_APPROVED";
-        assert_eq!(extract_comment_body(stdout), "Some findings here");
+        assert_eq!(
+            extract_comment_body(stdout),
+            "<!-- rlph-review -->\nSome findings here"
+        );
     }
 
     #[test]
     fn test_extract_comment_body_needs_fix() {
         let stdout = "Findings\nREVIEW_NEEDS_FIX: fix stuff";
-        assert_eq!(extract_comment_body(stdout), "Findings");
+        assert_eq!(
+            extract_comment_body(stdout),
+            "<!-- rlph-review -->\nFindings"
+        );
     }
 
     #[test]
     fn test_extract_comment_body_no_signal() {
         let stdout = "Just some output";
-        assert_eq!(extract_comment_body(stdout), "Just some output");
+        assert_eq!(
+            extract_comment_body(stdout),
+            "<!-- rlph-review -->\nJust some output"
+        );
     }
 
     #[test]

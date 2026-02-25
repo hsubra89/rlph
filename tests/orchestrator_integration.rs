@@ -356,7 +356,7 @@ impl SubmissionBackend for MockSubmission {
         Ok(self.existing_pr_for_issue)
     }
 
-    fn comment_on_pr(&self, pr_number: u64, body: &str) -> Result<()> {
+    fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()> {
         self.tracker
             .lock()
             .unwrap()
@@ -377,7 +377,7 @@ impl SubmissionBackend for FailSubmission {
         Ok(None)
     }
 
-    fn comment_on_pr(&self, _pr_number: u64, _body: &str) -> Result<()> {
+    fn upsert_review_comment(&self, _pr_number: u64, _body: &str) -> Result<()> {
         Ok(())
     }
 }
