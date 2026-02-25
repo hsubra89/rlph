@@ -33,3 +33,12 @@ Output a structured list of findings. For each finding include:
 - Description and suggested improvement
 
 If there are no findings, output: `NO_ISSUES_FOUND`
+
+## Existing PR Comments
+
+{{pr_comments}}
+
+If any comment above is **factually inaccurate** or **missing important context** related to your review domain, reply concisely by running:
+`gh pr comment {{pr_number}} --body "your reply"`
+
+Only reply when confident the comment is wrong or misleading. Do not reply to correct comments. Skip if pr_number is empty.

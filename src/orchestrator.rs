@@ -14,7 +14,7 @@ use crate::prompts::PromptEngine;
 use crate::runner::{AgentRunner, AnyRunner, Phase, build_runner};
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
-use crate::submission::{REVIEW_MARKER, SubmissionBackend};
+use crate::submission::{REVIEW_MARKER, SubmissionBackend, format_pr_comments_for_prompt};
 use crate::worktree::{WorktreeInfo, WorktreeManager, validate_branch_name};
 
 #[derive(Debug)]
@@ -462,6 +462,21 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
         for round in 1..=max_reviews {
             info!("[rlph:orchestrator] Review round {round}/{max_reviews}...");
 
+            // Fetch current PR comments for this round
+            let pr_comments_text = if let Some(pr_num) = pr_number {
+                match self.submission.fetch_pr_comments(pr_num) {
+                    Ok(comments) => format_pr_comments_for_prompt(&comments, pr_num),
+                    Err(e) => {
+                        warn!("[rlph:orchestrator] Failed to fetch PR comments: {e}");
+                        "Failed to fetch PR comments.".to_string()
+                    }
+                }
+            } else {
+                "No PR associated with this review.".to_string()
+            };
+
+            let pr_number_str = pr_number.map(|n| n.to_string()).unwrap_or_default();
+
             // Run all configured review phases in parallel.
             let mut join_set = tokio::task::JoinSet::new();
             for phase_config in &self.config.review_phases {
@@ -471,6 +486,8 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
 
                 let mut phase_vars = vars.clone();
                 phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());
+                phase_vars.insert("pr_comments".to_string(), pr_comments_text.clone());
+                phase_vars.insert("pr_number".to_string(), pr_number_str.clone());
 
                 let prompt = self
                     .prompt_engine
@@ -515,6 +532,8 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
 
             let mut agg_vars = vars.clone();
             agg_vars.insert("review_outputs".to_string(), review_outputs_text);
+            agg_vars.insert("pr_comments".to_string(), pr_comments_text.clone());
+            agg_vars.insert("pr_number".to_string(), pr_number_str.clone());
 
             let agg_prompt = self
                 .prompt_engine

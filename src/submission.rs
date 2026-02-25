@@ -5,6 +5,29 @@ use tracing::info;
 
 use crate::error::{Error, Result};
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrComment {
+    pub id: u64,
+    #[serde(rename = "user")]
+    user_obj: Option<PrCommentUser>,
+    pub body: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PrCommentUser {
+    login: String,
+}
+
+impl PrComment {
+    pub fn author(&self) -> &str {
+        self.user_obj
+            .as_ref()
+            .map(|u| u.login.as_str())
+            .unwrap_or("unknown")
+    }
+}
+
 #[derive(Debug)]
 pub struct SubmitResult {
     pub url: String,
@@ -31,6 +54,9 @@ pub trait SubmissionBackend {
     /// Post or update a review comment on an existing PR.
     /// If a previous rlph review comment exists, updates it; otherwise creates a new one.
     fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()>;
+
+    /// Fetch all comments on a PR/issue thread.
+    fn fetch_pr_comments(&self, pr_number: u64) -> Result<Vec<PrComment>>;
 }
 
 /// HTML marker injected into review comments so we can find and update them.
@@ -166,6 +192,23 @@ impl GitHubSubmission {
     }
 }
 
+/// Format PR comments as readable markdown for injection into agent prompts.
+pub fn format_pr_comments_for_prompt(comments: &[PrComment], pr_number: u64) -> String {
+    if comments.is_empty() {
+        return format!("No comments on PR #{pr_number} yet.");
+    }
+    let mut out = format!("PR #{pr_number} has {} comment(s):\n", comments.len());
+    for c in comments {
+        out.push_str(&format!(
+            "\n---\n**@{}** ({})\n{}\n",
+            c.author(),
+            c.created_at,
+            c.body
+        ));
+    }
+    out
+}
+
 impl SubmissionBackend for GitHubSubmission {
     fn submit(&self, branch: &str, base: &str, title: &str, body: &str) -> Result<SubmitResult> {
         // Check for existing PR first
@@ -230,6 +273,26 @@ impl SubmissionBackend for GitHubSubmission {
         }
         Ok(())
     }
+
+    fn fetch_pr_comments(&self, pr_number: u64) -> Result<Vec<PrComment>> {
+        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments");
+        let output = Command::new("gh")
+            .args(["api", &endpoint])
+            .output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Submission(format!(
+                "gh api fetch comments failed: {stderr}"
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let comments: Vec<PrComment> = serde_json::from_str(&stdout)
+            .map_err(|e| Error::Submission(format!("failed to parse comments json: {e}")))?;
+        Ok(comments)
+    }
 }
 
 /// Parse PR number from a URL like `https://github.com/owner/repo/pull/123`.
@@ -285,8 +348,8 @@ fn extract_issue_number_reference(body: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_issue_number_reference, parse_pr_context_json, parse_pr_number_from_url,
-        pr_body_references_issue,
+        extract_issue_number_reference, format_pr_comments_for_prompt, parse_pr_context_json,
+        parse_pr_number_from_url, pr_body_references_issue, PrComment, PrCommentUser,
     };
 
     #[test]
@@ -363,6 +426,38 @@ mod tests {
 
         let err = parse_pr_context_json(json).unwrap_err();
         assert!(err.contains("headRefName"));
+    }
+
+    #[test]
+    fn test_format_pr_comments_empty() {
+        let result = format_pr_comments_for_prompt(&[], 42);
+        assert_eq!(result, "No comments on PR #42 yet.");
+    }
+
+    #[test]
+    fn test_format_pr_comments_with_entries() {
+        let comments = vec![
+            PrComment {
+                id: 1,
+                user_obj: Some(PrCommentUser {
+                    login: "alice".to_string(),
+                }),
+                body: "Looks good!".to_string(),
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+            },
+            PrComment {
+                id: 2,
+                user_obj: None,
+                body: "Needs fix".to_string(),
+                created_at: "2025-01-02T00:00:00Z".to_string(),
+            },
+        ];
+        let result = format_pr_comments_for_prompt(&comments, 10);
+        assert!(result.contains("PR #10 has 2 comment(s)"));
+        assert!(result.contains("@alice"));
+        assert!(result.contains("Looks good!"));
+        assert!(result.contains("@unknown"));
+        assert!(result.contains("Needs fix"));
     }
 
     #[test]

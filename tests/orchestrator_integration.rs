@@ -364,6 +364,10 @@ impl SubmissionBackend for MockSubmission {
             .push((pr_number, body.to_string()));
         Ok(())
     }
+
+    fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<rlph::submission::PrComment>> {
+        Ok(vec![])
+    }
 }
 
 struct FailSubmission;
@@ -379,6 +383,10 @@ impl SubmissionBackend for FailSubmission {
 
     fn upsert_review_comment(&self, _pr_number: u64, _body: &str) -> Result<()> {
         Ok(())
+    }
+
+    fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<rlph::submission::PrComment>> {
+        Ok(vec![])
     }
 }
 
