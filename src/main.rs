@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use tokio::sync::watch;
-use tracing::info;
+use tracing::{debug, info};
+use tracing_subscriber::EnvFilter;
 
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
@@ -22,8 +23,9 @@ use rlph::worktree::WorktreeManager;
 
 fn init_logging() {
     tracing_subscriber::fmt()
-        .with_target(false)
-        .with_timer(tracing_subscriber::fmt::time::SystemTime)
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")))
+        .with_target(true)
+        .without_time()
         .init();
 }
 
@@ -32,7 +34,7 @@ async fn main() {
     let cli = Cli::parse();
     init_logging();
 
-    info!("rlph starting");
+    debug!("rlph starting");
 
     match cli.command {
         Some(CliCommand::Init) => {
@@ -283,7 +285,6 @@ async fn main() {
     tokio::spawn(async move {
         // First SIGINT: graceful shutdown after current iteration
         if tokio::signal::ctrl_c().await.is_ok() {
-            info!("[rlph] SIGINT received; shutting down after current iteration");
             eprintln!("[rlph] SIGINT received; shutting down after current iteration");
             let _ = shutdown_tx.send(true);
         }

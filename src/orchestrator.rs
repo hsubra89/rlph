@@ -228,7 +228,7 @@ impl<
 
         loop {
             if Self::shutdown_requested(shutdown.as_ref()) {
-                info!("[rlph:orchestrator] Shutdown requested; exiting loop");
+                info!("shutdown requested, exiting loop");
                 break;
             }
 
@@ -238,7 +238,7 @@ impl<
             if let Some(max) = self.config.max_iterations
                 && iterations >= max
             {
-                info!("[rlph:orchestrator] Reached max iterations ({max}); exiting");
+                info!(max, "reached max iterations, exiting");
                 break;
             }
 
@@ -250,21 +250,18 @@ impl<
             }
 
             if Self::shutdown_requested(shutdown.as_ref()) {
-                info!("[rlph:orchestrator] Shutdown requested; exiting loop");
+                info!("shutdown requested, exiting loop");
                 break;
             }
 
-            info!(
-                "[rlph:orchestrator] Polling again in {}s...",
-                self.config.poll_seconds
-            );
+            info!(poll_seconds = self.config.poll_seconds, "polling again");
             let stop = Self::wait_for_poll_or_shutdown(
                 Duration::from_secs(self.config.poll_seconds),
                 &mut shutdown,
             )
             .await;
             if stop {
-                info!("[rlph:orchestrator] Shutdown requested; exiting loop");
+                info!("shutdown requested, exiting loop");
                 break;
             }
         }
@@ -306,19 +303,19 @@ impl<
             Ok(()) => {
                 self.state_mgr.complete_current_task()?;
 
-                info!("[rlph:orchestrator] Cleaning up worktree...");
+                info!("cleaning up worktree");
                 if let Err(e) = self.worktree_mgr.remove(&invocation.worktree_info.path) {
-                    warn!("[rlph:orchestrator] Failed to clean up worktree: {e}");
+                    warn!(error = %e, "failed to clean up worktree");
                 }
                 let _ = self
                     .state_mgr
                     .remove_worktree_mapping(&invocation.task_id_for_state);
 
-                info!("[rlph:orchestrator] Review-only run complete");
+                info!("review-only run complete");
                 Ok(())
             }
             Err(e) => {
-                warn!("[rlph:orchestrator] Review-only run failed: {e}");
+                warn!(error = %e, "review-only run failed");
                 Err(e)
             }
         }
@@ -326,10 +323,10 @@ impl<
 
     async fn run_iteration(&self) -> Result<IterationOutcome> {
         // 1. Fetch eligible tasks and filter by dependency graph
-        info!("[rlph:orchestrator] Fetching eligible tasks...");
+        info!("fetching eligible tasks");
         let tasks = self.source.fetch_eligible_tasks()?;
         if tasks.is_empty() {
-            info!("[rlph:orchestrator] No eligible tasks found");
+            info!("no eligible tasks found");
             return Ok(IterationOutcome::NoEligibleTasks);
         }
 
@@ -337,13 +334,13 @@ impl<
         let graph = DependencyGraph::build(&tasks);
         let tasks = graph.filter_eligible(tasks, &done_ids);
         if tasks.is_empty() {
-            info!("[rlph:orchestrator] No unblocked tasks found");
+            info!("no unblocked tasks found");
             return Ok(IterationOutcome::NoEligibleTasks);
         }
-        info!("[rlph:orchestrator] Found {} eligible task(s)", tasks.len());
+        info!(count = tasks.len(), "found eligible tasks");
 
         // 2. Choose phase — agent selects a task
-        info!("[rlph:orchestrator] Running choose phase...");
+        info!("running choose phase");
         let mut choose_vars = HashMap::new();
         choose_vars.insert(
             "repo_path".to_string(),
@@ -357,46 +354,43 @@ impl<
         self.runner
             .run(Phase::Choose, &choose_prompt, &self.repo_root)
             .await?;
-        info!(
-            "[rlph:orchestrator] Choose phase complete in {}s",
-            choose_started.elapsed().as_secs()
-        );
+        info!(elapsed_secs = choose_started.elapsed().as_secs(), "choose phase complete");
 
         // 3. Parse task selection from .ralph/task.toml
         let task_id = self.parse_task_selection()?;
         let issue_number = parse_issue_number(&task_id)?;
-        info!("[rlph:orchestrator] Selected task: {task_id} (issue #{issue_number})");
+        info!(task_id, issue_number, "selected task");
         let existing_pr_number = if self.config.dry_run {
-            info!("[rlph:orchestrator] Dry run — skipping existing PR lookup");
+            info!("dry run — skipping existing PR lookup");
             None
         } else {
             let pr_number = self.submission.find_existing_pr_for_issue(issue_number)?;
             if let Some(pr) = pr_number {
-                info!("[rlph:orchestrator] Existing PR #{pr} found for issue #{issue_number}");
+                info!(pr, issue_number, "existing PR found");
             } else {
-                info!("[rlph:orchestrator] No existing PR found for issue #{issue_number}");
+                info!(issue_number, "no existing PR found");
             }
             pr_number
         };
 
         // 4. Get task details
         let task = self.source.get_task_details(&issue_number.to_string())?;
-        info!("[rlph:orchestrator] Task: {} — {}", task.id, task.title);
+        info!(id = task.id, title = task.title, "task details");
 
         // 5. Mark in-progress
         if !self.config.dry_run {
-            info!("[rlph:orchestrator] Marking task in-progress...");
+            info!("marking task in-progress");
             self.source.mark_in_progress(&task.id)?;
         }
 
         // 6. Create worktree
-        info!("[rlph:orchestrator] Creating worktree...");
+        info!("creating worktree");
         let slug = WorktreeManager::slugify(&task.title);
         let worktree_info = self.worktree_mgr.create(issue_number, &slug)?;
         info!(
-            "[rlph:orchestrator] Worktree at {} (branch: {})",
-            worktree_info.path.display(),
-            worktree_info.branch
+            path = %worktree_info.path.display(),
+            branch = worktree_info.branch,
+            "worktree created"
         );
 
         // Update state
@@ -417,17 +411,17 @@ impl<
                 self.state_mgr.complete_current_task()?;
 
                 // 12. Clean up worktree
-                info!("[rlph:orchestrator] Cleaning up worktree...");
+                info!("cleaning up worktree");
                 if let Err(e) = self.worktree_mgr.remove(&worktree_info.path) {
-                    warn!("[rlph:orchestrator] Failed to clean up worktree: {e}");
+                    warn!(error = %e, "failed to clean up worktree");
                 }
                 let _ = self.state_mgr.remove_worktree_mapping(&task_id);
 
-                info!("[rlph:orchestrator] Iteration complete");
+                info!("iteration complete");
                 Ok(IterationOutcome::ProcessedTask)
             }
             Err(e) => {
-                warn!("[rlph:orchestrator] Iteration failed: {e}");
+                warn!(error = %e, "iteration failed");
                 Err(e)
             }
         }
@@ -469,7 +463,7 @@ impl<
         let vars = self.build_task_vars(task, worktree_info);
 
         // 7. Implement phase
-        info!("[rlph:orchestrator] Running implement phase...");
+        info!("running implement phase");
         let impl_prompt = self.prompt_engine.render_phase("implement", &vars)?;
         self.runner
             .run(Phase::Implement, &impl_prompt, &worktree_info.path)
@@ -477,16 +471,16 @@ impl<
 
         // 8. Push branch
         if !self.config.dry_run {
-            info!("[rlph:orchestrator] Pushing branch...");
+            info!("pushing branch");
             self.push_branch(worktree_info)?;
         }
 
         // 9. Submit PR (skip if choose agent reported an existing PR)
         let pr_number = if let Some(pr) = existing_pr_number {
-            info!("[rlph:orchestrator] Skipping PR submission — existing PR #{pr}");
+            info!(pr, "skipping PR submission — existing PR");
             Some(pr)
         } else if !self.config.dry_run {
-            info!("[rlph:orchestrator] Submitting PR...");
+            info!("submitting PR");
             let pr_body = format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.");
             let result = self.submission.submit(
                 &worktree_info.branch,
@@ -494,10 +488,10 @@ impl<
                 &task.title,
                 &pr_body,
             )?;
-            info!("[rlph:orchestrator] PR: {}", result.url);
+            info!(url = result.url, "PR created");
             result.number
         } else {
-            info!("[rlph:orchestrator] Dry run — skipping PR submission");
+            info!("dry run — skipping PR submission");
             None
         };
 
@@ -527,14 +521,14 @@ impl<
         let mut review_passed = false;
 
         for round in 1..=max_reviews {
-            info!("[rlph:orchestrator] Review round {round}/{max_reviews}...");
+            info!(round, max_reviews, "review round");
 
             // Fetch current PR comments for this round
             let pr_comments_text = if let Some(pr_num) = pr_number {
                 match self.submission.fetch_pr_comments(pr_num) {
                     Ok(comments) => format_pr_comments_for_prompt(&comments, pr_num),
                     Err(e) => {
-                        warn!("[rlph:orchestrator] Failed to fetch PR comments: {e}");
+                        warn!(error = %e, "failed to fetch PR comments");
                         "Failed to fetch PR comments.".to_string()
                     }
                 }
@@ -632,7 +626,7 @@ impl<
                 && !self.config.dry_run
                 && let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body)
             {
-                warn!("[rlph:orchestrator] Failed to comment on PR: {e}");
+                warn!(error = %e, "failed to comment on PR");
             }
 
             if let Some(url) = vars.get("pr_url")
@@ -642,27 +636,25 @@ impl<
             }
 
             if agg_result.stdout.contains("REVIEW_APPROVED") {
-                info!("[rlph:orchestrator] Review approved at round {round}");
+                info!(round, "review approved");
                 review_passed = true;
                 break;
             }
 
             if review_only {
-                info!("[rlph:orchestrator] Review-only mode — skipping fix phase");
+                info!("review-only mode — skipping fix phase");
                 break;
             }
 
             let fix_instructions = match extract_fix_instructions(&agg_result.stdout) {
                 Some(instructions) => instructions,
                 None => {
-                    warn!(
-                        "[rlph:orchestrator] Aggregator produced neither REVIEW_APPROVED nor REVIEW_NEEDS_FIX — retrying"
-                    );
+                    warn!("aggregator produced neither REVIEW_APPROVED nor REVIEW_NEEDS_FIX — retrying");
                     continue;
                 }
             };
 
-            info!("[rlph:orchestrator] Review needs fix at round {round}, running fix agent...");
+            info!(round, "review needs fix, running fix agent");
 
             let fix_config = &self.config.review_fix;
             let fix_runner = self
@@ -686,7 +678,7 @@ impl<
                     self.push_branch(worktree_info)
                 };
                 if let Err(e) = push_result {
-                    warn!("[rlph:orchestrator] Failed to push review fixes: {e}");
+                    warn!(error = %e, "failed to push review fixes");
                 }
             }
         }
@@ -750,7 +742,7 @@ impl<
             return Err(Error::Orchestrator(format!("git push failed: {stderr}")));
         }
 
-        info!("[rlph:orchestrator] Pushed branch {}", worktree.branch);
+        info!(branch = worktree.branch, "pushed branch");
         Ok(())
     }
 
@@ -770,10 +762,7 @@ impl<
             return Err(Error::Orchestrator(format!("git push failed: {stderr}")));
         }
 
-        info!(
-            "[rlph:orchestrator] Pushed branch {} to origin/{remote_branch}",
-            worktree.branch
-        );
+        info!(branch = worktree.branch, remote_branch, "pushed branch");
         Ok(())
     }
 }
