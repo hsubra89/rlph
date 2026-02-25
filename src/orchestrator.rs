@@ -78,18 +78,55 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
     }
 }
 
-/// Observer for structured review-pipeline progress events.
-pub trait ReviewReporter: Send + Sync {
+/// Observer for structured pipeline progress events.
+pub trait ProgressReporter: Send + Sync {
+    // Iteration-level
+    fn fetching_tasks(&self);
+    fn tasks_found(&self, count: usize);
+    fn task_selected(&self, issue_number: u64, title: &str);
+    fn implement_started(&self);
+    fn pr_created(&self, url: &str);
+    fn iteration_complete(&self, issue_number: u64, title: &str);
+
+    // Review (existing, unchanged)
     fn phases_started(&self, names: &[String]);
     fn phase_complete(&self, name: &str);
     fn review_summary(&self, body: &str);
     fn pr_url(&self, url: &str);
 }
 
+#[doc(hidden)]
+#[deprecated(note = "renamed to ProgressReporter")]
+pub use ProgressReporter as ReviewReporter;
+
 /// Default reporter that prints to stderr.
 pub struct StderrReporter;
 
-impl ReviewReporter for StderrReporter {
+impl ProgressReporter for StderrReporter {
+    fn fetching_tasks(&self) {
+        eprintln!("[rlph] Fetching eligible tasks...");
+    }
+
+    fn tasks_found(&self, count: usize) {
+        eprintln!("[rlph] Found {count} eligible task(s)");
+    }
+
+    fn task_selected(&self, issue_number: u64, title: &str) {
+        eprintln!("[rlph] Selected #{issue_number}: {title}");
+    }
+
+    fn implement_started(&self) {
+        eprintln!("[rlph] Implementing...");
+    }
+
+    fn pr_created(&self, url: &str) {
+        eprintln!("[rlph] PR created: {url}");
+    }
+
+    fn iteration_complete(&self, issue_number: u64, title: &str) {
+        eprintln!("[rlph] Done with #{issue_number}: {title}");
+    }
+
     fn phases_started(&self, names: &[String]) {
         eprintln!(
             "[rlph] Running {} review agents: {}",
@@ -188,7 +225,7 @@ impl<
         R: AgentRunner,
         B: SubmissionBackend,
         F: ReviewRunnerFactory,
-        P: ReviewReporter,
+        P: ProgressReporter,
     > Orchestrator<S, R, B, F, P>
 {
     /// Run according to configured loop mode.
@@ -298,6 +335,7 @@ impl<
 
     async fn run_iteration(&self) -> Result<IterationOutcome> {
         // 1. Fetch eligible tasks and filter by dependency graph
+        self.reporter.fetching_tasks();
         info!("fetching eligible tasks");
         let tasks = self.source.fetch_eligible_tasks()?;
         if tasks.is_empty() {
@@ -313,6 +351,7 @@ impl<
             return Ok(IterationOutcome::NoEligibleTasks);
         }
         info!(count = tasks.len(), "found eligible tasks");
+        self.reporter.tasks_found(tasks.len());
 
         // 2. Choose phase — agent selects a task
         info!("running choose phase");
@@ -351,6 +390,7 @@ impl<
         // 4. Get task details
         let task = self.source.get_task_details(&issue_number.to_string())?;
         info!(id = task.id, title = task.title, "task details");
+        self.reporter.task_selected(issue_number, &task.title);
 
         // 5. Mark in-progress
         if !self.config.dry_run {
@@ -393,6 +433,7 @@ impl<
                 let _ = self.state_mgr.remove_worktree_mapping(&task_id);
 
                 info!("iteration complete");
+                self.reporter.iteration_complete(issue_number, &task.title);
                 Ok(IterationOutcome::ProcessedTask)
             }
             Err(e) => {
@@ -438,6 +479,7 @@ impl<
         let mut vars = self.build_task_vars(task, worktree_info);
 
         // 7. Implement phase
+        self.reporter.implement_started();
         info!("running implement phase");
         let impl_prompt = self.prompt_engine.render_phase("implement", &vars)?;
         self.runner
@@ -464,6 +506,7 @@ impl<
                 &pr_body,
             )?;
             info!(url = result.url, "PR created");
+            self.reporter.pr_created(&result.url);
             vars.insert("pr_url".to_string(), result.url);
             result.number
         } else {

@@ -8,7 +8,7 @@ use rlph::config::{
     Config, ReviewPhaseConfig, ReviewStepConfig, default_review_phases, default_review_step,
 };
 use rlph::error::{Error, Result};
-use rlph::orchestrator::{Orchestrator, ReviewInvocation, ReviewReporter, ReviewRunnerFactory};
+use rlph::orchestrator::{Orchestrator, ProgressReporter, ReviewInvocation, ReviewRunnerFactory};
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult};
 use rlph::sources::{Task, TaskSource};
@@ -485,7 +485,23 @@ impl ReviewRunnerFactory for FailReviewFactory {
 
 /// Events captured by `CapturingReporter` for test assertions.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ReviewEvent {
+enum PipelineEvent {
+    FetchingTasks,
+    TasksFound {
+        count: usize,
+    },
+    TaskSelected {
+        issue_number: u64,
+        title: String,
+    },
+    ImplementStarted,
+    PrCreated {
+        url: String,
+    },
+    IterationComplete {
+        issue_number: u64,
+        title: String,
+    },
     PhasesStarted {
         count: usize,
         names: Vec<String>,
@@ -503,11 +519,11 @@ enum ReviewEvent {
 
 /// Test-only reporter that collects events into a shared vec.
 struct CapturingReporter {
-    events: Arc<Mutex<Vec<ReviewEvent>>>,
+    events: Arc<Mutex<Vec<PipelineEvent>>>,
 }
 
 impl CapturingReporter {
-    fn new() -> (Self, Arc<Mutex<Vec<ReviewEvent>>>) {
+    fn new() -> (Self, Arc<Mutex<Vec<PipelineEvent>>>) {
         let events = Arc::new(Mutex::new(Vec::new()));
         (
             Self {
@@ -518,12 +534,44 @@ impl CapturingReporter {
     }
 }
 
-impl ReviewReporter for CapturingReporter {
+impl ProgressReporter for CapturingReporter {
+    fn fetching_tasks(&self) {
+        self.events.lock().unwrap().push(PipelineEvent::FetchingTasks);
+    }
+
+    fn tasks_found(&self, count: usize) {
+        self.events.lock().unwrap().push(PipelineEvent::TasksFound { count });
+    }
+
+    fn task_selected(&self, issue_number: u64, title: &str) {
+        self.events.lock().unwrap().push(PipelineEvent::TaskSelected {
+            issue_number,
+            title: title.to_string(),
+        });
+    }
+
+    fn implement_started(&self) {
+        self.events.lock().unwrap().push(PipelineEvent::ImplementStarted);
+    }
+
+    fn pr_created(&self, url: &str) {
+        self.events.lock().unwrap().push(PipelineEvent::PrCreated {
+            url: url.to_string(),
+        });
+    }
+
+    fn iteration_complete(&self, issue_number: u64, title: &str) {
+        self.events.lock().unwrap().push(PipelineEvent::IterationComplete {
+            issue_number,
+            title: title.to_string(),
+        });
+    }
+
     fn phases_started(&self, names: &[String]) {
         self.events
             .lock()
             .unwrap()
-            .push(ReviewEvent::PhasesStarted {
+            .push(PipelineEvent::PhasesStarted {
                 count: names.len(),
                 names: names.to_vec(),
             });
@@ -533,7 +581,7 @@ impl ReviewReporter for CapturingReporter {
         self.events
             .lock()
             .unwrap()
-            .push(ReviewEvent::PhaseComplete {
+            .push(PipelineEvent::PhaseComplete {
                 name: name.to_string(),
             });
     }
@@ -542,13 +590,13 @@ impl ReviewReporter for CapturingReporter {
         self.events
             .lock()
             .unwrap()
-            .push(ReviewEvent::ReviewSummary {
+            .push(PipelineEvent::ReviewSummary {
                 body: body.to_string(),
             });
     }
 
     fn pr_url(&self, url: &str) {
-        self.events.lock().unwrap().push(ReviewEvent::PrUrl {
+        self.events.lock().unwrap().push(PipelineEvent::PrUrl {
             url: url.to_string(),
         });
     }
@@ -1365,7 +1413,7 @@ async fn test_review_only_exhaustion_preserves_state() {
     assert!(worktree_info.path.exists());
 }
 
-// --- ReviewReporter output tests ---
+// --- ProgressReporter output tests ---
 
 /// Creates orchestrator + invocation with capturing reporter, returning events handle.
 #[allow(clippy::type_complexity)]
@@ -1378,7 +1426,7 @@ fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
 ) -> (
     Orchestrator<MockSource, MockRunner, MockSubmission, F, CapturingReporter>,
     ReviewInvocation,
-    Arc<Mutex<Vec<ReviewEvent>>>,
+    Arc<Mutex<Vec<PipelineEvent>>>,
 ) {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
@@ -1436,10 +1484,10 @@ async fn test_review_reports_phases_started() {
     let events = events.lock().unwrap();
     let started = events
         .iter()
-        .find(|e| matches!(e, ReviewEvent::PhasesStarted { .. }))
+        .find(|e| matches!(e, PipelineEvent::PhasesStarted { .. }))
         .expect("should have PhasesStarted event");
     match started {
-        ReviewEvent::PhasesStarted { count, names } => {
+        PipelineEvent::PhasesStarted { count, names } => {
             assert_eq!(*count, 3);
             assert!(names.contains(&"correctness".to_string()));
             assert!(names.contains(&"security".to_string()));
@@ -1466,7 +1514,7 @@ async fn test_review_reports_phase_completions() {
     let completions: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            ReviewEvent::PhaseComplete { name } => Some(name.clone()),
+            PipelineEvent::PhaseComplete { name } => Some(name.clone()),
             _ => None,
         })
         .collect();
@@ -1494,7 +1542,7 @@ async fn test_review_reports_summary() {
     let summary = events
         .iter()
         .find_map(|e| match e {
-            ReviewEvent::ReviewSummary { body } => Some(body.clone()),
+            PipelineEvent::ReviewSummary { body } => Some(body.clone()),
             _ => None,
         })
         .expect("should have ReviewSummary event");
@@ -1518,7 +1566,7 @@ async fn test_review_reports_pr_url() {
     let url = events
         .iter()
         .find_map(|e| match e {
-            ReviewEvent::PrUrl { url } => Some(url.clone()),
+            PipelineEvent::PrUrl { url } => Some(url.clone()),
             _ => None,
         })
         .expect("should have PrUrl event");
