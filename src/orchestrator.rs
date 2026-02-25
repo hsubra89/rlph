@@ -596,7 +596,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             }
         }
 
-        if !review_passed && !review_only {
+        if !review_passed {
             return Err(Error::Orchestrator(format!(
                 "review did not complete after {max_reviews} round(s)"
             )));
