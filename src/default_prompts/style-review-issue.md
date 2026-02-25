@@ -27,12 +27,23 @@ A previous engineer has completed work for the task below. Your job is to review
 
 ## Output
 
-Output a structured list of findings. For each finding include:
-- File path and line number(s)
-- Severity: WARNING / INFO
-- Description and suggested improvement
+Respond with a single JSON object (no markdown fences, no commentary outside the JSON). The schema:
 
-If there are no findings, output: `NO_ISSUES_FOUND`
+```json
+{
+  "findings": [
+    {
+      "file": "<path>",
+      "line": <number>,
+      "severity": "warning" | "info",
+      "description": "<what to improve>"
+    }
+  ]
+}
+```
+
+- Return an empty `findings` array when there are no issues.
+- `severity` must be one of: `"warning"`, `"info"`.
 
 ## Existing PR Comments
 

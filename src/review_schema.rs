@@ -34,6 +34,42 @@ pub struct AggregatorOutput {
     pub fix_instructions: Option<String>,
 }
 
+/// Per-phase structured output: a list of findings returned by each review agent.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PhaseOutput {
+    pub findings: Vec<ReviewFinding>,
+}
+
+/// Parse a review phase agent's JSON output into `PhaseOutput`.
+pub fn parse_phase_output(raw: &str) -> Result<PhaseOutput> {
+    let json = strip_markdown_fences(raw);
+    serde_json::from_str(&json)
+        .map_err(|e| Error::Orchestrator(format!("failed to parse phase JSON: {e}")))
+}
+
+/// Render findings as human-readable markdown for injection into the aggregator prompt.
+pub fn render_findings_for_prompt(findings: &[ReviewFinding]) -> String {
+    if findings.is_empty() {
+        return "No issues found.".to_string();
+    }
+
+    findings
+        .iter()
+        .map(|f| {
+            let severity = match f.severity {
+                Severity::Critical => "CRITICAL",
+                Severity::Warning => "WARNING",
+                Severity::Info => "INFO",
+            };
+            format!(
+                "- **{}** `{}` L{}: {}",
+                severity, f.file, f.line, f.description
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Strip markdown code fences (` ```json ... ``` `) that Claude sometimes wraps output in,
 /// then parse as `AggregatorOutput`.
 pub fn parse_aggregator_output(raw: &str) -> Result<AggregatorOutput> {
@@ -223,5 +259,106 @@ mod tests {
                 .fix_instructions
                 .is_none()
         );
+    }
+
+    // ---- PhaseOutput tests ----
+
+    #[test]
+    fn test_parse_phase_output_with_findings() {
+        let json = r#"{
+            "findings": [
+                {
+                    "file": "src/main.rs",
+                    "line": 10,
+                    "severity": "critical",
+                    "description": "Null pointer dereference"
+                },
+                {
+                    "file": "src/lib.rs",
+                    "line": 25,
+                    "severity": "info",
+                    "description": "Consider using a constant"
+                }
+            ]
+        }"#;
+        let output = parse_phase_output(json).unwrap();
+        assert_eq!(output.findings.len(), 2);
+        assert_eq!(output.findings[0].file, "src/main.rs");
+        assert_eq!(output.findings[0].line, 10);
+        assert_eq!(output.findings[0].severity, Severity::Critical);
+        assert_eq!(output.findings[0].description, "Null pointer dereference");
+        assert_eq!(output.findings[1].severity, Severity::Info);
+    }
+
+    #[test]
+    fn test_parse_phase_output_empty_findings() {
+        let json = r#"{"findings": []}"#;
+        let output = parse_phase_output(json).unwrap();
+        assert!(output.findings.is_empty());
+    }
+
+    #[test]
+    fn test_parse_phase_output_fenced_json() {
+        let input = "```json\n{\"findings\": [{\"file\": \"a.rs\", \"line\": 1, \"severity\": \"warning\", \"description\": \"nit\"}]}\n```";
+        let output = parse_phase_output(input).unwrap();
+        assert_eq!(output.findings.len(), 1);
+        assert_eq!(output.findings[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn test_parse_phase_output_invalid_json_errors() {
+        assert!(parse_phase_output("not json").is_err());
+    }
+
+    // ---- render_findings_for_prompt tests ----
+
+    #[test]
+    fn test_render_findings_empty() {
+        assert_eq!(render_findings_for_prompt(&[]), "No issues found.");
+    }
+
+    #[test]
+    fn test_render_findings_single() {
+        let findings = vec![ReviewFinding {
+            file: "src/main.rs".to_string(),
+            line: 42,
+            severity: Severity::Critical,
+            description: "SQL injection vulnerability".to_string(),
+        }];
+        let rendered = render_findings_for_prompt(&findings);
+        assert_eq!(
+            rendered,
+            "- **CRITICAL** `src/main.rs` L42: SQL injection vulnerability"
+        );
+    }
+
+    #[test]
+    fn test_render_findings_multiple() {
+        let findings = vec![
+            ReviewFinding {
+                file: "src/main.rs".to_string(),
+                line: 42,
+                severity: Severity::Critical,
+                description: "Bug".to_string(),
+            },
+            ReviewFinding {
+                file: "src/lib.rs".to_string(),
+                line: 10,
+                severity: Severity::Warning,
+                description: "Unused import".to_string(),
+            },
+            ReviewFinding {
+                file: "src/util.rs".to_string(),
+                line: 5,
+                severity: Severity::Info,
+                description: "Nit".to_string(),
+            },
+        ];
+        let rendered = render_findings_for_prompt(&findings);
+        let expected = "\
+- **CRITICAL** `src/main.rs` L42: Bug
+- **WARNING** `src/lib.rs` L10: Unused import
+- **INFO** `src/util.rs` L5: Nit";
+        assert_eq!(rendered, expected);
     }
 }
