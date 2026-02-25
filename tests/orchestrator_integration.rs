@@ -8,7 +8,7 @@ use rlph::config::{
     Config, ReviewPhaseConfig, ReviewStepConfig, default_review_phases, default_review_step,
 };
 use rlph::error::{Error, Result};
-use rlph::orchestrator::{Orchestrator, ReviewInvocation, ReviewRunnerFactory};
+use rlph::orchestrator::{Orchestrator, ReviewInvocation, ReviewReporter, ReviewRunnerFactory};
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult};
 use rlph::sources::{Task, TaskSource};
@@ -483,6 +483,77 @@ impl ReviewRunnerFactory for FailReviewFactory {
     }
 }
 
+/// Events captured by `CapturingReporter` for test assertions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReviewEvent {
+    PhasesStarted {
+        count: usize,
+        names: Vec<String>,
+    },
+    PhaseComplete {
+        name: String,
+    },
+    ReviewSummary {
+        body: String,
+    },
+    PrUrl {
+        url: String,
+    },
+}
+
+/// Test-only reporter that collects events into a shared vec.
+struct CapturingReporter {
+    events: Arc<Mutex<Vec<ReviewEvent>>>,
+}
+
+impl CapturingReporter {
+    fn new() -> (Self, Arc<Mutex<Vec<ReviewEvent>>>) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                events: Arc::clone(&events),
+            },
+            events,
+        )
+    }
+}
+
+impl ReviewReporter for CapturingReporter {
+    fn phases_started(&self, names: &[String]) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(ReviewEvent::PhasesStarted {
+                count: names.len(),
+                names: names.to_vec(),
+            });
+    }
+
+    fn phase_complete(&self, name: &str) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(ReviewEvent::PhaseComplete {
+                name: name.to_string(),
+            });
+    }
+
+    fn review_summary(&self, body: &str) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(ReviewEvent::ReviewSummary {
+                body: body.to_string(),
+            });
+    }
+
+    fn pr_url(&self, url: &str) {
+        self.events.lock().unwrap().push(ReviewEvent::PrUrl {
+            url: url.to_string(),
+        });
+    }
+}
+
 // --- Test helpers ---
 
 fn make_task(number: u64, title: &str) -> Task {
@@ -538,6 +609,13 @@ fn make_review_vars(
         (
             "worktree_path".to_string(),
             worktree_path.display().to_string(),
+        ),
+        (
+            "pr_url".to_string(),
+            format!(
+                "https://github.com/test/repo/pull/{}",
+                task.id
+            ),
         ),
     ])
 }
@@ -600,7 +678,7 @@ async fn test_full_loop_dry_run() {
     let state_mgr = StateManager::new(&state_dir);
     let prompt_engine = PromptEngine::new(None);
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         source,
         runner,
         submission,
@@ -609,8 +687,8 @@ async fn test_full_loop_dry_run() {
         prompt_engine,
         make_config(true), // dry_run
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_once().await.unwrap();
 
@@ -650,7 +728,7 @@ async fn test_full_loop_with_push() {
     let state_mgr = StateManager::new(&state_dir);
     let prompt_engine = PromptEngine::new(None);
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         source,
         runner,
         submission,
@@ -659,8 +737,8 @@ async fn test_full_loop_with_push() {
         prompt_engine,
         make_config(false), // not dry_run
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_once().await.unwrap();
 
@@ -798,7 +876,7 @@ async fn test_error_at_review_phase() {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -811,8 +889,8 @@ async fn test_error_at_review_phase() {
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
-        FailReviewFactory,
-    );
+    )
+    .with_review_factory(FailReviewFactory);
 
     let err = orchestrator.run_once().await.unwrap_err();
     assert!(err.to_string().contains("mock failure at review"));
@@ -859,7 +937,7 @@ async fn test_state_transitions_through_phases() {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-7"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -872,8 +950,8 @@ async fn test_state_transitions_through_phases() {
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_once().await.unwrap();
 
@@ -893,7 +971,7 @@ async fn test_worktree_cleaned_up_after_success() {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -906,8 +984,8 @@ async fn test_worktree_cleaned_up_after_success() {
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_once().await.unwrap();
 
@@ -932,7 +1010,7 @@ async fn test_review_exhaustion_preserves_state() {
     let mut config = make_config(true);
     config.max_review_rounds = 2;
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -945,8 +1023,8 @@ async fn test_review_exhaustion_preserves_state() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
-        NeverApproveReviewFactory,
-    );
+    )
+    .with_review_factory(NeverApproveReviewFactory);
 
     let err = orchestrator.run_once().await.unwrap_err();
     assert!(
@@ -970,7 +1048,7 @@ async fn test_existing_pr_skips_submission() {
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
         MockSubmission::new(Arc::clone(&sub_tracker), Some(99)),
@@ -983,8 +1061,8 @@ async fn test_existing_pr_skips_submission() {
         PromptEngine::new(None),
         make_config(false), // non-dry-run so submission would normally fire
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_once().await.unwrap();
 
@@ -1011,7 +1089,7 @@ async fn test_continuous_mode_polls_with_empty_results() {
     config.max_iterations = Some(2);
     config.poll_seconds = 1;
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         source,
         CountingRunner::new("gh-42", Arc::clone(&counts)),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -1024,8 +1102,8 @@ async fn test_continuous_mode_polls_with_empty_results() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_loop(None).await.unwrap();
 
@@ -1046,7 +1124,7 @@ async fn test_max_iterations_stops_at_limit() {
     config.continuous = false;
     config.max_iterations = Some(3);
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         CountingRunner::new("gh-42", Arc::clone(&counts)),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -1059,8 +1137,8 @@ async fn test_max_iterations_stops_at_limit() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_loop(None).await.unwrap();
 
@@ -1083,7 +1161,7 @@ async fn test_continuous_shutdown_exits_between_iterations() {
     config.max_iterations = None;
     config.poll_seconds = 1;
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         CountingRunner::with_shutdown("gh-42", Arc::clone(&counts), shutdown_tx),
         MockSubmission::new(Arc::clone(&sub_tracker), None),
@@ -1096,8 +1174,8 @@ async fn test_continuous_shutdown_exits_between_iterations() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     orchestrator.run_loop(Some(shutdown_rx)).await.unwrap();
 
@@ -1130,7 +1208,7 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
         &worktree_info.path,
     );
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         source,
         MockRunner::new("gh-42"),
         submission,
@@ -1139,8 +1217,8 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
         PromptEngine::new(None),
         make_config(false),
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     let invocation = ReviewInvocation {
         task_id_for_state: "gh-42".to_string(),
@@ -1194,7 +1272,7 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
         &worktree_info.path,
     );
 
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         source,
         MockRunner::new("gh-88"),
         submission,
@@ -1203,8 +1281,8 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
         PromptEngine::new(None),
         make_config(false),
         repo_dir.path().to_path_buf(),
-        ApprovedReviewFactory,
-    );
+    )
+    .with_review_factory(ApprovedReviewFactory);
 
     let invocation = ReviewInvocation {
         task_id_for_state: "pr-88".to_string(),
@@ -1254,7 +1332,7 @@ async fn test_review_only_exhaustion_preserves_state() {
 
     let mut config = make_config(true);
     config.max_review_rounds = 2;
-    let orchestrator = Orchestrator::with_review_factory(
+    let orchestrator = Orchestrator::new(
         source,
         MockRunner::new("gh-99"),
         submission,
@@ -1263,8 +1341,8 @@ async fn test_review_only_exhaustion_preserves_state() {
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
-        NeverApproveReviewFactory,
-    );
+    )
+    .with_review_factory(NeverApproveReviewFactory);
 
     let invocation = ReviewInvocation {
         task_id_for_state: "pr-99".to_string(),
@@ -1285,4 +1363,164 @@ async fn test_review_only_exhaustion_preserves_state() {
     assert_eq!(state.current_task.unwrap().phase, "review");
     assert!(state.history.is_empty());
     assert!(worktree_info.path.exists());
+}
+
+// --- ReviewReporter output tests ---
+
+/// Creates orchestrator + invocation with capturing reporter, returning events handle.
+#[allow(clippy::type_complexity)]
+fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
+    repo_dir: &Path,
+    wt_dir: &Path,
+    task: &Task,
+    factory: F,
+    dry_run: bool,
+) -> (
+    Orchestrator<MockSource, MockRunner, MockSubmission, F, CapturingReporter>,
+    ReviewInvocation,
+    Arc<Mutex<Vec<ReviewEvent>>>,
+) {
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = MockSource::new(vec![task.clone()], Arc::clone(&source_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.to_path_buf(),
+        wt_dir.to_path_buf(),
+        "main".to_string(),
+    );
+    let worktree_info = worktree_mgr.create(42, "review-reporter").unwrap();
+    let state_dir = repo_dir.join(".rlph-test-state");
+    let vars = make_review_vars(task, repo_dir, &worktree_info.branch, &worktree_info.path);
+
+    let (reporter, events) = CapturingReporter::new();
+
+    let orchestrator = Orchestrator::new(
+        source,
+        MockRunner::new("gh-42"),
+        submission,
+        worktree_mgr,
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        make_config(dry_run),
+        repo_dir.to_path_buf(),
+    )
+    .with_review_factory(factory)
+    .with_reporter(reporter);
+
+    let invocation = ReviewInvocation {
+        task_id_for_state: "gh-42".to_string(),
+        mark_in_review_task_id: Some("42".to_string()),
+        worktree_info,
+        vars,
+        comment_pr_number: Some(77),
+        push_remote_branch: None,
+    };
+
+    (orchestrator, invocation, events)
+}
+
+#[tokio::test]
+async fn test_review_reports_phases_started() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let (orchestrator, invocation, events) =
+        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+
+    orchestrator
+        .run_review_for_existing_pr(invocation)
+        .await
+        .unwrap();
+
+    let events = events.lock().unwrap();
+    let started = events
+        .iter()
+        .find(|e| matches!(e, ReviewEvent::PhasesStarted { .. }))
+        .expect("should have PhasesStarted event");
+    match started {
+        ReviewEvent::PhasesStarted { count, names } => {
+            assert_eq!(*count, 3);
+            assert!(names.contains(&"correctness".to_string()));
+            assert!(names.contains(&"security".to_string()));
+            assert!(names.contains(&"style".to_string()));
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[tokio::test]
+async fn test_review_reports_phase_completions() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let (orchestrator, invocation, events) =
+        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+
+    orchestrator
+        .run_review_for_existing_pr(invocation)
+        .await
+        .unwrap();
+
+    let events = events.lock().unwrap();
+    let completions: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            ReviewEvent::PhaseComplete { name } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(completions.len(), 3, "expected 3 phase completions, got {completions:?}");
+    let completion_set: HashSet<_> = completions.into_iter().collect();
+    assert!(completion_set.contains("correctness"));
+    assert!(completion_set.contains("security"));
+    assert!(completion_set.contains("style"));
+}
+
+#[tokio::test]
+async fn test_review_reports_summary() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let (orchestrator, invocation, events) =
+        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+
+    orchestrator
+        .run_review_for_existing_pr(invocation)
+        .await
+        .unwrap();
+
+    let events = events.lock().unwrap();
+    let summary = events
+        .iter()
+        .find_map(|e| match e {
+            ReviewEvent::ReviewSummary { body } => Some(body.clone()),
+            _ => None,
+        })
+        .expect("should have ReviewSummary event");
+    assert_eq!(summary, "All good.");
+}
+
+#[tokio::test]
+async fn test_review_reports_pr_url() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let (orchestrator, invocation, events) =
+        build_review_orchestrator_with_reporter(repo_dir.path(), wt_dir.path(), &task, ApprovedReviewFactory, false);
+
+    orchestrator
+        .run_review_for_existing_pr(invocation)
+        .await
+        .unwrap();
+
+    let events = events.lock().unwrap();
+    let url = events
+        .iter()
+        .find_map(|e| match e {
+            ReviewEvent::PrUrl { url } => Some(url.clone()),
+            _ => None,
+        })
+        .expect("should have PrUrl event");
+    assert_eq!(url, "https://github.com/test/repo/pull/42");
 }

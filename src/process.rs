@@ -31,6 +31,8 @@ pub struct ProcessConfig {
     /// Data to write to the child's stdin. When `Some`, stdin is piped and the
     /// data is written before closing. When `None`, stdin is connected to /dev/null.
     pub stdin_data: Option<String>,
+    /// Suppress heartbeat progress messages on stderr.
+    pub quiet: bool,
 }
 
 /// Output from a completed child process.
@@ -86,8 +88,8 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
 
     let command_preview = format_command_preview(&config.command, &config.args);
     let log_prefix = config.log_prefix.clone();
-    info!("[{}] launching command={command_preview}", log_prefix);
-    eprintln!("[{}] launching: {command_preview}", log_prefix);
+    let quiet = config.quiet;
+    info!(prefix = %log_prefix, command = %command_preview, "launching");
 
     let mut child = cmd
         .spawn()
@@ -96,11 +98,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let pid = child
         .id()
         .ok_or_else(|| Error::Process("child has no pid".into()))?;
-    info!(
-        "[{}] started pid={} command={command_preview}",
-        log_prefix, pid
-    );
-    eprintln!("[{}] started (pid {pid}): {command_preview}", log_prefix);
+    info!(prefix = %log_prefix, pid, command = %command_preview, "started");
 
     // Spawn stdin write concurrently so it cannot block the timeout/select path
     // if the child stalls or the data exceeds the OS pipe buffer.
@@ -136,7 +134,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
                 }
                 Ok(None) => break,
                 Err(e) => {
-                    warn!("[{prefix_out}] stdout read failed: {e}");
+                    warn!(prefix = %prefix_out, error = %e, "stdout read failed");
                     break;
                 }
             }
@@ -157,7 +155,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
                 }
                 Ok(None) => break,
                 Err(e) => {
-                    warn!("[{prefix_err}] stderr read failed: {e}");
+                    warn!(prefix = %prefix_err, error = %e, "stderr read failed");
                     break;
                 }
             }
@@ -170,8 +168,10 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let heartbeat_task = tokio::spawn(async move {
         loop {
             tokio::time::sleep(HEARTBEAT_INTERVAL).await;
-            let elapsed = heartbeat_started.elapsed().as_secs();
-            eprintln!("[{heartbeat_prefix}] still running ({elapsed}s elapsed)");
+            if !quiet {
+                let elapsed = heartbeat_started.elapsed().as_secs();
+                eprintln!("[{heartbeat_prefix}] still running ({elapsed}s elapsed)");
+            }
         }
     });
 
@@ -235,7 +235,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
                 // Process exited non-zero — stdin write failures (BrokenPipe,
                 // ConnectionReset, etc.) are expected side-effects; the exit
                 // code is the real error.
-                warn!("[{log_prefix}] stdin write failed ({e}), ignored — process exited non-zero");
+                warn!(prefix = %log_prefix, error = %e, "stdin write failed, ignored — process exited non-zero");
             }
             Err(e) => {
                 return Err(Error::Process(format!("stdin writer task failed: {e}")));
@@ -252,9 +252,11 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
 
     let (exit_code, signal) = extract_exit_info(&status);
     info!(
-        "[{}] completed in {}s (exit_code={exit_code}, signal={signal:?})",
-        log_prefix,
-        started_at.elapsed().as_secs()
+        prefix = %log_prefix,
+        elapsed_secs = started_at.elapsed().as_secs(),
+        exit_code,
+        ?signal,
+        "completed"
     );
 
     Ok(ProcessOutput {
@@ -418,7 +420,7 @@ async fn handle_interrupt_unix(
         sigint,
         sigterm,
     } = ctx;
-    warn!("[{log_prefix}] received {signal_name}; forwarding to child pid {child_pid}");
+    warn!(prefix = %log_prefix, child_pid, signal_name, "received signal, forwarding to child");
     eprintln!("[{log_prefix}] received {signal_name}; press Ctrl-C again to force exit");
     send_signal_unix(
         child_pid,
@@ -433,9 +435,7 @@ async fn handle_interrupt_unix(
             match result {
                 Ok(join_result) => wait_join_result(join_result),
                 Err(_) => {
-                    warn!(
-                        "[{log_prefix}] child pid {child_pid} ignored {signal_name}; sending SIGKILL"
-                    );
+                    warn!(prefix = %log_prefix, child_pid, signal_name, "child ignored signal, sending SIGKILL");
                     send_signal_unix(
                         child_pid,
                         libc::SIGKILL,
@@ -495,7 +495,7 @@ async fn handle_timeout_unix(
     use_process_group: bool,
     wait_task: &mut JoinHandle<std::io::Result<ExitStatus>>,
 ) -> Result<ExitStatus> {
-    warn!("[{log_prefix}] process timed out after {timeout:?}; sending SIGTERM");
+    warn!(prefix = %log_prefix, ?timeout, "process timed out, sending SIGTERM");
     send_signal_unix(
         child_pid,
         libc::SIGTERM,
@@ -509,7 +509,7 @@ async fn handle_timeout_unix(
             let _ = wait_join_result(result)?;
         }
         Err(_) => {
-            warn!("[{log_prefix}] child pid {child_pid} ignored SIGTERM; sending SIGKILL");
+            warn!(prefix = %log_prefix, child_pid, "child ignored SIGTERM, sending SIGKILL");
             send_signal_unix(
                 child_pid,
                 libc::SIGKILL,
@@ -553,7 +553,7 @@ fn send_signal_unix(
         return;
     }
 
-    warn!("[{log_prefix}] failed to send {signal_name} to child pid {child_pid}: {err}");
+    warn!(prefix = %log_prefix, child_pid, signal_name, error = %err, "failed to send signal");
 }
 
 #[cfg(unix)]

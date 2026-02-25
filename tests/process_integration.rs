@@ -14,6 +14,7 @@ fn make_config(command: &str, args: &[&str]) -> ProcessConfig {
         env: vec![],
         stdin_data: None,
         stream_output: true,
+        quiet: false,
     }
 }
 
@@ -121,6 +122,7 @@ async fn test_sigint_to_child() {
         env: vec![],
         stdin_data: None,
         stream_output: true,
+        quiet: false,
     };
 
     let handle = tokio::spawn(spawn_and_stream(config));
@@ -171,6 +173,7 @@ async fn test_double_sigint_force_exit() {
         env: vec![],
         stdin_data: None,
         stream_output: true,
+        quiet: false,
     };
 
     let handle = tokio::spawn(spawn_and_stream(config));
@@ -217,6 +220,7 @@ async fn test_timeout_kills_descendants() {
         env: vec![],
         stdin_data: None,
         stream_output: true,
+        quiet: false,
     };
 
     let result = spawn_and_stream(config).await;
@@ -274,6 +278,7 @@ async fn test_stdin_data() {
         env: vec![],
         stdin_data: Some("hello from stdin".to_string()),
         stream_output: true,
+        quiet: false,
     };
     let output = spawn_and_stream(config).await.unwrap();
     assert!(output.success());
@@ -292,6 +297,7 @@ async fn test_stdin_data_multiline() {
         env: vec![],
         stdin_data: Some("line1\nline2\nline3".to_string()),
         stream_output: true,
+        quiet: false,
     };
     let output = spawn_and_stream(config).await.unwrap();
     assert!(output.success());
@@ -314,6 +320,7 @@ async fn test_stdin_write_error_propagated() {
         env: vec![],
         stdin_data: Some(large_data),
         stream_output: true,
+        quiet: false,
     };
     let result = spawn_and_stream(config).await;
     assert!(result.is_err(), "should propagate stdin write failure");
@@ -338,6 +345,7 @@ async fn test_stdin_broken_pipe_ignored_for_nonzero_exit() {
         env: vec![],
         stdin_data: Some(large_data),
         stream_output: true,
+        quiet: false,
     };
     let output = spawn_and_stream(config).await.unwrap();
     assert!(!output.success());
@@ -359,6 +367,7 @@ async fn test_stdin_blocked_still_times_out() {
         env: vec![],
         stdin_data: Some(large_data),
         stream_output: true,
+        quiet: false,
     };
     let result = spawn_and_stream(config).await;
     assert!(result.is_err());
@@ -366,4 +375,28 @@ async fn test_stdin_blocked_still_times_out() {
         result.unwrap_err().to_string().contains("timed out"),
         "should time out even when stdin write is blocked"
     );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_quiet_suppresses_process_noise() {
+    // With quiet: true, the process should still run correctly but
+    // suppress launch/heartbeat eprintln output.
+    let config = ProcessConfig {
+        command: "bash".to_string(),
+        args: vec!["-c".to_string(), "echo hello".to_string()],
+        working_dir: PathBuf::from("."),
+        timeout: None,
+        log_prefix: "test:quiet".to_string(),
+        env: vec![],
+        stdin_data: None,
+        stream_output: false,
+        quiet: true,
+    };
+    let output = spawn_and_stream(config).await.unwrap();
+    assert!(output.success());
+    assert_eq!(output.stdout_lines, vec!["hello"]);
+    // stderr_lines captures the child's stderr, not our eprintln output,
+    // so we verify the process completes correctly with quiet enabled.
+    assert!(output.stderr_lines.is_empty());
 }

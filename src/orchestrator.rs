@@ -78,7 +78,40 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
     }
 }
 
-pub struct Orchestrator<S, R, B, F = DefaultReviewRunnerFactory> {
+/// Observer for structured review-pipeline progress events.
+pub trait ReviewReporter: Send + Sync {
+    fn phases_started(&self, names: &[String]);
+    fn phase_complete(&self, name: &str);
+    fn review_summary(&self, body: &str);
+    fn pr_url(&self, url: &str);
+}
+
+/// Default reporter that prints to stderr.
+pub struct StderrReporter;
+
+impl ReviewReporter for StderrReporter {
+    fn phases_started(&self, names: &[String]) {
+        eprintln!(
+            "[rlph] Running {} review agents: {}",
+            names.len(),
+            names.join(", ")
+        );
+    }
+
+    fn phase_complete(&self, name: &str) {
+        eprintln!("[rlph] Review phase complete: {name}");
+    }
+
+    fn review_summary(&self, body: &str) {
+        eprintln!("[rlph] Review summary:\n{body}");
+    }
+
+    fn pr_url(&self, url: &str) {
+        eprintln!("[rlph] PR: {url}");
+    }
+}
+
+pub struct Orchestrator<S, R, B, F = DefaultReviewRunnerFactory, P = StderrReporter> {
     source: S,
     runner: R,
     submission: B,
@@ -88,6 +121,7 @@ pub struct Orchestrator<S, R, B, F = DefaultReviewRunnerFactory> {
     config: Config,
     repo_root: PathBuf,
     review_factory: F,
+    reporter: P,
 }
 
 impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> {
@@ -112,38 +146,51 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             config,
             repo_root,
             review_factory: DefaultReviewRunnerFactory,
+            reporter: StderrReporter,
         }
     }
 }
 
-impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory>
-    Orchestrator<S, R, B, F>
-{
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_review_factory(
-        source: S,
-        runner: R,
-        submission: B,
-        worktree_mgr: WorktreeManager,
-        state_mgr: StateManager,
-        prompt_engine: PromptEngine,
-        config: Config,
-        repo_root: PathBuf,
-        review_factory: F,
-    ) -> Self {
-        Self {
-            source,
-            runner,
-            submission,
-            worktree_mgr,
-            state_mgr,
-            prompt_engine,
-            config,
-            repo_root,
+impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P> Orchestrator<S, R, B, F, P> {
+    pub fn with_review_factory<F2>(self, review_factory: F2) -> Orchestrator<S, R, B, F2, P> {
+        Orchestrator {
+            source: self.source,
+            runner: self.runner,
+            submission: self.submission,
+            worktree_mgr: self.worktree_mgr,
+            state_mgr: self.state_mgr,
+            prompt_engine: self.prompt_engine,
+            config: self.config,
+            repo_root: self.repo_root,
             review_factory,
+            reporter: self.reporter,
         }
     }
 
+    pub fn with_reporter<P2>(self, reporter: P2) -> Orchestrator<S, R, B, F, P2> {
+        Orchestrator {
+            source: self.source,
+            runner: self.runner,
+            submission: self.submission,
+            worktree_mgr: self.worktree_mgr,
+            state_mgr: self.state_mgr,
+            prompt_engine: self.prompt_engine,
+            config: self.config,
+            repo_root: self.repo_root,
+            review_factory: self.review_factory,
+            reporter,
+        }
+    }
+}
+
+impl<
+        S: TaskSource,
+        R: AgentRunner,
+        B: SubmissionBackend,
+        F: ReviewRunnerFactory,
+        P: ReviewReporter,
+    > Orchestrator<S, R, B, F, P>
+{
     /// Run according to configured loop mode.
     ///
     /// When `shutdown` becomes true, the orchestrator exits between iterations.
@@ -156,7 +203,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
 
         loop {
             if Self::shutdown_requested(shutdown.as_ref()) {
-                info!("[rlph:orchestrator] Shutdown requested; exiting loop");
+                info!("shutdown requested, exiting loop");
                 break;
             }
 
@@ -166,7 +213,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             if let Some(max) = self.config.max_iterations
                 && iterations >= max
             {
-                info!("[rlph:orchestrator] Reached max iterations ({max}); exiting");
+                info!(max, "reached max iterations, exiting");
                 break;
             }
 
@@ -178,21 +225,18 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             }
 
             if Self::shutdown_requested(shutdown.as_ref()) {
-                info!("[rlph:orchestrator] Shutdown requested; exiting loop");
+                info!("shutdown requested, exiting loop");
                 break;
             }
 
-            info!(
-                "[rlph:orchestrator] Polling again in {}s...",
-                self.config.poll_seconds
-            );
+            info!(poll_seconds = self.config.poll_seconds, "polling again");
             let stop = Self::wait_for_poll_or_shutdown(
                 Duration::from_secs(self.config.poll_seconds),
                 &mut shutdown,
             )
             .await;
             if stop {
-                info!("[rlph:orchestrator] Shutdown requested; exiting loop");
+                info!("shutdown requested, exiting loop");
                 break;
             }
         }
@@ -234,19 +278,19 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             Ok(()) => {
                 self.state_mgr.complete_current_task()?;
 
-                info!("[rlph:orchestrator] Cleaning up worktree...");
+                info!("cleaning up worktree");
                 if let Err(e) = self.worktree_mgr.remove(&invocation.worktree_info.path) {
-                    warn!("[rlph:orchestrator] Failed to clean up worktree: {e}");
+                    warn!(error = %e, "failed to clean up worktree");
                 }
                 let _ = self
                     .state_mgr
                     .remove_worktree_mapping(&invocation.task_id_for_state);
 
-                info!("[rlph:orchestrator] Review-only run complete");
+                info!("review-only run complete");
                 Ok(())
             }
             Err(e) => {
-                warn!("[rlph:orchestrator] Review-only run failed: {e}");
+                warn!(error = %e, "review-only run failed");
                 Err(e)
             }
         }
@@ -254,10 +298,10 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
 
     async fn run_iteration(&self) -> Result<IterationOutcome> {
         // 1. Fetch eligible tasks and filter by dependency graph
-        info!("[rlph:orchestrator] Fetching eligible tasks...");
+        info!("fetching eligible tasks");
         let tasks = self.source.fetch_eligible_tasks()?;
         if tasks.is_empty() {
-            info!("[rlph:orchestrator] No eligible tasks found");
+            info!("no eligible tasks found");
             return Ok(IterationOutcome::NoEligibleTasks);
         }
 
@@ -265,13 +309,13 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
         let graph = DependencyGraph::build(&tasks);
         let tasks = graph.filter_eligible(tasks, &done_ids);
         if tasks.is_empty() {
-            info!("[rlph:orchestrator] No unblocked tasks found");
+            info!("no unblocked tasks found");
             return Ok(IterationOutcome::NoEligibleTasks);
         }
-        info!("[rlph:orchestrator] Found {} eligible task(s)", tasks.len());
+        info!(count = tasks.len(), "found eligible tasks");
 
         // 2. Choose phase — agent selects a task
-        info!("[rlph:orchestrator] Running choose phase...");
+        info!("running choose phase");
         let mut choose_vars = HashMap::new();
         choose_vars.insert(
             "repo_path".to_string(),
@@ -285,46 +329,43 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
         self.runner
             .run(Phase::Choose, &choose_prompt, &self.repo_root)
             .await?;
-        info!(
-            "[rlph:orchestrator] Choose phase complete in {}s",
-            choose_started.elapsed().as_secs()
-        );
+        info!(elapsed_secs = choose_started.elapsed().as_secs(), "choose phase complete");
 
         // 3. Parse task selection from .ralph/task.toml
         let task_id = self.parse_task_selection()?;
         let issue_number = parse_issue_number(&task_id)?;
-        info!("[rlph:orchestrator] Selected task: {task_id} (issue #{issue_number})");
+        info!(task_id, issue_number, "selected task");
         let existing_pr_number = if self.config.dry_run {
-            info!("[rlph:orchestrator] Dry run — skipping existing PR lookup");
+            info!("dry run — skipping existing PR lookup");
             None
         } else {
             let pr_number = self.submission.find_existing_pr_for_issue(issue_number)?;
             if let Some(pr) = pr_number {
-                info!("[rlph:orchestrator] Existing PR #{pr} found for issue #{issue_number}");
+                info!(pr, issue_number, "existing PR found");
             } else {
-                info!("[rlph:orchestrator] No existing PR found for issue #{issue_number}");
+                info!(issue_number, "no existing PR found");
             }
             pr_number
         };
 
         // 4. Get task details
         let task = self.source.get_task_details(&issue_number.to_string())?;
-        info!("[rlph:orchestrator] Task: {} — {}", task.id, task.title);
+        info!(id = task.id, title = task.title, "task details");
 
         // 5. Mark in-progress
         if !self.config.dry_run {
-            info!("[rlph:orchestrator] Marking task in-progress...");
+            info!("marking task in-progress");
             self.source.mark_in_progress(&task.id)?;
         }
 
         // 6. Create worktree
-        info!("[rlph:orchestrator] Creating worktree...");
+        info!("creating worktree");
         let slug = WorktreeManager::slugify(&task.title);
         let worktree_info = self.worktree_mgr.create(issue_number, &slug)?;
         info!(
-            "[rlph:orchestrator] Worktree at {} (branch: {})",
-            worktree_info.path.display(),
-            worktree_info.branch
+            path = %worktree_info.path.display(),
+            branch = worktree_info.branch,
+            "worktree created"
         );
 
         // Update state
@@ -345,17 +386,17 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 self.state_mgr.complete_current_task()?;
 
                 // 12. Clean up worktree
-                info!("[rlph:orchestrator] Cleaning up worktree...");
+                info!("cleaning up worktree");
                 if let Err(e) = self.worktree_mgr.remove(&worktree_info.path) {
-                    warn!("[rlph:orchestrator] Failed to clean up worktree: {e}");
+                    warn!(error = %e, "failed to clean up worktree");
                 }
                 let _ = self.state_mgr.remove_worktree_mapping(&task_id);
 
-                info!("[rlph:orchestrator] Iteration complete");
+                info!("iteration complete");
                 Ok(IterationOutcome::ProcessedTask)
             }
             Err(e) => {
-                warn!("[rlph:orchestrator] Iteration failed: {e}");
+                warn!(error = %e, "iteration failed");
                 Err(e)
             }
         }
@@ -394,10 +435,10 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
         worktree_info: &WorktreeInfo,
         existing_pr_number: Option<u64>,
     ) -> Result<()> {
-        let vars = self.build_task_vars(task, worktree_info);
+        let mut vars = self.build_task_vars(task, worktree_info);
 
         // 7. Implement phase
-        info!("[rlph:orchestrator] Running implement phase...");
+        info!("running implement phase");
         let impl_prompt = self.prompt_engine.render_phase("implement", &vars)?;
         self.runner
             .run(Phase::Implement, &impl_prompt, &worktree_info.path)
@@ -405,16 +446,16 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
 
         // 8. Push branch
         if !self.config.dry_run {
-            info!("[rlph:orchestrator] Pushing branch...");
+            info!("pushing branch");
             self.push_branch(worktree_info)?;
         }
 
         // 9. Submit PR (skip if choose agent reported an existing PR)
         let pr_number = if let Some(pr) = existing_pr_number {
-            info!("[rlph:orchestrator] Skipping PR submission — existing PR #{pr}");
+            info!(pr, "skipping PR submission — existing PR");
             Some(pr)
         } else if !self.config.dry_run {
-            info!("[rlph:orchestrator] Submitting PR...");
+            info!("submitting PR");
             let pr_body = format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.");
             let result = self.submission.submit(
                 &worktree_info.branch,
@@ -422,10 +463,11 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 &task.title,
                 &pr_body,
             )?;
-            info!("[rlph:orchestrator] PR: {}", result.url);
+            info!(url = result.url, "PR created");
+            vars.insert("pr_url".to_string(), result.url);
             result.number
         } else {
-            info!("[rlph:orchestrator] Dry run — skipping PR submission");
+            info!("dry run — skipping PR submission");
             None
         };
 
@@ -454,15 +496,24 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
         };
         let mut review_passed = false;
 
+        // Report phase names once before the loop (they don't change between rounds).
+        let phase_names: Vec<String> = self
+            .config
+            .review_phases
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        self.reporter.phases_started(&phase_names);
+
         for round in 1..=max_reviews {
-            info!("[rlph:orchestrator] Review round {round}/{max_reviews}...");
+            info!(round, max_reviews, "review round");
 
             // Fetch current PR comments for this round
             let pr_comments_text = if let Some(pr_num) = pr_number {
                 match self.submission.fetch_pr_comments(pr_num) {
                     Ok(comments) => format_pr_comments_for_prompt(&comments, pr_num),
                     Err(e) => {
-                        warn!("[rlph:orchestrator] Failed to fetch PR comments: {e}");
+                        warn!(error = %e, "failed to fetch PR comments");
                         "Failed to fetch PR comments.".to_string()
                     }
                 }
@@ -472,7 +523,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
 
             let pr_number_str = pr_number.map(|n| n.to_string()).unwrap_or_default();
 
-            // Run all configured review phases in parallel.
             let mut join_set = tokio::task::JoinSet::new();
             for phase_config in &self.config.review_phases {
                 let phase_runner = self
@@ -504,7 +554,9 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
 
             let mut review_outputs = Vec::new();
             while let Some(result) = join_set.join_next().await {
-                review_outputs.push(result.map_err(|e| Error::AgentRunner(e.to_string()))??);
+                let output = result.map_err(|e| Error::AgentRunner(e.to_string()))??;
+                self.reporter.phase_complete(&output.name);
+                review_outputs.push(output);
             }
 
             let review_outputs_text = review_outputs
@@ -537,37 +589,42 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 .run(Phase::ReviewAggregate, &agg_prompt, &worktree_info.path)
                 .await?;
 
+            let comment_body = extract_comment_body(&agg_result.stdout);
+            let summary = comment_body
+                .strip_prefix(REVIEW_MARKER)
+                .unwrap_or(&comment_body)
+                .trim();
+            if !summary.is_empty() {
+                self.reporter.review_summary(summary);
+            }
+
             if let Some(pr_num) = pr_number
                 && !self.config.dry_run
+                && let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body)
             {
-                let comment_body = extract_comment_body(&agg_result.stdout);
-                if let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body) {
-                    warn!("[rlph:orchestrator] Failed to comment on PR: {e}");
-                }
+                warn!(error = %e, "failed to comment on PR");
             }
 
             if agg_result.stdout.contains("REVIEW_APPROVED") {
-                info!("[rlph:orchestrator] Review approved at round {round}");
+                info!(round, "review approved");
                 review_passed = true;
                 break;
             }
 
             if review_only {
-                info!("[rlph:orchestrator] Review-only mode — skipping fix phase");
+                info!("review-only mode — skipping fix phase");
                 break;
             }
 
             let fix_instructions = match extract_fix_instructions(&agg_result.stdout) {
                 Some(instructions) => instructions,
                 None => {
-                    warn!(
-                        "[rlph:orchestrator] Aggregator produced neither REVIEW_APPROVED nor REVIEW_NEEDS_FIX — retrying"
-                    );
+                    warn!("aggregator produced neither REVIEW_APPROVED nor REVIEW_NEEDS_FIX — retrying");
                     continue;
                 }
             };
 
-            info!("[rlph:orchestrator] Review needs fix at round {round}, running fix agent...");
+            info!(round, "review needs fix, running fix agent");
 
             let fix_config = &self.config.review_fix;
             let fix_runner = self
@@ -591,9 +648,16 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                     self.push_branch(worktree_info)
                 };
                 if let Err(e) = push_result {
-                    warn!("[rlph:orchestrator] Failed to push review fixes: {e}");
+                    warn!(error = %e, "failed to push review fixes");
                 }
             }
+        }
+
+        // Report PR URL once after the review loop.
+        if let Some(url) = vars.get("pr_url")
+            && !url.is_empty()
+        {
+            self.reporter.pr_url(url);
         }
 
         if !review_passed {
@@ -655,7 +719,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             return Err(Error::Orchestrator(format!("git push failed: {stderr}")));
         }
 
-        info!("[rlph:orchestrator] Pushed branch {}", worktree.branch);
+        info!(branch = worktree.branch, "pushed branch");
         Ok(())
     }
 
@@ -675,10 +739,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             return Err(Error::Orchestrator(format!("git push failed: {stderr}")));
         }
 
-        info!(
-            "[rlph:orchestrator] Pushed branch {} to origin/{remote_branch}",
-            worktree.branch
-        );
+        info!(branch = worktree.branch, remote_branch, "pushed branch");
         Ok(())
     }
 }

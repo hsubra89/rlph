@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::error::{Error, Result};
 use crate::process::{ProcessConfig, spawn_and_stream};
@@ -204,17 +204,12 @@ impl AgentRunner for ClaudeRunner {
                 let session_id = match extract_session_id(&all_stdout) {
                     Some(id) => id,
                     None => {
-                        warn!(
-                            "[{log_prefix}] timeout retry {attempt}: no session_id found in output, cannot resume"
-                        );
+                        warn!(prefix = %log_prefix, attempt, "timeout retry: no session_id found, cannot resume");
                         return Err(Error::AgentRunner(
                             "agent timed out and no session_id found for resume".to_string(),
                         ));
                     }
                 };
-                info!(
-                    "[{log_prefix}] timeout retry {attempt}/{max_attempts}: resuming session {session_id}"
-                );
                 eprintln!(
                     "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{})",
                     attempt + 1,
@@ -232,6 +227,7 @@ impl AgentRunner for ClaudeRunner {
                 stream_output: false,
                 env: vec![],
                 stdin_data: None,
+                quiet: true,
             };
 
             match spawn_and_stream(config).await {
@@ -267,11 +263,7 @@ impl AgentRunner for ClaudeRunner {
                 }) => {
                     all_stdout.extend(stdout_lines);
                     all_stderr.extend(stderr_lines);
-                    warn!(
-                        "[{log_prefix}] attempt {} timed out after {timeout:?} ({} stdout lines buffered)",
-                        attempt + 1,
-                        all_stdout.len()
-                    );
+                    warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
                     // Continue to next attempt (or fall through if last).
                 }
                 Err(e) => return Err(e),
@@ -401,9 +393,6 @@ impl AgentRunner for CodexRunner {
                 let (cmd, a) = self.build_command();
                 (cmd, a, Some(prompt.to_string()))
             } else {
-                info!(
-                    "[{log_prefix}] timeout retry {attempt}/{max_attempts}: resuming last session"
-                );
                 eprintln!(
                     "[{log_prefix}] resuming timed-out session (attempt {}/{})",
                     attempt + 1,
@@ -422,6 +411,7 @@ impl AgentRunner for CodexRunner {
                 stream_output: false,
                 env: vec![],
                 stdin_data,
+                quiet: true,
             };
 
             match spawn_and_stream(config).await {
@@ -456,11 +446,7 @@ impl AgentRunner for CodexRunner {
                 }) => {
                     all_stdout.extend(stdout_lines);
                     all_stderr.extend(stderr_lines);
-                    warn!(
-                        "[{log_prefix}] attempt {} timed out after {timeout:?} ({} stdout lines buffered)",
-                        attempt + 1,
-                        all_stdout.len()
-                    );
+                    warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
                 }
                 Err(e) => return Err(e),
             }
