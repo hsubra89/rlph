@@ -27,6 +27,9 @@ const KNOWN_VARIABLES: &[&str] = &[
     "review_outputs",
     "review_phase_name",
     "fix_instructions",
+    "pr_comments",
+    "pr_number",
+    "pr_branch",
 ];
 
 fn default_template(phase: &str) -> Option<&'static str> {

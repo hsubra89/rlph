@@ -14,6 +14,7 @@ const INTERRUPT_GRACE: Duration = Duration::from_secs(2);
 const TIMEOUT_GRACE: Duration = Duration::from_millis(500);
 const KILL_TIMEOUT: Duration = Duration::from_secs(5);
 const READER_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+const COMMAND_PREVIEW_MAX_CHARS: usize = 600;
 
 /// Configuration for spawning a child process.
 #[derive(Debug, Clone)]
@@ -23,6 +24,9 @@ pub struct ProcessConfig {
     pub working_dir: PathBuf,
     pub timeout: Option<Duration>,
     pub log_prefix: String,
+    /// Whether to echo child stdout/stderr lines to parent stdout/stderr in
+    /// real time while still capturing them in memory.
+    pub stream_output: bool,
     pub env: Vec<(String, String)>,
     /// Data to write to the child's stdin. When `Some`, stdin is piped and the
     /// data is written before closing. When `None`, stdin is connected to /dev/null.
@@ -117,6 +121,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
 
     let prefix_out = log_prefix.clone();
     let prefix_err = log_prefix.clone();
+    let stream_output = config.stream_output;
 
     let stdout_task = tokio::spawn(async move {
         let mut lines = Vec::new();
@@ -124,7 +129,9 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
         loop {
             match reader.next_line().await {
                 Ok(Some(line)) => {
-                    println!("[{prefix_out}] {line}");
+                    if stream_output {
+                        println!("[{prefix_out}] {line}");
+                    }
                     lines.push(line);
                 }
                 Ok(None) => break,
@@ -143,7 +150,9 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
         loop {
             match reader.next_line().await {
                 Ok(Some(line)) => {
-                    eprintln!("[{prefix_err}] {line}");
+                    if stream_output {
+                        eprintln!("[{prefix_err}] {line}");
+                    }
                     lines.push(line);
                 }
                 Ok(None) => break,
@@ -274,7 +283,17 @@ fn format_command_preview(command: &str, args: &[String]) -> String {
     let mut parts = Vec::with_capacity(args.len() + 1);
     parts.push(shellish_quote(command));
     parts.extend(args.iter().map(|arg| shellish_quote(arg)));
-    parts.join(" ")
+    truncate_for_log(&parts.join(" "), COMMAND_PREVIEW_MAX_CHARS)
+}
+
+fn truncate_for_log(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+
+    let head: String = value.chars().take(max_chars).collect();
+    let truncated_chars = value.chars().count().saturating_sub(max_chars);
+    format!("{head}... [truncated {truncated_chars} chars]")
 }
 
 fn shellish_quote(value: &str) -> String {
@@ -568,5 +587,19 @@ mod tests {
         assert!(!should_use_process_group("claude"));
         assert!(!should_use_process_group("/usr/local/bin/claude"));
         assert!(should_use_process_group("bash"));
+    }
+
+    #[test]
+    fn test_format_command_preview_not_truncated() {
+        let preview = format_command_preview("echo", &[String::from("hello")]);
+        assert_eq!(preview, "echo hello");
+    }
+
+    #[test]
+    fn test_format_command_preview_truncated() {
+        let long_arg = "x".repeat(700);
+        let preview = format_command_preview("claude", &[long_arg]);
+        assert!(preview.contains("[truncated "));
+        assert!(preview.len() < 700);
     }
 }

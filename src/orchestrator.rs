@@ -14,8 +14,8 @@ use crate::prompts::PromptEngine;
 use crate::runner::{AgentRunner, AnyRunner, Phase, build_runner};
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
-use crate::submission::SubmissionBackend;
-use crate::worktree::{WorktreeInfo, WorktreeManager};
+use crate::submission::{REVIEW_MARKER, SubmissionBackend, format_pr_comments_for_prompt};
+use crate::worktree::{WorktreeInfo, WorktreeManager, validate_branch_name};
 
 #[derive(Debug)]
 struct ReviewPhaseOutput {
@@ -33,6 +33,15 @@ struct TaskSelection {
 pub enum IterationOutcome {
     ProcessedTask,
     NoEligibleTasks,
+}
+
+pub struct ReviewInvocation {
+    pub task_id_for_state: String,
+    pub mark_in_review_task_id: Option<String>,
+    pub worktree_info: WorktreeInfo,
+    pub vars: HashMap<String, String>,
+    pub comment_pr_number: Option<u64>,
+    pub push_remote_branch: Option<String>,
 }
 
 /// Factory for creating review-phase runners. Defaults to `build_runner`.
@@ -197,6 +206,52 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
         Ok(())
     }
 
+    /// Run only the review pipeline for an already-selected PR/worktree context.
+    pub async fn run_review_for_existing_pr(&self, invocation: ReviewInvocation) -> Result<()> {
+        self.state_mgr.set_current_task(
+            &invocation.task_id_for_state,
+            "review",
+            &invocation.worktree_info.path.display().to_string(),
+        )?;
+
+        if !self.config.dry_run
+            && let Some(task_id) = invocation.mark_in_review_task_id.as_deref()
+        {
+            self.source.mark_in_review(task_id)?;
+        }
+
+        let result = self
+            .run_review_pipeline(
+                &invocation.vars,
+                &invocation.worktree_info,
+                invocation.comment_pr_number,
+                invocation.push_remote_branch.as_deref(),
+                true,
+            )
+            .await;
+
+        match result {
+            Ok(()) => {
+                self.state_mgr.complete_current_task()?;
+
+                info!("[rlph:orchestrator] Cleaning up worktree...");
+                if let Err(e) = self.worktree_mgr.remove(&invocation.worktree_info.path) {
+                    warn!("[rlph:orchestrator] Failed to clean up worktree: {e}");
+                }
+                let _ = self
+                    .state_mgr
+                    .remove_worktree_mapping(&invocation.task_id_for_state);
+
+                info!("[rlph:orchestrator] Review-only run complete");
+                Ok(())
+            }
+            Err(e) => {
+                warn!("[rlph:orchestrator] Review-only run failed: {e}");
+                Err(e)
+            }
+        }
+    }
+
     async fn run_iteration(&self) -> Result<IterationOutcome> {
         // 1. Fetch eligible tasks and filter by dependency graph
         info!("[rlph:orchestrator] Fetching eligible tasks...");
@@ -281,13 +336,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
 
         // Run the implement → submit → review pipeline, cleaning up on success
         let result = self
-            .run_implement_review(
-                &task,
-                &task_id,
-                issue_number,
-                &worktree_info,
-                existing_pr_number,
-            )
+            .run_implement_review(&task, issue_number, &worktree_info, existing_pr_number)
             .await;
 
         match result {
@@ -341,7 +390,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
     async fn run_implement_review(
         &self,
         task: &Task,
-        _task_id: &str,
         issue_number: u64,
         worktree_info: &WorktreeInfo,
         existing_pr_number: Option<u64>,
@@ -386,15 +434,45 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             self.source.mark_in_review(&task.id)?;
         }
 
-        // 11. Parallel multi-phase review loop
+        self.run_review_pipeline(&vars, worktree_info, pr_number, None, false)
+            .await
+    }
+
+    async fn run_review_pipeline(
+        &self,
+        vars: &HashMap<String, String>,
+        worktree_info: &WorktreeInfo,
+        pr_number: Option<u64>,
+        push_remote_branch: Option<&str>,
+        review_only: bool,
+    ) -> Result<()> {
         self.state_mgr.update_phase("review")?;
-        let max_reviews = self.config.max_review_rounds;
+        let max_reviews = if review_only {
+            1
+        } else {
+            self.config.max_review_rounds
+        };
         let mut review_passed = false;
 
         for round in 1..=max_reviews {
             info!("[rlph:orchestrator] Review round {round}/{max_reviews}...");
 
-            // 11a. Run all review phases in parallel
+            // Fetch current PR comments for this round
+            let pr_comments_text = if let Some(pr_num) = pr_number {
+                match self.submission.fetch_pr_comments(pr_num) {
+                    Ok(comments) => format_pr_comments_for_prompt(&comments, pr_num),
+                    Err(e) => {
+                        warn!("[rlph:orchestrator] Failed to fetch PR comments: {e}");
+                        "Failed to fetch PR comments.".to_string()
+                    }
+                }
+            } else {
+                "No PR associated with this review.".to_string()
+            };
+
+            let pr_number_str = pr_number.map(|n| n.to_string()).unwrap_or_default();
+
+            // Run all configured review phases in parallel.
             let mut join_set = tokio::task::JoinSet::new();
             for phase_config in &self.config.review_phases {
                 let phase_runner = self
@@ -403,6 +481,8 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
 
                 let mut phase_vars = vars.clone();
                 phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());
+                phase_vars.insert("pr_comments".to_string(), pr_comments_text.clone());
+                phase_vars.insert("pr_number".to_string(), pr_number_str.clone());
 
                 let prompt = self
                     .prompt_engine
@@ -422,13 +502,11 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 });
             }
 
-            // Collect results, fail on any error
             let mut review_outputs = Vec::new();
             while let Some(result) = join_set.join_next().await {
                 review_outputs.push(result.map_err(|e| Error::AgentRunner(e.to_string()))??);
             }
 
-            // 11b. Run aggregation agent
             let review_outputs_text = review_outputs
                 .iter()
                 .map(|o| {
@@ -449,6 +527,8 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
 
             let mut agg_vars = vars.clone();
             agg_vars.insert("review_outputs".to_string(), review_outputs_text);
+            agg_vars.insert("pr_comments".to_string(), pr_comments_text.clone());
+            agg_vars.insert("pr_number".to_string(), pr_number_str.clone());
 
             let agg_prompt = self
                 .prompt_engine
@@ -457,24 +537,26 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 .run(Phase::ReviewAggregate, &agg_prompt, &worktree_info.path)
                 .await?;
 
-            // 11c. Comment findings on PR
             if let Some(pr_num) = pr_number
                 && !self.config.dry_run
             {
                 let comment_body = extract_comment_body(&agg_result.stdout);
-                if let Err(e) = self.submission.comment_on_pr(pr_num, &comment_body) {
+                if let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body) {
                     warn!("[rlph:orchestrator] Failed to comment on PR: {e}");
                 }
             }
 
-            // 11d. Check if approved
             if agg_result.stdout.contains("REVIEW_APPROVED") {
                 info!("[rlph:orchestrator] Review approved at round {round}");
                 review_passed = true;
                 break;
             }
 
-            // 11e. Extract fix instructions and run fix agent
+            if review_only {
+                info!("[rlph:orchestrator] Review-only mode — skipping fix phase");
+                break;
+            }
+
             let fix_instructions = match extract_fix_instructions(&agg_result.stdout) {
                 Some(instructions) => instructions,
                 None => {
@@ -502,11 +584,15 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
                 .run(Phase::ReviewFix, &fix_prompt, &worktree_info.path)
                 .await?;
 
-            // Push fixes
-            if !self.config.dry_run
-                && let Err(e) = self.push_branch(worktree_info)
-            {
-                warn!("[rlph:orchestrator] Failed to push review fixes: {e}");
+            if !self.config.dry_run {
+                let push_result = if let Some(remote_branch) = push_remote_branch {
+                    self.push_branch_to(worktree_info, remote_branch)
+                } else {
+                    self.push_branch(worktree_info)
+                };
+                if let Err(e) = push_result {
+                    warn!("[rlph:orchestrator] Failed to push review fixes: {e}");
+                }
             }
         }
 
@@ -552,6 +638,8 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
             "worktree_path".to_string(),
             worktree.path.display().to_string(),
         );
+        vars.insert("pr_number".to_string(), String::new());
+        vars.insert("pr_branch".to_string(), String::new());
         vars
     }
 
@@ -570,17 +658,42 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F: ReviewRunnerFactory
         info!("[rlph:orchestrator] Pushed branch {}", worktree.branch);
         Ok(())
     }
+
+    fn push_branch_to(&self, worktree: &WorktreeInfo, remote_branch: &str) -> Result<()> {
+        validate_branch_name(remote_branch)
+            .map_err(|e| Error::Orchestrator(format!("invalid remote branch name: {e}")))?;
+
+        let refspec = format!("HEAD:{remote_branch}");
+        let output = Command::new("git")
+            .args(["push", "-u", "origin", &refspec])
+            .current_dir(&worktree.path)
+            .output()
+            .map_err(|e| Error::Orchestrator(format!("failed to run git push: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Orchestrator(format!("git push failed: {stderr}")));
+        }
+
+        info!(
+            "[rlph:orchestrator] Pushed branch {} to origin/{remote_branch}",
+            worktree.branch
+        );
+        Ok(())
+    }
 }
 
-/// Extract the comment body from aggregation output (everything before the REVIEW_ signal).
+/// Extract the comment body from aggregation output (everything before the REVIEW_ signal),
+/// prepended with the rlph review marker for upsert identification.
 fn extract_comment_body(stdout: &str) -> String {
-    if let Some(pos) = stdout.find("REVIEW_APPROVED") {
-        stdout[..pos].trim().to_string()
+    let body = if let Some(pos) = stdout.find("REVIEW_APPROVED") {
+        stdout[..pos].trim()
     } else if let Some(pos) = stdout.find("REVIEW_NEEDS_FIX:") {
-        stdout[..pos].trim().to_string()
+        stdout[..pos].trim()
     } else {
-        stdout.trim().to_string()
-    }
+        stdout.trim()
+    };
+    format!("{REVIEW_MARKER}\n{body}")
 }
 
 /// Extract fix instructions from `REVIEW_NEEDS_FIX: <instructions>`.
@@ -632,19 +745,28 @@ mod tests {
     #[test]
     fn test_extract_comment_body_approved() {
         let stdout = "Some findings here\n\nREVIEW_APPROVED";
-        assert_eq!(extract_comment_body(stdout), "Some findings here");
+        assert_eq!(
+            extract_comment_body(stdout),
+            "<!-- rlph-review -->\nSome findings here"
+        );
     }
 
     #[test]
     fn test_extract_comment_body_needs_fix() {
         let stdout = "Findings\nREVIEW_NEEDS_FIX: fix stuff";
-        assert_eq!(extract_comment_body(stdout), "Findings");
+        assert_eq!(
+            extract_comment_body(stdout),
+            "<!-- rlph-review -->\nFindings"
+        );
     }
 
     #[test]
     fn test_extract_comment_body_no_signal() {
         let stdout = "Just some output";
-        assert_eq!(extract_comment_body(stdout), "Just some output");
+        assert_eq!(
+            extract_comment_body(stdout),
+            "<!-- rlph-review -->\nJust some output"
+        );
     }
 
     #[test]

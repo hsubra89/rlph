@@ -85,6 +85,12 @@ pub enum CliCommand {
     /// Initialize the project for the configured task source (e.g., create labels)
     Init,
 
+    /// Run review phases directly for an existing GitHub PR number
+    Review {
+        /// GitHub pull request number
+        pr_number: u64,
+    },
+
     /// Launch an interactive PRD-writing session
     Prd {
         /// Seed description for the PRD (optional)
@@ -177,6 +183,28 @@ mod tests {
         assert!(matches!(cli.command, Some(CliCommand::Init)));
         assert_eq!(cli.source.as_deref(), Some("linear"));
         assert_eq!(cli.label.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn test_parse_review() {
+        let cli = Cli::parse_from(["rlph", "review", "123"]);
+        match cli.command {
+            Some(CliCommand::Review { pr_number }) => assert_eq!(pr_number, 123),
+            _ => panic!("expected Review subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_review_with_global_args_after_subcommand() {
+        let cli = Cli::parse_from([
+            "rlph", "review", "77", "--source", "github", "--label", "rlph",
+        ]);
+        match cli.command {
+            Some(CliCommand::Review { pr_number }) => assert_eq!(pr_number, 77),
+            _ => panic!("expected Review subcommand"),
+        }
+        assert_eq!(cli.source.as_deref(), Some("github"));
+        assert_eq!(cli.label.as_deref(), Some("rlph"));
     }
 
     #[test]

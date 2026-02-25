@@ -21,9 +21,7 @@ A previous engineer has completed work for the task below. Your job is to review
 1. Read all changed files on this branch vs the base branch.
 2. Check naming conventions (functions, variables, types, modules).
 3. Verify idiomatic patterns for the language are used.
-4. Check for unnecessary complexity, dead code, or commented-out code.
-5. Verify consistent formatting and style with the rest of the codebase.
-6. Check documentation quality where public APIs are modified.
+4. Check for unnecessary complexity, dead code, duplicated code or commented-out code.
 
 **Do NOT make any code changes.** This is a read-only review.
 
@@ -35,3 +33,12 @@ Output a structured list of findings. For each finding include:
 - Description and suggested improvement
 
 If there are no findings, output: `NO_ISSUES_FOUND`
+
+## Existing PR Comments
+
+{{pr_comments}}
+
+If any comment above is **factually inaccurate** or **missing important context** related to your review domain, reply concisely by running:
+`gh pr comment {{pr_number}} --body "your reply"`
+
+Only reply when confident the comment is wrong or misleading. Do not reply to correct comments. Skip if pr_number is empty.

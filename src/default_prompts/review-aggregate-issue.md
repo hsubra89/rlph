@@ -29,7 +29,7 @@ Multiple review agents have independently analyzed an implementation. Your job i
 
 ## Output
 
-First, output the PR comment body (markdown formatted).
+First, output the PR comment body (markdown formatted). List individual issues as a task list (`- [ ] ...`) so they can be checked off as they are fixed.
 
 Then, on a new line, output exactly one of:
 

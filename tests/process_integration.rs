@@ -13,6 +13,7 @@ fn make_config(command: &str, args: &[&str]) -> ProcessConfig {
         log_prefix: "test".to_string(),
         env: vec![],
         stdin_data: None,
+        stream_output: true,
     }
 }
 
@@ -119,6 +120,7 @@ async fn test_sigint_to_child() {
         log_prefix: "test:sigint".to_string(),
         env: vec![],
         stdin_data: None,
+        stream_output: true,
     };
 
     let handle = tokio::spawn(spawn_and_stream(config));
@@ -168,6 +170,7 @@ async fn test_double_sigint_force_exit() {
         log_prefix: "test:double-sigint".to_string(),
         env: vec![],
         stdin_data: None,
+        stream_output: true,
     };
 
     let handle = tokio::spawn(spawn_and_stream(config));
@@ -213,6 +216,7 @@ async fn test_timeout_kills_descendants() {
         log_prefix: "test:timeout-descendants".to_string(),
         env: vec![],
         stdin_data: None,
+        stream_output: true,
     };
 
     let result = spawn_and_stream(config).await;
@@ -269,6 +273,7 @@ async fn test_stdin_data() {
         log_prefix: "test:stdin".to_string(),
         env: vec![],
         stdin_data: Some("hello from stdin".to_string()),
+        stream_output: true,
     };
     let output = spawn_and_stream(config).await.unwrap();
     assert!(output.success());
@@ -286,6 +291,7 @@ async fn test_stdin_data_multiline() {
         log_prefix: "test:stdin-multi".to_string(),
         env: vec![],
         stdin_data: Some("line1\nline2\nline3".to_string()),
+        stream_output: true,
     };
     let output = spawn_and_stream(config).await.unwrap();
     assert!(output.success());
@@ -307,6 +313,7 @@ async fn test_stdin_write_error_propagated() {
         log_prefix: "test:stdin-err".to_string(),
         env: vec![],
         stdin_data: Some(large_data),
+        stream_output: true,
     };
     let result = spawn_and_stream(config).await;
     assert!(result.is_err(), "should propagate stdin write failure");
@@ -330,6 +337,7 @@ async fn test_stdin_broken_pipe_ignored_for_nonzero_exit() {
         log_prefix: "test:stdin-nonzero".to_string(),
         env: vec![],
         stdin_data: Some(large_data),
+        stream_output: true,
     };
     let output = spawn_and_stream(config).await.unwrap();
     assert!(!output.success());
@@ -350,6 +358,7 @@ async fn test_stdin_blocked_still_times_out() {
         log_prefix: "test:stdin-block".to_string(),
         env: vec![],
         stdin_data: Some(large_data),
+        stream_output: true,
     };
     let result = spawn_and_stream(config).await;
     assert!(result.is_err());
