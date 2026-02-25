@@ -435,7 +435,7 @@ impl<
         worktree_info: &WorktreeInfo,
         existing_pr_number: Option<u64>,
     ) -> Result<()> {
-        let vars = self.build_task_vars(task, worktree_info);
+        let mut vars = self.build_task_vars(task, worktree_info);
 
         // 7. Implement phase
         info!("running implement phase");
@@ -464,6 +464,7 @@ impl<
                 &pr_body,
             )?;
             info!(url = result.url, "PR created");
+            vars.insert("pr_url".to_string(), result.url);
             result.number
         } else {
             info!("dry run — skipping PR submission");
@@ -495,6 +496,15 @@ impl<
         };
         let mut review_passed = false;
 
+        // Report phase names once before the loop (they don't change between rounds).
+        let phase_names: Vec<String> = self
+            .config
+            .review_phases
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        self.reporter.phases_started(&phase_names);
+
         for round in 1..=max_reviews {
             info!(round, max_reviews, "review round");
 
@@ -512,15 +522,6 @@ impl<
             };
 
             let pr_number_str = pr_number.map(|n| n.to_string()).unwrap_or_default();
-
-            // Run all configured review phases in parallel.
-            let phase_names: Vec<String> = self
-                .config
-                .review_phases
-                .iter()
-                .map(|p| p.name.clone())
-                .collect();
-            self.reporter.phases_started(&phase_names);
 
             let mut join_set = tokio::task::JoinSet::new();
             for phase_config in &self.config.review_phases {
@@ -604,12 +605,6 @@ impl<
                 warn!(error = %e, "failed to comment on PR");
             }
 
-            if let Some(url) = vars.get("pr_url")
-                && !url.is_empty()
-            {
-                self.reporter.pr_url(url);
-            }
-
             if agg_result.stdout.contains("REVIEW_APPROVED") {
                 info!(round, "review approved");
                 review_passed = true;
@@ -656,6 +651,13 @@ impl<
                     warn!(error = %e, "failed to push review fixes");
                 }
             }
+        }
+
+        // Report PR URL once after the review loop.
+        if let Some(url) = vars.get("pr_url")
+            && !url.is_empty()
+        {
+            self.reporter.pr_url(url);
         }
 
         if !review_passed {
