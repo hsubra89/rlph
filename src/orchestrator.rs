@@ -461,7 +461,7 @@ impl<
             "choose phase complete"
         );
 
-        // 3. Parse task selection from .ralph/task.toml
+        // 3. Parse task selection from .rlph/task.toml
         let task_id = self.parse_task_selection()?;
         let issue_number = parse_issue_number(&task_id)?;
         info!(task_id, issue_number, "selected task");
@@ -977,9 +977,9 @@ impl<
         None
     }
 
-    /// Parse the task selection from `.ralph/task.toml` written by the choose agent.
+    /// Parse the task selection from `.rlph/task.toml` written by the choose agent.
     fn parse_task_selection(&self) -> Result<String> {
-        let path = self.repo_root.join(".ralph").join("task.toml");
+        let path = self.repo_root.join(".rlph").join("task.toml");
         let content = std::fs::read_to_string(&path).map_err(|e| {
             Error::Orchestrator(format!(
                 "failed to read task selection {}: {e}",

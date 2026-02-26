@@ -105,7 +105,7 @@ impl AgentRunner for MockRunner {
     async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
         match phase {
             Phase::Choose => {
-                let ralph_dir = working_dir.join(".ralph");
+                let ralph_dir = working_dir.join(".rlph");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
                 std::fs::write(
@@ -234,7 +234,7 @@ impl AgentRunner for CountingRunner {
         match phase {
             Phase::Choose => {
                 self.counts.choose.fetch_add(1, Ordering::SeqCst);
-                let ralph_dir = working_dir.join(".ralph");
+                let ralph_dir = working_dir.join(".rlph");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
                 std::fs::write(
@@ -299,7 +299,7 @@ impl AgentRunner for FailAtPhaseRunner {
         }
         match phase {
             Phase::Choose => {
-                let ralph_dir = working_dir.join(".ralph");
+                let ralph_dir = working_dir.join(".rlph");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
                 std::fs::write(
@@ -769,8 +769,8 @@ async fn test_full_loop_dry_run() {
     assert_eq!(state.history.len(), 1);
     assert_eq!(state.history[0].id, "gh-42");
 
-    // .ralph/task.toml should be cleaned up
-    assert!(!repo_dir.path().join(".ralph").join("task.toml").exists());
+    // .rlph/task.toml should be cleaned up
+    assert!(!repo_dir.path().join(".rlph").join("task.toml").exists());
 }
 
 #[tokio::test]
