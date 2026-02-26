@@ -1617,6 +1617,7 @@ async fn test_review_reports_pr_url() {
 // --- Iteration-level ProgressReporter tests ---
 
 /// Creates orchestrator with capturing reporter for iteration-level (`run_once`) tests.
+#[allow(clippy::type_complexity)]
 fn build_iteration_orchestrator_with_reporter<F: ReviewRunnerFactory>(
     repo_dir: &Path,
     wt_dir: &Path,
@@ -2285,6 +2286,7 @@ async fn test_aggregator_malformed_json_correction_exhausted_retries_round() {
 // Fix phase only runs when review_only=false, so we use run_once() which goes
 // through the full choose→implement→review→fix flow.
 
+#[allow(clippy::type_complexity)]
 fn build_fix_correction_orchestrator(
     repo_dir: &Path,
     wt_dir: &Path,
