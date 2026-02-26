@@ -420,6 +420,12 @@ impl TaskSource for LinearSource {
         Ok(())
     }
 
+    fn mark_done(&self, task_id: &str) -> Result<()> {
+        self.update_issue_state(task_id, &self.done_state)?;
+        debug!(task_id, "marked done on Linear");
+        Ok(())
+    }
+
     fn get_task_details(&self, task_id: &str) -> Result<Task> {
         let number: f64 = task_id
             .parse::<u64>()

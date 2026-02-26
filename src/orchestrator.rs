@@ -8,7 +8,6 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
-use crate::deps::DependencyGraph;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
@@ -18,7 +17,7 @@ use crate::review_schema::{
 use crate::runner::{
     AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, resume_with_correction,
 };
-use crate::sources::{Task, TaskSource};
+use crate::sources::{Task, TaskGroup, TaskSource};
 use crate::state::StateManager;
 use crate::submission::{REVIEW_MARKER, SubmissionBackend, format_pr_comments_for_prompt};
 use crate::worktree::{WorktreeInfo, WorktreeManager, validate_branch_name};
@@ -422,33 +421,39 @@ impl<
     }
 
     async fn run_iteration(&self) -> Result<IterationOutcome> {
-        // 1. Fetch eligible tasks and filter by dependency graph
+        // Check for in-progress group first — absolute priority over new work
+        if let Some(group_state) = self.state_mgr.get_current_group() {
+            info!(
+                group_id = group_state.group_id,
+                completed = group_state.completed_sub_issues.len(),
+                total = group_state.group_sub_issues.len(),
+                "resuming in-progress group"
+            );
+            return self.run_group_iteration_resume(&group_state).await;
+        }
+
+        // No in-progress group — fetch task groups
         self.reporter.fetching_tasks();
-        info!("fetching eligible tasks");
-        let tasks = self.source.fetch_eligible_tasks()?;
-        if tasks.is_empty() {
+        info!("fetching eligible task groups");
+        let groups = self.source.fetch_eligible_task_groups()?;
+        if groups.is_empty() {
             info!("no eligible tasks found");
             return Ok(IterationOutcome::NoEligibleTasks);
         }
 
-        let done_ids = self.source.fetch_closed_task_ids()?;
-        let graph = DependencyGraph::build(&tasks);
-        let tasks = graph.filter_eligible(tasks, &done_ids);
-        if tasks.is_empty() {
-            info!("no unblocked tasks found");
-            return Ok(IterationOutcome::NoEligibleTasks);
-        }
-        info!(count = tasks.len(), "found eligible tasks");
-        self.reporter.tasks_found(tasks.len());
+        // Serialize groups for the choose agent (use parent tasks)
+        let parent_tasks: Vec<&Task> = groups.iter().map(|g| g.parent()).collect();
+        info!(count = parent_tasks.len(), "found eligible tasks");
+        self.reporter.tasks_found(parent_tasks.len());
 
-        // 2. Choose phase — agent selects a task
+        // Choose phase — agent selects a task
         info!("running choose phase");
         let mut choose_vars = HashMap::new();
         choose_vars.insert(
             "repo_path".to_string(),
             self.repo_root.display().to_string(),
         );
-        let issues_json = serde_json::to_string_pretty(&tasks)
+        let issues_json = serde_json::to_string_pretty(&parent_tasks)
             .map_err(|e| Error::Orchestrator(format!("failed to serialize tasks: {e}")))?;
         choose_vars.insert("issues_json".to_string(), issues_json);
         let choose_prompt = self.prompt_engine.render_phase("choose", &choose_vars)?;
@@ -461,10 +466,46 @@ impl<
             "choose phase complete"
         );
 
-        // 3. Parse task selection from .rlph/task.toml
+        // Parse task selection from .rlph/task.toml
         let task_id = self.parse_task_selection()?;
         let issue_number = parse_issue_number(&task_id)?;
         info!(task_id, issue_number, "selected task");
+
+        // Find which group was selected
+        let selected_group = groups
+            .into_iter()
+            .find(|g| {
+                g.parent()
+                    .id
+                    .parse::<u64>()
+                    .ok()
+                    .is_some_and(|n| n == issue_number)
+            })
+            .ok_or_else(|| {
+                Error::Orchestrator(format!("selected task #{issue_number} not in fetched groups"))
+            })?;
+
+        match selected_group {
+            TaskGroup::Standalone(task) => {
+                self.run_standalone_iteration(task, issue_number).await
+            }
+            TaskGroup::Group {
+                parent,
+                sub_issues,
+            } => {
+                self.run_group_iteration_start(parent, sub_issues, issue_number)
+                    .await
+            }
+        }
+    }
+
+    /// Run a standalone (non-group) issue through the existing pipeline.
+    async fn run_standalone_iteration(
+        &self,
+        task: Task,
+        issue_number: u64,
+    ) -> Result<IterationOutcome> {
+        let task_id = format!("gh-{issue_number}");
         let existing_pr_number = if self.config.dry_run {
             info!("dry run — skipping existing PR lookup");
             None
@@ -478,18 +519,16 @@ impl<
             pr_number
         };
 
-        // 4. Get task details
-        let task = self.source.get_task_details(&issue_number.to_string())?;
         info!(id = task.id, title = task.title, "task details");
         self.reporter.task_selected(issue_number, &task.title);
 
-        // 5. Mark in-progress
+        // Mark in-progress
         if !self.config.dry_run {
             info!("marking task in-progress");
             self.source.mark_in_progress(&task.id)?;
         }
 
-        // 6. Create worktree
+        // Create worktree
         info!("creating worktree");
         let slug = WorktreeManager::slugify(&task.title);
         let worktree_info = self.worktree_mgr.create(issue_number, &slug)?;
@@ -499,24 +538,20 @@ impl<
             "worktree created"
         );
 
-        // Update state
         self.state_mgr.set_current_task(
             &task_id,
             "implement",
             &worktree_info.path.display().to_string(),
         )?;
 
-        // Run the implement → submit → review pipeline, cleaning up on success
         let result = self
             .run_implement_review(&task, issue_number, &worktree_info, existing_pr_number)
             .await;
 
         match result {
             Ok(()) => {
-                // 11. Mark done — skipped; GitHub auto-closes the issue when the PR merges
                 self.state_mgr.complete_current_task()?;
 
-                // 12. Clean up worktree
                 info!("cleaning up worktree");
                 if let Err(e) = self.worktree_mgr.remove(&worktree_info.path) {
                     warn!(error = %e, "failed to clean up worktree");
@@ -529,6 +564,260 @@ impl<
             }
             Err(e) => {
                 warn!(error = %e, "iteration failed");
+                Err(e)
+            }
+        }
+    }
+
+    /// Start a new group: create worktree, initialize group state, process first sub-issue.
+    async fn run_group_iteration_start(
+        &self,
+        parent: Task,
+        sub_issues: Vec<Task>,
+        parent_issue_number: u64,
+    ) -> Result<IterationOutcome> {
+        info!(
+            parent_id = parent.id,
+            sub_count = sub_issues.len(),
+            "starting group"
+        );
+        self.reporter
+            .task_selected(parent_issue_number, &parent.title);
+
+        // Mark parent in-progress
+        if !self.config.dry_run {
+            self.source.mark_in_progress(&parent.id)?;
+        }
+
+        // Create shared worktree (using parent issue number)
+        let slug = WorktreeManager::slugify(&parent.title);
+        let worktree_info = self.worktree_mgr.create(parent_issue_number, &slug)?;
+        info!(
+            path = %worktree_info.path.display(),
+            branch = worktree_info.branch,
+            "group worktree created"
+        );
+
+        // Initialize group state
+        let sub_ids: Vec<String> = sub_issues.iter().map(|t| t.id.clone()).collect();
+        self.state_mgr.set_current_group(
+            &parent.id,
+            &sub_ids,
+            &worktree_info.path.display().to_string(),
+            &worktree_info.branch,
+        )?;
+
+        // Find first eligible sub-issue
+        let done_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let group = TaskGroup::Group {
+            parent: parent.clone(),
+            sub_issues,
+        };
+        let sub = group.next_eligible_sub_issue(&done_ids).ok_or_else(|| {
+            Error::Orchestrator("no eligible sub-issue in new group".to_string())
+        })?;
+
+        // Implement the first sub-issue
+        self.run_single_sub_issue(sub, &parent, &worktree_info)
+            .await?;
+
+        // Check if the group is complete (single sub-issue group)
+        let group_state = self.state_mgr.get_current_group();
+        if let Some(gs) = &group_state
+            && gs.completed_sub_issues.len() == gs.group_sub_issues.len()
+        {
+            return self
+                .finalize_group(&parent, &group, &worktree_info)
+                .await;
+        }
+
+        info!("group sub-issue complete, more remain");
+        Ok(IterationOutcome::ProcessedTask)
+    }
+
+    /// Resume an in-progress group: process next sub-issue or finalize.
+    async fn run_group_iteration_resume(
+        &self,
+        group_state: &crate::state::CurrentGroupState,
+    ) -> Result<IterationOutcome> {
+        // Rebuild the worktree info from state
+        let worktree_info = WorktreeInfo {
+            path: PathBuf::from(&group_state.group_worktree_path),
+            branch: group_state.group_branch.clone(),
+        };
+
+        // Get parent details
+        let parent = self
+            .source
+            .get_task_details(&group_state.group_id)?;
+
+        // Get all sub-issue details
+        let mut sub_issues = Vec::new();
+        for sub_id in &group_state.group_sub_issues {
+            sub_issues.push(self.source.get_task_details(sub_id)?);
+        }
+
+        let done_ids: std::collections::HashSet<u64> = group_state
+            .completed_sub_issues
+            .iter()
+            .filter_map(|id| id.parse::<u64>().ok())
+            .collect();
+
+        let group = TaskGroup::Group {
+            parent: parent.clone(),
+            sub_issues,
+        };
+
+        let sub = group.next_eligible_sub_issue(&done_ids);
+        let Some(sub) = sub else {
+            // All sub-issues done or blocked — finalize
+            info!("all sub-issues complete, finalizing group");
+            return self
+                .finalize_group(&parent, &group, &worktree_info)
+                .await;
+        };
+
+        info!(sub_id = sub.id, "resuming group with next sub-issue");
+        self.run_single_sub_issue(sub, &parent, &worktree_info)
+            .await?;
+
+        // Check if group is now complete
+        let group_state = self.state_mgr.get_current_group();
+        if let Some(gs) = &group_state
+            && gs.completed_sub_issues.len() == gs.group_sub_issues.len()
+        {
+            return self
+                .finalize_group(&parent, &group, &worktree_info)
+                .await;
+        }
+
+        Ok(IterationOutcome::ProcessedTask)
+    }
+
+    /// Implement a single sub-issue within a group.
+    async fn run_single_sub_issue(
+        &self,
+        sub: &Task,
+        parent: &Task,
+        worktree_info: &WorktreeInfo,
+    ) -> Result<()> {
+        let task_id = format!("gh-{}", sub.id);
+        self.state_mgr.set_current_task(
+            &task_id,
+            "implement",
+            &worktree_info.path.display().to_string(),
+        )?;
+
+        // Mark sub-issue in-progress
+        if !self.config.dry_run {
+            self.source.mark_in_progress(&sub.id)?;
+        }
+
+        self.reporter.implement_started();
+        info!(sub_id = sub.id, "implementing sub-issue");
+
+        let mut vars = self.build_task_vars(sub, worktree_info);
+        vars.insert(
+            "parent_issue_body".to_string(),
+            format!(
+                "### Parent Issue Context\n\n**{}** (#{})\n\n{}",
+                parent.title, parent.id, parent.body
+            ),
+        );
+
+        let impl_prompt = self.prompt_engine.render_phase("implement", &vars)?;
+        self.runner
+            .run(Phase::Implement, &impl_prompt, &worktree_info.path)
+            .await?;
+
+        // Mark sub-issue as done
+        if !self.config.dry_run {
+            self.source.mark_done(&sub.id)?;
+        }
+
+        // Update group state
+        self.state_mgr.mark_sub_issue_complete(&sub.id)?;
+        self.state_mgr.complete_current_task()?;
+
+        info!(sub_id = sub.id, "sub-issue complete");
+        Ok(())
+    }
+
+    /// Finalize a group: push branch, submit PR, mark parent in-review, run review, cleanup.
+    async fn finalize_group(
+        &self,
+        parent: &Task,
+        group: &TaskGroup,
+        worktree_info: &WorktreeInfo,
+    ) -> Result<IterationOutcome> {
+        let parent_number: u64 = parent
+            .id
+            .parse()
+            .map_err(|_| Error::Orchestrator(format!("invalid parent id: {}", parent.id)))?;
+
+        // Push branch
+        if !self.config.dry_run {
+            info!("pushing group branch");
+            self.push_branch(worktree_info)?;
+        }
+
+        // Build PR body: Resolves #parent + all sub-issues
+        let sub_ids = group.all_sub_issue_ids();
+        let mut resolves = vec![format!("Resolves #{}", parent.id)];
+        for sub_id in &sub_ids {
+            resolves.push(format!("Resolves #{sub_id}"));
+        }
+        resolves.push(String::new());
+        resolves.push("Automated implementation by rlph.".to_string());
+        let pr_body = resolves.join("\n");
+
+        // Submit PR
+        let mut vars = self.build_task_vars(parent, worktree_info);
+        vars.insert("parent_issue_body".to_string(), String::new());
+
+        let pr_number = if !self.config.dry_run {
+            info!("submitting group PR");
+            let result = self.submission.submit(
+                &worktree_info.branch,
+                &self.config.base_branch,
+                &parent.title,
+                &pr_body,
+            )?;
+            info!(url = result.url, "group PR created");
+            self.reporter.pr_created(&result.url);
+            vars.insert("pr_url".to_string(), result.url);
+            result.number
+        } else {
+            info!("dry run — skipping group PR submission");
+            None
+        };
+
+        // Mark parent in-review
+        if !self.config.dry_run {
+            self.source.mark_in_review(&parent.id)?;
+        }
+
+        // Run review pipeline once
+        let review_result = self
+            .run_review_pipeline(&vars, worktree_info, pr_number, None, false)
+            .await;
+
+        match review_result {
+            Ok(()) => {
+                // Cleanup
+                self.state_mgr.complete_current_group()?;
+                info!("cleaning up group worktree");
+                if let Err(e) = self.worktree_mgr.remove(&worktree_info.path) {
+                    warn!(error = %e, "failed to clean up group worktree");
+                }
+
+                info!("group complete");
+                self.reporter
+                    .iteration_complete(parent_number, &parent.title);
+                Ok(IterationOutcome::ProcessedTask)
+            }
+            Err(e) => {
+                warn!(error = %e, "group review failed");
                 Err(e)
             }
         }
@@ -1012,6 +1301,7 @@ impl<
         );
         vars.insert("pr_number".to_string(), String::new());
         vars.insert("pr_branch".to_string(), String::new());
+        vars.insert("parent_issue_body".to_string(), String::new());
         vars
     }
 

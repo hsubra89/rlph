@@ -14,7 +14,7 @@ use rlph::orchestrator::{
 };
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult, RunnerKind};
-use rlph::sources::{Task, TaskSource};
+use rlph::sources::{Task, TaskGroup, TaskSource};
 use rlph::state::StateManager;
 use rlph::submission::{SubmissionBackend, SubmitResult};
 use rlph::worktree::WorktreeManager;
@@ -26,6 +26,7 @@ use tokio::sync::watch;
 struct SourceTracker {
     marked_in_progress: Vec<String>,
     marked_in_review: Vec<String>,
+    marked_done: Vec<String>,
 }
 
 #[derive(Default)]
@@ -73,6 +74,15 @@ impl TaskSource for MockSource {
             .lock()
             .unwrap()
             .marked_in_review
+            .push(task_id.to_string());
+        Ok(())
+    }
+
+    fn mark_done(&self, task_id: &str) -> Result<()> {
+        self.tracker
+            .lock()
+            .unwrap()
+            .marked_done
             .push(task_id.to_string());
         Ok(())
     }
@@ -179,6 +189,10 @@ impl TaskSource for SequenceSource {
     }
 
     fn mark_in_review(&self, _task_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn mark_done(&self, _task_id: &str) -> Result<()> {
         Ok(())
     }
 
@@ -2405,5 +2419,566 @@ async fn test_fix_malformed_json_correction_exhausted_retries_round() {
             .iter()
             .any(|e| matches!(e, PipelineEvent::ReviewSummary { .. })),
         "expected review to complete after fix correction exhaustion triggers round retry"
+    );
+}
+
+// --- Group orchestration tests ---
+
+/// Mock source that returns TaskGroups directly.
+struct GroupMockSource {
+    groups: Mutex<Vec<TaskGroup>>,
+    task_details: HashMap<String, Task>,
+    tracker: Arc<Mutex<SourceTracker>>,
+}
+
+impl GroupMockSource {
+    fn new(groups: Vec<TaskGroup>, tracker: Arc<Mutex<SourceTracker>>) -> Self {
+        let mut task_details = HashMap::new();
+        for group in &groups {
+            let parent = group.parent();
+            task_details.insert(parent.id.clone(), parent.clone());
+            if let TaskGroup::Group { sub_issues, .. } = group {
+                for sub in sub_issues {
+                    task_details.insert(sub.id.clone(), sub.clone());
+                }
+            }
+        }
+        Self {
+            groups: Mutex::new(groups),
+            task_details,
+            tracker,
+        }
+    }
+}
+
+impl TaskSource for GroupMockSource {
+    fn fetch_eligible_tasks(&self) -> Result<Vec<Task>> {
+        Ok(self.task_details.values().cloned().collect())
+    }
+
+    fn fetch_eligible_task_groups(&self) -> Result<Vec<TaskGroup>> {
+        let groups = self.groups.lock().unwrap();
+        Ok(groups.clone())
+    }
+
+    fn mark_in_progress(&self, task_id: &str) -> Result<()> {
+        self.tracker
+            .lock()
+            .unwrap()
+            .marked_in_progress
+            .push(task_id.to_string());
+        Ok(())
+    }
+
+    fn mark_in_review(&self, task_id: &str) -> Result<()> {
+        self.tracker
+            .lock()
+            .unwrap()
+            .marked_in_review
+            .push(task_id.to_string());
+        Ok(())
+    }
+
+    fn mark_done(&self, task_id: &str) -> Result<()> {
+        self.tracker
+            .lock()
+            .unwrap()
+            .marked_done
+            .push(task_id.to_string());
+        Ok(())
+    }
+
+    fn get_task_details(&self, task_id: &str) -> Result<Task> {
+        self.task_details
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| Error::TaskSource(format!("task not found: {task_id}")))
+    }
+
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
+        Ok(HashSet::new())
+    }
+}
+
+/// Runner that writes task.toml choosing a specific task and tracks implement calls.
+struct GroupMockRunner {
+    /// Task ID to write in task.toml during choose phase.
+    choose_task_id: String,
+    implement_count: Arc<AtomicUsize>,
+}
+
+impl GroupMockRunner {
+    fn new(choose_task_id: &str) -> Self {
+        Self {
+            choose_task_id: choose_task_id.to_string(),
+            implement_count: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl AgentRunner for GroupMockRunner {
+    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        match phase {
+            Phase::Choose => {
+                let ralph_dir = working_dir.join(".rlph");
+                std::fs::create_dir_all(&ralph_dir)
+                    .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                std::fs::write(
+                    ralph_dir.join("task.toml"),
+                    format!("id = \"{}\"", self.choose_task_id),
+                )
+                .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "Selected group".into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            }
+            Phase::Implement => {
+                self.implement_count.fetch_add(1, Ordering::SeqCst);
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "IMPLEMENTATION_COMPLETE: sub-issue done".into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            }
+            Phase::Review => Ok(RunResult {
+                exit_code: 0,
+                stdout: r#"{"findings":[]}"#.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+            Phase::ReviewAggregate => Ok(RunResult {
+                exit_code: 0,
+                stdout: r#"{"verdict":"approved","comment":"All good.","findings":[],"fix_instructions":null}"#.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+            Phase::ReviewFix => Ok(RunResult {
+                exit_code: 0,
+                stdout: r#"{"status":"fixed","summary":"done","files_changed":[]}"#.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+        }
+    }
+}
+
+fn make_task_with_body(number: u64, title: &str, body: &str) -> Task {
+    Task {
+        id: number.to_string(),
+        title: title.to_string(),
+        body: body.to_string(),
+        labels: vec!["rlph".to_string()],
+        url: format!("https://github.com/test/repo/issues/{number}"),
+        priority: None,
+    }
+}
+
+/// Full group lifecycle: 3 sub-issues across 3 iterations → single PR → review → cleanup.
+#[tokio::test]
+async fn test_group_full_lifecycle() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+
+    let parent = make_task_with_body(10, "Parent feature", "Implement the feature");
+    let sub1 = make_task_with_body(11, "Sub 1", "First sub-issue");
+    let sub2 = make_task_with_body(12, "Sub 2", "Second sub-issue");
+    let sub3 = make_task_with_body(13, "Sub 3", "Third sub-issue");
+
+    let group = TaskGroup::Group {
+        parent: parent.clone(),
+        sub_issues: vec![sub1.clone(), sub2.clone(), sub3.clone()],
+    };
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let source = GroupMockSource::new(vec![group], Arc::clone(&source_tracker));
+    let runner = GroupMockRunner::new("gh-10");
+    let implement_count = Arc::clone(&runner.implement_count);
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_mgr = StateManager::new(&state_dir);
+    let prompt_engine = PromptEngine::new(None);
+
+    let config = make_config(true); // dry_run to avoid git push
+
+    let orchestrator = Orchestrator::new(
+        source,
+        runner,
+        submission,
+        worktree_mgr,
+        state_mgr,
+        prompt_engine,
+        Config {
+            // 3 iterations: sub1, sub2, sub3+finalize
+            max_iterations: Some(3),
+            once: false,
+            ..config
+        },
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_loop(None).await.unwrap();
+
+    // 3 implement calls (one per sub-issue)
+    assert_eq!(
+        implement_count.load(Ordering::SeqCst),
+        3,
+        "should implement exactly 3 sub-issues"
+    );
+
+    // Verify label transitions:
+    let tracker = source_tracker.lock().unwrap();
+    // In dry_run, no mark_in_progress/done/in_review calls happen
+    // So let's just verify the state is clean
+    drop(tracker);
+
+    // Group state should be cleared
+    let state_mgr = StateManager::new(&state_dir);
+    assert!(
+        state_mgr.get_current_group().is_none(),
+        "group state should be cleared after completion"
+    );
+
+    // PR submitted once with correct body
+    let submissions = sub_tracker.lock().unwrap();
+    // dry_run skips submission, so nothing to check there
+    drop(submissions);
+}
+
+/// Group lifecycle with push (non-dry-run): verifies label transitions and PR body.
+#[tokio::test]
+async fn test_group_lifecycle_with_labels_and_pr() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+
+    let parent = make_task_with_body(10, "Parent feature", "Parent body");
+    let sub1 = make_task_with_body(11, "Sub 1", "First");
+    let sub2 = make_task_with_body(12, "Sub 2", "Second");
+
+    let group = TaskGroup::Group {
+        parent: parent.clone(),
+        sub_issues: vec![sub1.clone(), sub2.clone()],
+    };
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let source = GroupMockSource::new(vec![group], Arc::clone(&source_tracker));
+    let runner = GroupMockRunner::new("gh-10");
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_mgr = StateManager::new(&state_dir);
+    let prompt_engine = PromptEngine::new(None);
+
+    let mut config = make_config(false); // NOT dry_run
+    // 2 iterations: sub1, sub2+finalize
+    config.max_iterations = Some(2);
+    config.once = false;
+
+    let orchestrator = Orchestrator::new(
+        source,
+        runner,
+        submission,
+        worktree_mgr,
+        state_mgr,
+        prompt_engine,
+        config,
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_loop(None).await.unwrap();
+
+    // Check label transitions
+    let tracker = source_tracker.lock().unwrap();
+    // Parent marked in-progress
+    assert!(
+        tracker.marked_in_progress.contains(&"10".to_string()),
+        "parent should be marked in-progress"
+    );
+    // Sub-issues marked in-progress and done
+    assert!(
+        tracker.marked_in_progress.contains(&"11".to_string()),
+        "sub1 should be marked in-progress"
+    );
+    assert!(
+        tracker.marked_in_progress.contains(&"12".to_string()),
+        "sub2 should be marked in-progress"
+    );
+    assert!(
+        tracker.marked_done.contains(&"11".to_string()),
+        "sub1 should be marked done"
+    );
+    assert!(
+        tracker.marked_done.contains(&"12".to_string()),
+        "sub2 should be marked done"
+    );
+    // Parent marked in-review after all sub-issues
+    assert!(
+        tracker.marked_in_review.contains(&"10".to_string()),
+        "parent should be marked in-review"
+    );
+    drop(tracker);
+
+    // Check PR submission
+    let submissions = sub_tracker.lock().unwrap();
+    assert_eq!(submissions.submissions.len(), 1, "should submit exactly 1 PR");
+    let (_, _, title, body) = &submissions.submissions[0];
+    assert_eq!(title, "Parent feature", "PR title should be parent issue title");
+    assert!(
+        body.contains("Resolves #10"),
+        "PR body should resolve parent"
+    );
+    assert!(
+        body.contains("Resolves #11"),
+        "PR body should resolve sub1"
+    );
+    assert!(
+        body.contains("Resolves #12"),
+        "PR body should resolve sub2"
+    );
+    assert!(
+        body.contains("Automated implementation by rlph."),
+        "PR body should have attribution"
+    );
+}
+
+/// Standalone issues continue to work unchanged.
+#[tokio::test]
+async fn test_standalone_unchanged_with_group_source() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+
+    let task = make_task(42, "Standalone task");
+    let group = TaskGroup::Standalone(task.clone());
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let source = GroupMockSource::new(vec![group], Arc::clone(&source_tracker));
+    let runner = MockRunner::new("gh-42");
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_mgr = StateManager::new(&state_dir);
+    let prompt_engine = PromptEngine::new(None);
+
+    let orchestrator = Orchestrator::new(
+        source,
+        runner,
+        submission,
+        worktree_mgr,
+        state_mgr,
+        prompt_engine,
+        make_config(true),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    // State should be completed
+    let state_mgr = StateManager::new(&state_dir);
+    let state = state_mgr.load();
+    assert!(state.current_task.is_none());
+    assert_eq!(state.history.len(), 1);
+    assert_eq!(state.history[0].id, "gh-42");
+    // No group state
+    assert!(state.current_group.is_none());
+}
+
+/// In-progress group is resumed across iterations (state persistence).
+#[tokio::test]
+async fn test_group_resume_from_state() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+
+    let parent = make_task_with_body(10, "Parent feature", "Parent body");
+    let sub1 = make_task_with_body(11, "Sub 1", "First");
+    let sub2 = make_task_with_body(12, "Sub 2", "Second");
+
+    let group = TaskGroup::Group {
+        parent: parent.clone(),
+        sub_issues: vec![sub1.clone(), sub2.clone()],
+    };
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    // First: run one iteration to start the group (process sub1)
+    let source = GroupMockSource::new(vec![group.clone()], Arc::clone(&source_tracker));
+    let runner = GroupMockRunner::new("gh-10");
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_mgr = StateManager::new(&state_dir);
+    let prompt_engine = PromptEngine::new(None);
+
+    let orchestrator = Orchestrator::new(
+        source,
+        runner,
+        submission,
+        worktree_mgr,
+        state_mgr,
+        prompt_engine,
+        make_config(true),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    // After first iteration: group state should have sub1 completed, sub2 remaining
+    let state_mgr = StateManager::new(&state_dir);
+    let group_state = state_mgr.get_current_group();
+    assert!(group_state.is_some(), "group state should persist after first iteration");
+    let gs = group_state.unwrap();
+    assert_eq!(gs.completed_sub_issues, vec!["11"]);
+    assert_eq!(gs.group_sub_issues, vec!["11", "12"]);
+
+    // Second: run another iteration — should resume group (process sub2 and finalize)
+    let source2 = GroupMockSource::new(vec![group], Arc::clone(&source_tracker));
+    let runner2 = GroupMockRunner::new("gh-10");
+    let submission2 = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr2 = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let state_mgr2 = StateManager::new(&state_dir);
+    let prompt_engine2 = PromptEngine::new(None);
+
+    let orchestrator2 = Orchestrator::new(
+        source2,
+        runner2,
+        submission2,
+        worktree_mgr2,
+        state_mgr2,
+        prompt_engine2,
+        make_config(true),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator2.run_once().await.unwrap();
+
+    // Group should be fully complete now
+    let state_mgr = StateManager::new(&state_dir);
+    assert!(
+        state_mgr.get_current_group().is_none(),
+        "group state should be cleared after all sub-issues complete"
+    );
+}
+
+/// Implement prompt includes parent issue body for group sub-issues.
+#[tokio::test]
+async fn test_group_implement_includes_parent_body() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+
+    let parent = make_task_with_body(10, "Parent feature", "This is the parent context body");
+    let sub1 = make_task_with_body(11, "Sub 1", "Sub-issue body");
+
+    let group = TaskGroup::Group {
+        parent: parent.clone(),
+        sub_issues: vec![sub1.clone()],
+    };
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let captured_prompts: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let prompts = Arc::clone(&captured_prompts);
+
+    // Use a callback runner to capture the implement prompt
+    let runner = CallbackRunner::new(Arc::new(move |phase: Phase, prompt: String, dir: std::path::PathBuf| {
+        let prompts = Arc::clone(&prompts);
+        Box::pin(async move {
+            match phase {
+                Phase::Choose => {
+                    let ralph_dir = dir.join(".rlph");
+                    std::fs::create_dir_all(&ralph_dir)
+                        .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                    std::fs::write(ralph_dir.join("task.toml"), "id = \"gh-10\"")
+                        .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                    Ok(RunResult {
+                        exit_code: 0,
+                        stdout: "Selected".into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    })
+                }
+                Phase::Implement => {
+                    prompts.lock().unwrap().push(prompt);
+                    Ok(RunResult {
+                        exit_code: 0,
+                        stdout: "IMPLEMENTATION_COMPLETE: done".into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    })
+                }
+                _ => Ok(RunResult {
+                    exit_code: 0,
+                    stdout: r#"{"verdict":"approved","comment":"ok","findings":[],"fix_instructions":null}"#.into(),
+                    stderr: String::new(),
+                    session_id: None,
+                }),
+            }
+        })
+    }));
+
+    let source = GroupMockSource::new(vec![group], Arc::clone(&source_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_mgr = StateManager::new(&state_dir);
+    let prompt_engine = PromptEngine::new(None);
+
+    let orchestrator = Orchestrator::new(
+        source,
+        runner,
+        submission,
+        worktree_mgr,
+        state_mgr,
+        prompt_engine,
+        make_config(true),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    let prompts = captured_prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 1, "should have captured one implement prompt");
+    assert!(
+        prompts[0].contains("This is the parent context body"),
+        "implement prompt should include parent issue body"
+    );
+    assert!(
+        prompts[0].contains("Sub-issue body"),
+        "implement prompt should include sub-issue body"
     );
 }
