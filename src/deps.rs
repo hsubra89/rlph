@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use regex::Regex;
 use tracing::warn;
@@ -35,6 +35,85 @@ pub fn parse_dependencies(body: &str) -> Vec<u64> {
     deps.sort_unstable();
     deps.dedup();
     deps
+}
+
+/// Topologically sort tasks by their intra-group dependencies (Kahn's algorithm).
+/// Dependencies on IDs outside the group are ignored.
+/// Cycles are broken by appending cycle members in numeric order.
+pub fn topological_sort_within_group(tasks: Vec<Task>) -> Vec<Task> {
+    if tasks.len() <= 1 {
+        return tasks;
+    }
+
+    let group_ids: HashSet<u64> = tasks
+        .iter()
+        .filter_map(|t| t.id.parse::<u64>().ok())
+        .collect();
+
+    let mut successors: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut in_degree: HashMap<u64, usize> = HashMap::new();
+
+    for &id in &group_ids {
+        in_degree.insert(id, 0);
+    }
+
+    for task in &tasks {
+        let id: u64 = match task.id.parse() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        let deps = parse_dependencies(&task.body);
+        for dep in deps {
+            if group_ids.contains(&dep) && dep != id {
+                successors.entry(dep).or_default().push(id);
+                *in_degree.entry(id).or_default() += 1;
+            }
+        }
+    }
+
+    // Seed queue with zero-degree nodes in numeric order for determinism
+    let mut roots: Vec<u64> = in_degree
+        .iter()
+        .filter(|&(_, deg)| *deg == 0)
+        .map(|(&id, _)| id)
+        .collect();
+    roots.sort_unstable();
+    let mut queue: VecDeque<u64> = roots.into_iter().collect();
+
+    let mut sorted_ids: Vec<u64> = Vec::with_capacity(group_ids.len());
+    while let Some(id) = queue.pop_front() {
+        sorted_ids.push(id);
+        if let Some(succs) = successors.get(&id) {
+            let mut newly_ready: Vec<u64> = Vec::new();
+            for &succ in succs {
+                let deg = in_degree.get_mut(&succ).unwrap();
+                *deg -= 1;
+                if *deg == 0 {
+                    newly_ready.push(succ);
+                }
+            }
+            newly_ready.sort_unstable();
+            queue.extend(newly_ready);
+        }
+    }
+
+    // Append cycle members in numeric order
+    if sorted_ids.len() < group_ids.len() {
+        let sorted_set: HashSet<u64> = sorted_ids.iter().copied().collect();
+        let mut remaining: Vec<u64> = group_ids.difference(&sorted_set).copied().collect();
+        remaining.sort_unstable();
+        sorted_ids.extend(remaining);
+    }
+
+    let mut task_map: HashMap<u64, Task> = tasks
+        .into_iter()
+        .filter_map(|t| t.id.parse::<u64>().ok().map(|id| (id, t)))
+        .collect();
+
+    sorted_ids
+        .into_iter()
+        .filter_map(|id| task_map.remove(&id))
+        .collect()
 }
 
 /// A dependency graph mapping task IDs to their dependency IDs.
@@ -490,5 +569,90 @@ mod tests {
         assert!(ids.contains(&"1"));
         assert!(ids.contains(&"2"));
         assert!(ids.contains(&"3"));
+    }
+
+    // --- topological_sort_within_group tests ---
+
+    #[test]
+    fn test_topo_sort_no_deps() {
+        let tasks = vec![make_task(3, ""), make_task(1, ""), make_task(2, "")];
+        let sorted = topological_sort_within_group(tasks);
+        let ids: Vec<&str> = sorted.iter().map(|t| t.id.as_str()).collect();
+        // No deps → numeric order
+        assert_eq!(ids, vec!["1", "2", "3"]);
+    }
+
+    #[test]
+    fn test_topo_sort_linear_chain() {
+        // 1 → 2 → 3
+        let tasks = vec![
+            make_task(3, "Blocked by #2"),
+            make_task(1, ""),
+            make_task(2, "Blocked by #1"),
+        ];
+        let sorted = topological_sort_within_group(tasks);
+        let ids: Vec<&str> = sorted.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["1", "2", "3"]);
+    }
+
+    #[test]
+    fn test_topo_sort_diamond() {
+        // 1 → {2, 3} → 4
+        let tasks = vec![
+            make_task(4, "blockedBy: [2, 3]"),
+            make_task(2, "Blocked by #1"),
+            make_task(3, "Blocked by #1"),
+            make_task(1, ""),
+        ];
+        let sorted = topological_sort_within_group(tasks);
+        let ids: Vec<&str> = sorted.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids[0], "1");
+        // 2 and 3 can be in either order, but both before 4
+        assert!(ids.contains(&"2"));
+        assert!(ids.contains(&"3"));
+        assert_eq!(ids[3], "4");
+    }
+
+    #[test]
+    fn test_topo_sort_ignores_external_deps() {
+        // Task 2 depends on #99 (not in group) — should be ignored
+        let tasks = vec![
+            make_task(1, ""),
+            make_task(2, "Blocked by #99"),
+        ];
+        let sorted = topological_sort_within_group(tasks);
+        let ids: Vec<&str> = sorted.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["1", "2"]);
+    }
+
+    #[test]
+    fn test_topo_sort_cycle() {
+        // 1 ↔ 2 (cycle), plus 3 with no deps
+        let tasks = vec![
+            make_task(1, "Blocked by #2"),
+            make_task(2, "Blocked by #1"),
+            make_task(3, ""),
+        ];
+        let sorted = topological_sort_within_group(tasks);
+        let ids: Vec<&str> = sorted.iter().map(|t| t.id.as_str()).collect();
+        // 3 has no deps so comes first; 1 and 2 are in cycle, appended in numeric order
+        assert_eq!(ids[0], "3");
+        assert!(ids.contains(&"1"));
+        assert!(ids.contains(&"2"));
+        assert_eq!(sorted.len(), 3);
+    }
+
+    #[test]
+    fn test_topo_sort_single_task() {
+        let tasks = vec![make_task(5, "Blocked by #99")];
+        let sorted = topological_sort_within_group(tasks);
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].id, "5");
+    }
+
+    #[test]
+    fn test_topo_sort_empty() {
+        let sorted = topological_sort_within_group(vec![]);
+        assert!(sorted.is_empty());
     }
 }

@@ -21,9 +21,20 @@ pub struct CompletedTask {
     pub completed_at: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CurrentGroupState {
+    pub group_id: String,
+    pub group_sub_issues: Vec<String>,
+    pub completed_sub_issues: Vec<String>,
+    pub group_worktree_path: String,
+    pub group_branch: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct StateData {
     pub current_task: Option<CurrentTask>,
+    #[serde(default)]
+    pub current_group: Option<CurrentGroupState>,
     #[serde(default)]
     pub history: Vec<CompletedTask>,
     #[serde(default)]
@@ -194,6 +205,53 @@ impl StateManager {
         let state = self.load();
         state.worktree_mappings.get(task_id).cloned()
     }
+
+    /// Set the current group being worked on.
+    pub fn set_current_group(
+        &self,
+        group_id: &str,
+        sub_issues: &[String],
+        worktree_path: &str,
+        branch: &str,
+    ) -> Result<()> {
+        let group_id = group_id.to_string();
+        let sub_issues = sub_issues.to_vec();
+        let worktree_path = worktree_path.to_string();
+        let branch = branch.to_string();
+        self.modify(|state| {
+            state.current_group = Some(CurrentGroupState {
+                group_id,
+                group_sub_issues: sub_issues,
+                completed_sub_issues: Vec::new(),
+                group_worktree_path: worktree_path,
+                group_branch: branch,
+            });
+        })
+    }
+
+    /// Mark a sub-issue as complete within the current group.
+    pub fn mark_sub_issue_complete(&self, sub_id: &str) -> Result<()> {
+        let sub_id = sub_id.to_string();
+        self.modify(|state| {
+            if let Some(ref mut group) = state.current_group
+                && !group.completed_sub_issues.contains(&sub_id)
+            {
+                group.completed_sub_issues.push(sub_id);
+            }
+        })
+    }
+
+    /// Clear the current group (group is done or abandoned).
+    pub fn complete_current_group(&self) -> Result<()> {
+        self.modify(|state| {
+            state.current_group = None;
+        })
+    }
+
+    /// Get the current group state, if any.
+    pub fn get_current_group(&self) -> Option<CurrentGroupState> {
+        self.load().current_group
+    }
 }
 
 #[cfg(test)]
@@ -223,6 +281,7 @@ mod tests {
                 phase: "implement".to_string(),
                 worktree_path: "/tmp/wt".to_string(),
             }),
+            current_group: None,
             history: vec![CompletedTask {
                 id: "gh-3".to_string(),
                 completed_at: 1700000000,
@@ -374,6 +433,90 @@ mod tests {
         let content = std::fs::read_to_string(mgr.state_file()).unwrap();
         // Should be parseable TOML
         let _: toml::Value = toml::from_str(&content).unwrap();
+    }
+
+    // --- Group state tests ---
+
+    #[test]
+    fn test_group_state_roundtrip() {
+        let (_dir, mgr) = test_manager();
+        mgr.set_current_group(
+            "10",
+            &["11".into(), "12".into(), "13".into()],
+            "/tmp/wt-group",
+            "group-branch",
+        )
+        .unwrap();
+
+        let group = mgr.get_current_group().unwrap();
+        assert_eq!(group.group_id, "10");
+        assert_eq!(group.group_sub_issues, vec!["11", "12", "13"]);
+        assert!(group.completed_sub_issues.is_empty());
+        assert_eq!(group.group_worktree_path, "/tmp/wt-group");
+        assert_eq!(group.group_branch, "group-branch");
+    }
+
+    #[test]
+    fn test_group_mark_sub_issue_complete() {
+        let (_dir, mgr) = test_manager();
+        mgr.set_current_group("10", &["11".into(), "12".into()], "/tmp/wt", "branch")
+            .unwrap();
+
+        mgr.mark_sub_issue_complete("11").unwrap();
+        let group = mgr.get_current_group().unwrap();
+        assert_eq!(group.completed_sub_issues, vec!["11"]);
+
+        // Duplicate marking is idempotent
+        mgr.mark_sub_issue_complete("11").unwrap();
+        let group = mgr.get_current_group().unwrap();
+        assert_eq!(group.completed_sub_issues, vec!["11"]);
+
+        mgr.mark_sub_issue_complete("12").unwrap();
+        let group = mgr.get_current_group().unwrap();
+        assert_eq!(group.completed_sub_issues, vec!["11", "12"]);
+    }
+
+    #[test]
+    fn test_group_complete_clears_group() {
+        let (_dir, mgr) = test_manager();
+        mgr.set_current_group("10", &["11".into()], "/tmp/wt", "branch")
+            .unwrap();
+        mgr.complete_current_group().unwrap();
+        assert!(mgr.get_current_group().is_none());
+    }
+
+    #[test]
+    fn test_group_state_survives_reload() {
+        let dir = TempDir::new().unwrap();
+        let state_path = dir.path().join("state");
+
+        {
+            let mgr = StateManager::new(&state_path);
+            mgr.set_current_group("10", &["11".into(), "12".into()], "/tmp/wt", "branch")
+                .unwrap();
+            mgr.mark_sub_issue_complete("11").unwrap();
+        }
+
+        {
+            let mgr = StateManager::new(&state_path);
+            let group = mgr.get_current_group().unwrap();
+            assert_eq!(group.group_id, "10");
+            assert_eq!(group.completed_sub_issues, vec!["11"]);
+        }
+    }
+
+    #[test]
+    fn test_group_state_save_load_with_task() {
+        let (_dir, mgr) = test_manager();
+        mgr.set_current_task("42", "implement", "/tmp/wt42")
+            .unwrap();
+        mgr.set_current_group("10", &["11".into()], "/tmp/wt-grp", "grp-branch")
+            .unwrap();
+
+        let state = mgr.load();
+        assert!(state.current_task.is_some());
+        assert!(state.current_group.is_some());
+        assert_eq!(state.current_group.unwrap().group_id, "10");
     }
 
     #[test]
