@@ -204,9 +204,10 @@ mod tests {
 
     fn test_config(binary: &str, source: &str, model: Option<&str>) -> Config {
         use crate::config::{default_review_phases, default_review_step};
+        use crate::runner::RunnerKind;
         Config {
             source: source.to_string(),
-            runner: "claude".to_string(),
+            runner: RunnerKind::Claude,
             submission: "github".to_string(),
             label: "rlph".to_string(),
             poll_seconds: 30,
@@ -237,8 +238,9 @@ mod tests {
     }
 
     fn test_config_codex(binary: &str, source: &str, model: Option<&str>) -> Config {
+        use crate::runner::RunnerKind;
         Config {
-            runner: "codex".to_string(),
+            runner: RunnerKind::Codex,
             agent_binary: binary.to_string(),
             agent_model: model.map(str::to_string),
             ..test_config("codex", source, model)

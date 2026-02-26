@@ -28,6 +28,7 @@ fn mock_codex_runner_with_timeout_and_retries(
     let runner = CodexRunner::new(
         script_path.to_string_lossy().to_string(),
         None,
+        None,
         Some(timeout),
         retries,
     );
@@ -39,24 +40,30 @@ fn mock_codex_runner_with_timeout_and_retries(
 
 #[tokio::test]
 async fn test_codex_command_construction() {
-    let runner = CodexRunner::new("codex".to_string(), Some("o3".to_string()), None, 0);
+    let runner = CodexRunner::new("codex".to_string(), Some("o3".to_string()), None, None, 0);
     let (cmd, args) = runner.build_command();
     assert_eq!(cmd, "codex");
     assert_eq!(args[0], "exec");
     assert_eq!(args[1], "--dangerously-bypass-approvals-and-sandbox");
-    assert_eq!(args[2], "--model");
-    assert_eq!(args[3], "o3");
-    assert_eq!(args[4], "-");
+    assert_eq!(args[2], "--json");
+    assert_eq!(args[3], "--model");
+    assert_eq!(args[4], "o3");
+    assert_eq!(args[5], "-");
 }
 
 #[tokio::test]
 async fn test_codex_command_no_model() {
-    let runner = CodexRunner::new("codex".to_string(), None, None, 0);
+    let runner = CodexRunner::new("codex".to_string(), None, None, None, 0);
     let (cmd, args) = runner.build_command();
     assert_eq!(cmd, "codex");
     assert_eq!(
         args,
-        vec!["exec", "--dangerously-bypass-approvals-and-sandbox", "-"]
+        vec![
+            "exec",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--json",
+            "-"
+        ]
     );
 }
 
@@ -103,6 +110,7 @@ async fn test_codex_model_flag_passed() {
     let runner = CodexRunner::new(
         script_path.to_string_lossy().to_string(),
         Some("gpt-4o".to_string()),
+        None,
         Some(Duration::from_secs(10)),
         0,
     );
@@ -132,6 +140,7 @@ async fn test_codex_nonzero_exit_detected() {
 async fn test_codex_binary_not_found() {
     let runner = CodexRunner::new(
         "/nonexistent/codex_xyz".to_string(),
+        None,
         None,
         Some(Duration::from_secs(5)),
         0,
@@ -177,6 +186,7 @@ sleep 60
     }
     let runner = CodexRunner::new(
         script_path.to_string_lossy().to_string(),
+        None,
         None,
         Some(Duration::from_secs(2)),
         2,

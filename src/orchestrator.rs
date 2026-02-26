@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -12,10 +12,12 @@ use crate::deps::DependencyGraph;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
-    Verdict, parse_aggregator_output, parse_fix_output, parse_phase_output,
-    render_findings_for_prompt,
+    SchemaName, Verdict, correction_prompt, parse_aggregator_output, parse_fix_output,
+    parse_phase_output, render_findings_for_prompt,
 };
-use crate::runner::{AgentRunner, AnyRunner, Phase, build_runner};
+use crate::runner::{
+    AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, resume_with_correction,
+};
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
 use crate::submission::{REVIEW_MARKER, SubmissionBackend, format_pr_comments_for_prompt};
@@ -25,6 +27,7 @@ use crate::worktree::{WorktreeInfo, WorktreeManager, validate_branch_name};
 struct ReviewPhaseOutput {
     name: String,
     stdout: String,
+    session_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -60,7 +63,7 @@ pub struct DefaultReviewRunnerFactory;
 impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
     fn create_phase_runner(&self, phase: &ReviewPhaseConfig, timeout_retries: u32) -> AnyRunner {
         build_runner(
-            &phase.runner,
+            phase.runner,
             &phase.agent_binary,
             phase.agent_model.as_deref(),
             phase.agent_effort.as_deref(),
@@ -71,13 +74,59 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
 
     fn create_step_runner(&self, step: &ReviewStepConfig, timeout_retries: u32) -> AnyRunner {
         build_runner(
-            &step.runner,
+            step.runner,
             &step.agent_binary,
             step.agent_model.as_deref(),
             step.agent_effort.as_deref(),
             step.agent_timeout.map(Duration::from_secs),
             timeout_retries,
         )
+    }
+}
+
+/// Abstraction over session-resume correction calls.
+/// Override in tests to avoid spawning real agent processes.
+pub trait CorrectionRunner: Send + Sync {
+    #[allow(clippy::too_many_arguments)]
+    fn resume(
+        &self,
+        runner_type: RunnerKind,
+        agent_binary: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        session_id: &str,
+        correction_prompt: &str,
+        working_dir: &Path,
+        timeout: Option<Duration>,
+    ) -> impl std::future::Future<Output = Result<RunResult>> + Send;
+}
+
+/// Default implementation that calls the real `resume_with_correction`.
+pub struct DefaultCorrectionRunner;
+
+impl CorrectionRunner for DefaultCorrectionRunner {
+    async fn resume(
+        &self,
+        runner_type: RunnerKind,
+        agent_binary: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        session_id: &str,
+        correction_prompt: &str,
+        working_dir: &Path,
+        timeout: Option<Duration>,
+    ) -> Result<RunResult> {
+        resume_with_correction(
+            runner_type,
+            agent_binary,
+            model,
+            effort,
+            session_id,
+            correction_prompt,
+            working_dir,
+            timeout,
+        )
+        .await
     }
 }
 
@@ -151,7 +200,14 @@ impl ProgressReporter for StderrReporter {
     }
 }
 
-pub struct Orchestrator<S, R, B, F = DefaultReviewRunnerFactory, P = StderrReporter> {
+pub struct Orchestrator<
+    S,
+    R,
+    B,
+    F = DefaultReviewRunnerFactory,
+    P = StderrReporter,
+    C = DefaultCorrectionRunner,
+> {
     source: S,
     runner: R,
     submission: B,
@@ -162,6 +218,7 @@ pub struct Orchestrator<S, R, B, F = DefaultReviewRunnerFactory, P = StderrRepor
     repo_root: PathBuf,
     review_factory: F,
     reporter: P,
+    correction_runner: C,
 }
 
 impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> {
@@ -187,12 +244,13 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             repo_root,
             review_factory: DefaultReviewRunnerFactory,
             reporter: StderrReporter,
+            correction_runner: DefaultCorrectionRunner,
         }
     }
 }
 
-impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P> Orchestrator<S, R, B, F, P> {
-    pub fn with_review_factory<F2>(self, review_factory: F2) -> Orchestrator<S, R, B, F2, P> {
+impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P, C> Orchestrator<S, R, B, F, P, C> {
+    pub fn with_review_factory<F2>(self, review_factory: F2) -> Orchestrator<S, R, B, F2, P, C> {
         Orchestrator {
             source: self.source,
             runner: self.runner,
@@ -204,10 +262,11 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P> Orchestrator<S, 
             repo_root: self.repo_root,
             review_factory,
             reporter: self.reporter,
+            correction_runner: self.correction_runner,
         }
     }
 
-    pub fn with_reporter<P2>(self, reporter: P2) -> Orchestrator<S, R, B, F, P2> {
+    pub fn with_reporter<P2>(self, reporter: P2) -> Orchestrator<S, R, B, F, P2, C> {
         Orchestrator {
             source: self.source,
             runner: self.runner,
@@ -219,6 +278,26 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P> Orchestrator<S, 
             repo_root: self.repo_root,
             review_factory: self.review_factory,
             reporter,
+            correction_runner: self.correction_runner,
+        }
+    }
+
+    pub fn with_correction_runner<C2>(
+        self,
+        correction_runner: C2,
+    ) -> Orchestrator<S, R, B, F, P, C2> {
+        Orchestrator {
+            source: self.source,
+            runner: self.runner,
+            submission: self.submission,
+            worktree_mgr: self.worktree_mgr,
+            state_mgr: self.state_mgr,
+            prompt_engine: self.prompt_engine,
+            config: self.config,
+            repo_root: self.repo_root,
+            review_factory: self.review_factory,
+            reporter: self.reporter,
+            correction_runner,
         }
     }
 }
@@ -229,7 +308,8 @@ impl<
     B: SubmissionBackend,
     F: ReviewRunnerFactory,
     P: ProgressReporter,
-> Orchestrator<S, R, B, F, P>
+    C: CorrectionRunner,
+> Orchestrator<S, R, B, F, P, C>
 {
     /// Run according to configured loop mode.
     ///
@@ -544,6 +624,7 @@ impl<
             self.config.max_review_rounds
         };
         let mut review_passed = false;
+        let mut last_json_failure: Option<String> = None;
 
         // Report phase names once before the loop (they don't change between rounds).
         let phase_names: Vec<String> = self
@@ -596,6 +677,7 @@ impl<
                     Ok::<ReviewPhaseOutput, Error>(ReviewPhaseOutput {
                         name: phase_name,
                         stdout: result.stdout,
+                        session_id: result.session_id,
                     })
                 });
             }
@@ -607,20 +689,51 @@ impl<
                 review_outputs.push(output);
             }
 
-            let review_outputs_text = review_outputs
-                .iter()
-                .map(|o| {
-                    let rendered = match parse_phase_output(&o.stdout) {
-                        Ok(phase) => render_findings_for_prompt(&phase.findings),
-                        Err(e) => {
-                            warn!(phase = %o.name, error = %e, "failed to parse phase JSON, using raw stdout");
-                            o.stdout.clone()
+            let mut review_texts = Vec::new();
+            let mut phase_parse_failed = false;
+            for o in &review_outputs {
+                let rendered = match parse_phase_output(&o.stdout) {
+                    Ok(phase) => render_findings_for_prompt(&phase.findings),
+                    Err(e) => {
+                        // Try correction via session resume
+                        let phase_config =
+                            self.config.review_phases.iter().find(|p| p.name == o.name);
+                        let recovered = if let Some(pc) = phase_config {
+                            self.retry_with_correction(
+                                o.session_id.as_deref(),
+                                pc.runner,
+                                &pc.agent_binary,
+                                pc.agent_model.as_deref(),
+                                pc.agent_effort.as_deref(),
+                                pc.agent_timeout,
+                                SchemaName::Phase,
+                                &e.to_string(),
+                                &worktree_info.path,
+                                parse_phase_output,
+                            )
+                            .await
+                        } else {
+                            None
+                        };
+                        match recovered {
+                            Some(phase) => render_findings_for_prompt(&phase.findings),
+                            None => {
+                                warn!(phase = %o.name, error = %e, "phase JSON correction exhausted — retrying round");
+                                last_json_failure = Some(format!(
+                                    "review phase '{}' malformed JSON: {e}", o.name
+                                ));
+                                phase_parse_failed = true;
+                                break;
+                            }
                         }
-                    };
-                    format!("## Review Phase: {}\n\n{}", o.name, rendered)
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n---\n\n");
+                    }
+                };
+                review_texts.push(format!("## Review Phase: {}\n\n{}", o.name, rendered));
+            }
+            if phase_parse_failed {
+                continue;
+            }
+            let review_outputs_text = review_texts.join("\n\n---\n\n");
 
             let agg_config = &self.config.review_aggregate;
             let agg_runner = self
@@ -642,8 +755,31 @@ impl<
             let agg_output = match parse_aggregator_output(&agg_result.stdout) {
                 Ok(output) => output,
                 Err(e) => {
-                    warn!(error = %e, "failed to parse aggregator JSON — retrying");
-                    continue;
+                    // Attempt session resume with correction prompt
+                    let recovered = self
+                        .retry_with_correction(
+                            agg_result.session_id.as_deref(),
+                            agg_config.runner,
+                            &agg_config.agent_binary,
+                            agg_config.agent_model.as_deref(),
+                            agg_config.agent_effort.as_deref(),
+                            agg_config.agent_timeout,
+                            SchemaName::Aggregator,
+                            &e.to_string(),
+                            &worktree_info.path,
+                            parse_aggregator_output,
+                        )
+                        .await;
+                    match recovered {
+                        Some(output) => output,
+                        None => {
+                            warn!(error = %e, "aggregator JSON correction failed — retrying round");
+                            last_json_failure = Some(format!(
+                                "aggregator malformed JSON: {e}"
+                            ));
+                            continue;
+                        }
+                    }
                 }
             };
 
@@ -708,7 +844,38 @@ impl<
                     );
                 }
                 Err(e) => {
-                    warn!(error = %e, "failed to parse fix agent JSON — continuing anyway");
+                    // Attempt session resume with correction prompt for fix output
+                    let recovered = self
+                        .retry_with_correction(
+                            fix_result.session_id.as_deref(),
+                            fix_config.runner,
+                            &fix_config.agent_binary,
+                            fix_config.agent_model.as_deref(),
+                            fix_config.agent_effort.as_deref(),
+                            fix_config.agent_timeout,
+                            SchemaName::Fix,
+                            &e.to_string(),
+                            &worktree_info.path,
+                            parse_fix_output,
+                        )
+                        .await;
+                    match recovered {
+                        Some(fix_output) => {
+                            info!(
+                                status = ?fix_output.status,
+                                summary = fix_output.summary,
+                                files_changed = ?fix_output.files_changed,
+                                "fix agent complete (after correction)"
+                            );
+                        }
+                        None => {
+                            warn!(error = %e, "fix agent JSON correction failed — retrying round");
+                            last_json_failure = Some(format!(
+                                "fix agent malformed JSON: {e}"
+                            ));
+                            continue;
+                        }
+                    }
                 }
             }
 
@@ -732,12 +899,77 @@ impl<
         }
 
         if !review_passed {
+            let reason = last_json_failure
+                .map(|f| format!(" (last failure: {f})"))
+                .unwrap_or_default();
             return Err(Error::Orchestrator(format!(
-                "review did not complete after {max_reviews} round(s)"
+                "review did not complete after {max_reviews} round(s){reason}"
             )));
         }
 
         Ok(())
+    }
+
+    /// Attempt to resume a session with a correction prompt when JSON parsing fails.
+    ///
+    /// Re-parses the output inside the retry loop so that each subsequent attempt
+    /// uses the *actual* parse error from the previous correction (not the original).
+    /// Returns `Some(T)` on success, or `None` if no session_id is available or
+    /// all retry attempts fail.
+    #[allow(clippy::too_many_arguments)]
+    async fn retry_with_correction<T>(
+        &self,
+        session_id: Option<&str>,
+        runner_type: RunnerKind,
+        agent_binary: &str,
+        agent_model: Option<&str>,
+        agent_effort: Option<&str>,
+        agent_timeout: Option<u64>,
+        schema: SchemaName,
+        initial_error: &str,
+        working_dir: &Path,
+        parser: impl Fn(&str) -> Result<T>,
+    ) -> Option<T> {
+        const MAX_RETRIES: u32 = 2;
+        let session_id = session_id?;
+        let mut last_error = initial_error.to_string();
+
+        for attempt in 1..=MAX_RETRIES {
+            let prompt = correction_prompt(schema, &last_error);
+            info!(
+                session_id,
+                attempt, MAX_RETRIES, "resuming session with correction prompt"
+            );
+
+            match self
+                .correction_runner
+                .resume(
+                    runner_type,
+                    agent_binary,
+                    agent_model,
+                    agent_effort,
+                    session_id,
+                    &prompt,
+                    working_dir,
+                    agent_timeout.map(Duration::from_secs),
+                )
+                .await
+            {
+                Ok(corrected) => match parser(&corrected.stdout) {
+                    Ok(parsed) => return Some(parsed),
+                    Err(e) => {
+                        last_error = e.to_string();
+                        warn!(attempt, error = %last_error, "correction output still invalid");
+                    }
+                },
+                Err(e) => {
+                    warn!(attempt, error = %e, "correction resume failed");
+                    return None;
+                }
+            }
+        }
+
+        None
     }
 
     /// Parse the task selection from `.ralph/task.toml` written by the choose agent.

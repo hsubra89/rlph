@@ -101,6 +101,44 @@ pub fn parse_fix_output(raw: &str) -> Result<FixOutput> {
         .map_err(|e| Error::Orchestrator(format!("failed to parse fix JSON: {e}")))
 }
 
+/// Schema names for the correction prompt generator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaName {
+    Phase,
+    Aggregator,
+    Fix,
+}
+
+impl SchemaName {
+    /// Return a JSON example illustrating the expected schema.
+    pub fn example_json(&self) -> &'static str {
+        match self {
+            SchemaName::Phase => {
+                r#"{"findings": [{"file": "src/main.rs", "line": 42, "severity": "critical", "description": "issue description"}]}"#
+            }
+            SchemaName::Aggregator => {
+                r#"{"verdict": "approved", "comment": "summary", "findings": [{"file": "src/main.rs", "line": 1, "severity": "warning", "description": "issue"}], "fix_instructions": null}"#
+            }
+            SchemaName::Fix => {
+                r#"{"status": "fixed", "summary": "what was done", "files_changed": ["src/main.rs"]}"#
+            }
+        }
+    }
+}
+
+/// Generate a correction prompt for an agent that returned malformed JSON.
+///
+/// The prompt tells the agent what went wrong and shows the expected schema.
+pub fn correction_prompt(schema: SchemaName, parse_error: &str) -> String {
+    format!(
+        "Your previous output could not be parsed as valid JSON.\n\
+         Error: {parse_error}\n\n\
+         Return ONLY a JSON object matching this schema (no markdown fences, no extra text):\n\
+         {example}",
+        example = schema.example_json(),
+    )
+}
+
 /// Remove markdown code fences from a string, returning the inner content.
 /// Handles ` ```json `, ` ``` `, and bare JSON.
 fn strip_markdown_fences(input: &str) -> String {
@@ -456,5 +494,41 @@ mod tests {
     #[test]
     fn test_parse_fix_output_invalid_json_errors() {
         assert!(parse_fix_output("not json").is_err());
+    }
+
+    // ---- correction_prompt tests ----
+
+    #[test]
+    fn test_correction_prompt_contains_schema_example_phase() {
+        let prompt = correction_prompt(SchemaName::Phase, "expected value at line 1");
+        assert!(prompt.contains("could not be parsed"));
+        assert!(prompt.contains("expected value at line 1"));
+        assert!(prompt.contains("findings"));
+        assert!(prompt.contains("severity"));
+        // Verify the example is valid JSON
+        let example = SchemaName::Phase.example_json();
+        assert!(serde_json::from_str::<PhaseOutput>(example).is_ok());
+    }
+
+    #[test]
+    fn test_correction_prompt_contains_schema_example_aggregator() {
+        let prompt = correction_prompt(SchemaName::Aggregator, "EOF while parsing");
+        assert!(prompt.contains("could not be parsed"));
+        assert!(prompt.contains("EOF while parsing"));
+        assert!(prompt.contains("verdict"));
+        assert!(prompt.contains("fix_instructions"));
+        let example = SchemaName::Aggregator.example_json();
+        assert!(serde_json::from_str::<AggregatorOutput>(example).is_ok());
+    }
+
+    #[test]
+    fn test_correction_prompt_contains_schema_example_fix() {
+        let prompt = correction_prompt(SchemaName::Fix, "trailing comma");
+        assert!(prompt.contains("could not be parsed"));
+        assert!(prompt.contains("trailing comma"));
+        assert!(prompt.contains("status"));
+        assert!(prompt.contains("files_changed"));
+        let example = SchemaName::Fix.example_json();
+        assert!(serde_json::from_str::<FixOutput>(example).is_ok());
     }
 }
