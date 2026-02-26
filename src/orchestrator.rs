@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -12,10 +12,10 @@ use crate::deps::DependencyGraph;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
-    Verdict, parse_aggregator_output, parse_fix_output, parse_phase_output,
-    render_findings_for_prompt,
+    SchemaName, Verdict, correction_prompt, parse_aggregator_output, parse_fix_output,
+    parse_phase_output, render_findings_for_prompt,
 };
-use crate::runner::{AgentRunner, AnyRunner, Phase, build_runner};
+use crate::runner::{AgentRunner, AnyRunner, Phase, build_runner, resume_with_correction};
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
 use crate::submission::{REVIEW_MARKER, SubmissionBackend, format_pr_comments_for_prompt};
@@ -642,8 +642,29 @@ impl<
             let agg_output = match parse_aggregator_output(&agg_result.stdout) {
                 Ok(output) => output,
                 Err(e) => {
-                    warn!(error = %e, "failed to parse aggregator JSON — retrying");
-                    continue;
+                    // Attempt session resume with correction prompt
+                    let recovered = self
+                        .retry_with_correction(
+                            &agg_result,
+                            agg_config,
+                            SchemaName::Aggregator,
+                            &e.to_string(),
+                            &worktree_info.path,
+                        )
+                        .await;
+                    match recovered {
+                        Some(stdout) => match parse_aggregator_output(&stdout) {
+                            Ok(output) => output,
+                            Err(e2) => {
+                                warn!(error = %e2, "aggregator JSON still invalid after correction — retrying round");
+                                continue;
+                            }
+                        },
+                        None => {
+                            warn!(error = %e, "failed to parse aggregator JSON, no session to resume — retrying round");
+                            continue;
+                        }
+                    }
                 }
             };
 
@@ -708,7 +729,34 @@ impl<
                     );
                 }
                 Err(e) => {
-                    warn!(error = %e, "failed to parse fix agent JSON — continuing anyway");
+                    // Attempt session resume with correction prompt for fix output
+                    let recovered = self
+                        .retry_with_correction(
+                            &fix_result,
+                            fix_config,
+                            SchemaName::Fix,
+                            &e.to_string(),
+                            &worktree_info.path,
+                        )
+                        .await;
+                    match recovered {
+                        Some(stdout) => match parse_fix_output(&stdout) {
+                            Ok(fix_output) => {
+                                info!(
+                                    status = ?fix_output.status,
+                                    summary = fix_output.summary,
+                                    files_changed = ?fix_output.files_changed,
+                                    "fix agent complete (after correction)"
+                                );
+                            }
+                            Err(e2) => {
+                                warn!(error = %e2, "fix agent JSON still invalid after correction — continuing anyway");
+                            }
+                        },
+                        None => {
+                            warn!(error = %e, "failed to parse fix agent JSON, no session to resume — continuing anyway");
+                        }
+                    }
                 }
             }
 
@@ -738,6 +786,49 @@ impl<
         }
 
         Ok(())
+    }
+
+    /// Attempt to resume a session with a correction prompt when JSON parsing fails.
+    ///
+    /// Returns `Some(stdout)` with the corrected output on success, or `None` if no
+    /// session_id is available or all retry attempts fail.
+    async fn retry_with_correction(
+        &self,
+        result: &crate::runner::RunResult,
+        step_config: &ReviewStepConfig,
+        schema: SchemaName,
+        parse_error: &str,
+        working_dir: &Path,
+    ) -> Option<String> {
+        let session_id = result.session_id.as_deref()?;
+        let max_retries = 2u32;
+
+        for attempt in 1..=max_retries {
+            let prompt = correction_prompt(schema, parse_error);
+            eprintln!(
+                "[rlph] resuming session {session_id} with correction prompt (attempt {attempt}/{max_retries})"
+            );
+
+            match resume_with_correction(
+                &step_config.agent_binary,
+                step_config.agent_model.as_deref(),
+                step_config.agent_effort.as_deref(),
+                session_id,
+                &prompt,
+                working_dir,
+            )
+            .await
+            {
+                Ok(corrected) => {
+                    return Some(corrected.stdout);
+                }
+                Err(e) => {
+                    warn!(attempt, error = %e, "correction resume failed");
+                }
+            }
+        }
+
+        None
     }
 
     /// Parse the task selection from `.ralph/task.toml` written by the choose agent.

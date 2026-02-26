@@ -114,27 +114,32 @@ impl AgentRunner for MockRunner {
                     exit_code: 0,
                     stdout: "Selected task".into(),
                     stderr: String::new(),
+                    session_id: None,
                 })
             }
             Phase::Implement => Ok(RunResult {
                 exit_code: 0,
                 stdout: "IMPLEMENTATION_COMPLETE: done".into(),
                 stderr: String::new(),
+                session_id: None,
             }),
             Phase::Review => Ok(RunResult {
                 exit_code: 0,
                 stdout: "NO_ISSUES_FOUND".into(),
                 stderr: String::new(),
+                session_id: None,
             }),
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
                 stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
                 stderr: String::new(),
+                session_id: None,
             }),
             Phase::ReviewFix => Ok(RunResult {
                 exit_code: 0,
                 stdout: r#"{"status":"fixed","summary":"applied fixes","files_changed":["src/main.rs"]}"#.into(),
                 stderr: String::new(),
+                session_id: None,
             }),
         }
     }
@@ -238,6 +243,7 @@ impl AgentRunner for CountingRunner {
                     exit_code: 0,
                     stdout: "Selected task".into(),
                     stderr: String::new(),
+                    session_id: None,
                 })
             }
             Phase::Implement => {
@@ -249,6 +255,7 @@ impl AgentRunner for CountingRunner {
                     exit_code: 0,
                     stdout: "IMPLEMENTATION_COMPLETE: done".into(),
                     stderr: String::new(),
+                    session_id: None,
                 })
             }
             Phase::Review => {
@@ -257,17 +264,20 @@ impl AgentRunner for CountingRunner {
                     exit_code: 0,
                     stdout: "NO_ISSUES_FOUND".into(),
                     stderr: String::new(),
+                    session_id: None,
                 })
             }
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
                 stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
                 stderr: String::new(),
+                session_id: None,
             }),
             Phase::ReviewFix => Ok(RunResult {
                 exit_code: 0,
                 stdout: r#"{"status":"fixed","summary":"done","files_changed":[]}"#.into(),
                 stderr: String::new(),
+                session_id: None,
             }),
         }
     }
@@ -298,27 +308,32 @@ impl AgentRunner for FailAtPhaseRunner {
                     exit_code: 0,
                     stdout: "Selected".into(),
                     stderr: String::new(),
+                    session_id: None,
                 })
             }
             Phase::Implement => Ok(RunResult {
                 exit_code: 0,
                 stdout: "IMPLEMENTATION_COMPLETE: done".into(),
                 stderr: String::new(),
+                session_id: None,
             }),
             Phase::Review => Ok(RunResult {
                 exit_code: 0,
                 stdout: "NO_ISSUES_FOUND".into(),
                 stderr: String::new(),
+                session_id: None,
             }),
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
                 stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
                 stderr: String::new(),
+                session_id: None,
             }),
             Phase::ReviewFix => Ok(RunResult {
                 exit_code: 0,
                 stdout: r#"{"status":"fixed","summary":"done","files_changed":[]}"#.into(),
                 stderr: String::new(),
+                session_id: None,
             }),
         }
     }
@@ -401,6 +416,7 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
                     exit_code: 0,
                     stdout: "NO_ISSUES_FOUND".into(),
                     stderr: String::new(),
+                    session_id: None,
                 })
             })
         })))
@@ -418,6 +434,7 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
                     exit_code: 0,
                     stdout,
                     stderr: String::new(),
+                    session_id: None,
                 })
             })
         })))
@@ -435,6 +452,7 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
                     exit_code: 0,
                     stdout: "WARNING: issues found".into(),
                     stderr: String::new(),
+                    session_id: None,
                 })
             })
         })))
@@ -454,6 +472,7 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
                     exit_code: 0,
                     stdout,
                     stderr: String::new(),
+                    session_id: None,
                 })
             })
         })))
@@ -477,6 +496,7 @@ impl ReviewRunnerFactory for FailReviewFactory {
                     exit_code: 0,
                     stdout: String::new(),
                     stderr: String::new(),
+                    session_id: None,
                 })
             })
         })))

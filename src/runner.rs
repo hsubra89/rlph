@@ -61,6 +61,7 @@ pub struct RunResult {
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
+    pub session_id: Option<String>,
 }
 
 pub trait AgentRunner {
@@ -250,10 +251,13 @@ impl AgentRunner for ClaudeRunner {
                         )));
                     }
 
+                    let session_id = extract_session_id(&all_stdout);
+
                     return Ok(RunResult {
                         exit_code: output.exit_code,
                         stdout,
                         stderr,
+                        session_id,
                     });
                 }
                 Err(Error::ProcessTimeout {
@@ -275,6 +279,104 @@ impl AgentRunner for ClaudeRunner {
             "agent timed out after {max_attempts} attempts"
         )))
     }
+}
+
+/// Build a resume-with-prompt command for an existing session.
+///
+/// Unlike `build_resume_command` (which just resumes), this sends a new user message
+/// to the session — used to send correction prompts for malformed JSON recovery.
+pub fn build_resume_with_prompt_command(
+    agent_binary: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    session_id: &str,
+    prompt: &str,
+) -> (String, Vec<String>) {
+    let mut args = vec![
+        "--print".to_string(),
+        "--verbose".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+    ];
+
+    if let Some(model) = model {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+
+    if let Some(effort) = effort {
+        args.push("--effort".to_string());
+        args.push(effort.to_string());
+    }
+
+    args.push("--resume".to_string());
+    args.push(session_id.to_string());
+    args.push("-p".to_string());
+    args.push(prompt.to_string());
+
+    (agent_binary.to_string(), args)
+}
+
+/// Resume an existing Claude session with a correction prompt.
+///
+/// Sends a new user message to the session (e.g., a JSON correction prompt)
+/// and returns the agent's new output. Used by the orchestrator to recover
+/// from malformed JSON without restarting the entire agent.
+pub async fn resume_with_correction(
+    agent_binary: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    session_id: &str,
+    correction_prompt: &str,
+    working_dir: &Path,
+) -> Result<RunResult> {
+    let (command, args) = build_resume_with_prompt_command(
+        agent_binary,
+        model,
+        effort,
+        session_id,
+        correction_prompt,
+    );
+
+    let config = ProcessConfig {
+        command,
+        args,
+        working_dir: working_dir.to_path_buf(),
+        timeout: None,
+        log_prefix: "agent:correction".to_string(),
+        stream_output: false,
+        env: vec![],
+        stdin_data: None,
+        quiet: true,
+    };
+
+    let output = spawn_and_stream(config).await?;
+
+    let stdout = extract_claude_result(&output.stdout_lines)
+        .unwrap_or_else(|| output.stdout_lines.join("\n"));
+    let stderr = output.stderr_lines.join("\n");
+    let session_id = extract_session_id(&output.stdout_lines);
+
+    if let Some(sig) = output.signal {
+        return Err(Error::AgentRunner(format!(
+            "correction agent killed by signal {sig}"
+        )));
+    }
+
+    if output.exit_code != 0 {
+        return Err(Error::AgentRunner(format!(
+            "correction agent exited with code {}",
+            output.exit_code
+        )));
+    }
+
+    Ok(RunResult {
+        exit_code: output.exit_code,
+        stdout,
+        stderr,
+        session_id,
+    })
 }
 
 /// Type alias for a callback function used in `CallbackRunner`.
@@ -437,6 +539,7 @@ impl AgentRunner for CodexRunner {
                         exit_code: output.exit_code,
                         stdout,
                         stderr,
+                        session_id: None,
                     });
                 }
                 Err(Error::ProcessTimeout {
@@ -674,5 +777,41 @@ mod tests {
         assert!(args.contains(&"gpt-5.3".to_string()));
         assert!(args.contains(&"resume".to_string()));
         assert!(args.contains(&"--last".to_string()));
+    }
+
+    #[test]
+    fn test_build_resume_with_prompt_command_has_both_resume_and_prompt() {
+        let (cmd, args) =
+            build_resume_with_prompt_command("claude", None, None, "sess-123", "fix your JSON");
+        assert_eq!(cmd, "claude");
+        assert!(args.contains(&"--resume".to_string()));
+        assert!(args.contains(&"sess-123".to_string()));
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"fix your JSON".to_string()));
+        // Common flags
+        assert!(args.contains(&"--print".to_string()));
+        assert!(args.contains(&"--verbose".to_string()));
+        assert!(args.contains(&"--output-format".to_string()));
+        assert!(args.contains(&"stream-json".to_string()));
+        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn test_build_resume_with_prompt_command_with_model_and_effort() {
+        let (_cmd, args) = build_resume_with_prompt_command(
+            "claude",
+            Some("opus"),
+            Some("high"),
+            "sess-456",
+            "correction",
+        );
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"opus".to_string()));
+        assert!(args.contains(&"--effort".to_string()));
+        assert!(args.contains(&"high".to_string()));
+        assert!(args.contains(&"--resume".to_string()));
+        assert!(args.contains(&"sess-456".to_string()));
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"correction".to_string()));
     }
 }
