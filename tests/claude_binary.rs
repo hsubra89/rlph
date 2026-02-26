@@ -4,6 +4,7 @@ use std::time::Duration;
 use rlph::error::Error;
 use rlph::process::{ProcessConfig, spawn_and_stream};
 use rlph::runner::extract_session_id;
+use serde_json::Value;
 
 fn integration_enabled() -> bool {
     std::env::var("RLPH_INTEGRATION").is_ok()
@@ -215,5 +216,84 @@ async fn test_claude_resume_with_prompt() {
     assert!(
         !output2.stdout_lines.is_empty(),
         "resumed session should produce output"
+    );
+}
+
+#[tokio::test]
+async fn test_claude_stream_json_event_types() {
+    if !integration_enabled() {
+        return;
+    }
+
+    let mut args = base_args();
+    args.extend(["-p".to_string(), PROMPT.to_string()]);
+
+    let Some(output) = run_claude_or_skip(args).await else {
+        return;
+    };
+
+    assert_eq!(output.exit_code, 0, "claude exited with {}", output.exit_code);
+
+    // Parse every stdout line as JSON; collect events by type.
+    let events: Vec<Value> = output
+        .stdout_lines
+        .iter()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect();
+
+    assert!(!events.is_empty(), "expected at least one JSON event on stdout");
+
+    let types: Vec<&str> = events
+        .iter()
+        .filter_map(|e| e.get("type").and_then(Value::as_str))
+        .collect();
+
+    // --- system init event ---
+    let system_init = events.iter().find(|e| {
+        e.get("type").and_then(Value::as_str) == Some("system")
+            && e.get("subtype").and_then(Value::as_str) == Some("init")
+    });
+    assert!(system_init.is_some(), "expected system/init event; got types: {types:?}");
+    let init = system_init.unwrap();
+    assert!(
+        init.get("session_id").and_then(Value::as_str).is_some_and(|s| !s.is_empty()),
+        "system init must have non-empty session_id"
+    );
+    assert!(init.get("tools").and_then(Value::as_array).is_some(), "system init must have tools array");
+    assert!(init.get("model").and_then(Value::as_str).is_some(), "system init must have model string");
+    assert!(init.get("cwd").and_then(Value::as_str).is_some(), "system init must have cwd string");
+
+    // --- assistant event ---
+    let assistant = events.iter().find(|e| {
+        e.get("type").and_then(Value::as_str) == Some("assistant")
+    });
+    assert!(assistant.is_some(), "expected assistant event; got types: {types:?}");
+    let asst = assistant.unwrap();
+    let msg = asst.get("message").expect("assistant event must have message");
+    assert_eq!(
+        msg.get("role").and_then(Value::as_str),
+        Some("assistant"),
+        "assistant message role must be 'assistant'"
+    );
+    assert!(
+        msg.get("content").and_then(Value::as_array).is_some(),
+        "assistant message must have content array"
+    );
+
+    // --- result event ---
+    let result_event = events.iter().find(|e| {
+        e.get("type").and_then(Value::as_str) == Some("result")
+    });
+    assert!(result_event.is_some(), "expected result event; got types: {types:?}");
+    let res = result_event.unwrap();
+    assert!(res.get("result").and_then(Value::as_str).is_some(), "result event must have result string");
+    assert!(
+        res.get("session_id").and_then(Value::as_str).is_some_and(|s| !s.is_empty()),
+        "result event must have non-empty session_id"
+    );
+    assert!(res.get("is_error").and_then(Value::as_bool).is_some(), "result event must have is_error bool");
+    assert!(
+        res.get("duration_ms").and_then(Value::as_f64).is_some(),
+        "result event must have duration_ms number"
     );
 }
