@@ -66,7 +66,11 @@ async fn test_codex_emits_thread_id() {
         .await
         .expect("codex should complete successfully");
 
-    assert_eq!(output.exit_code, 0, "codex exited with {}", output.exit_code);
+    assert_eq!(
+        output.exit_code, 0,
+        "codex exited with {}",
+        output.exit_code
+    );
 
     let thread_id = extract_thread_id(&output.stdout_lines);
     assert!(
@@ -88,7 +92,7 @@ async fn test_codex_model_flag() {
     let mut args = base_args();
     args.extend([
         "--model".to_string(),
-        "gpt-4.1-mini".to_string(),
+        "gpt-5.3-codex".to_string(),
         "-".to_string(),
     ]);
 
@@ -143,16 +147,12 @@ async fn test_codex_resume_with_prompt() {
 
     assert_eq!(output1.exit_code, 0);
 
-    let thread_id = extract_thread_id(&output1.stdout_lines)
-        .expect("first invocation must emit thread_id");
+    let thread_id =
+        extract_thread_id(&output1.stdout_lines).expect("first invocation must emit thread_id");
 
     // Second invocation: resume with a new prompt.
     let mut args2 = base_args();
-    args2.extend([
-        "resume".to_string(),
-        thread_id.clone(),
-        "-".to_string(),
-    ]);
+    args2.extend(["resume".to_string(), thread_id.clone(), "-".to_string()]);
 
     let output2 = spawn_and_stream(config_with_args(args2, Some("Now say goodbye".to_string())))
         .await
