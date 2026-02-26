@@ -12,7 +12,8 @@ use crate::deps::DependencyGraph;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
-    Verdict, parse_aggregator_output, parse_phase_output, render_findings_for_prompt,
+    Verdict, parse_aggregator_output, parse_fix_output, parse_phase_output,
+    render_findings_for_prompt,
 };
 use crate::runner::{AgentRunner, AnyRunner, Phase, build_runner};
 use crate::sources::{Task, TaskSource};
@@ -693,9 +694,23 @@ impl<
             let fix_prompt = self
                 .prompt_engine
                 .render_phase(&fix_config.prompt, &fix_vars)?;
-            fix_runner
+            let fix_result = fix_runner
                 .run(Phase::ReviewFix, &fix_prompt, &worktree_info.path)
                 .await?;
+
+            match parse_fix_output(&fix_result.stdout) {
+                Ok(fix_output) => {
+                    info!(
+                        status = fix_output.status,
+                        summary = fix_output.summary,
+                        files_changed = ?fix_output.files_changed,
+                        "fix agent complete"
+                    );
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to parse fix agent JSON — continuing anyway");
+                }
+            }
 
             if !self.config.dry_run {
                 let push_result = if let Some(remote_branch) = push_remote_branch {

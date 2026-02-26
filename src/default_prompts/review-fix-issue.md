@@ -30,4 +30,16 @@ Everything should be done without interaction or asking for permission.
 
 ## Output
 
-Output exactly one line: `FIX_COMPLETE: <summary of changes made>`
+Output a single JSON object with these fields:
+
+```json
+{
+  "status": "fixed",
+  "summary": "Brief description of what was changed",
+  "files_changed": ["src/main.rs", "src/lib.rs"]
+}
+```
+
+- `status` — one of `"fixed"` or `"error"`
+- `summary` — a concise description of the changes made
+- `files_changed` — list of file paths that were modified
