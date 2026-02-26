@@ -136,7 +136,7 @@ async fn test_opencode_variant_flag() {
 }
 
 #[tokio::test]
-async fn test_opencode_resume_with_continue() {
+async fn test_opencode_resume_with_prompt() {
     if !integration_enabled() {
         return;
     }
@@ -171,6 +171,12 @@ async fn test_opencode_resume_with_continue() {
         output2.exit_code, 0,
         "resumed session exited with {}",
         output2.exit_code
+    );
+
+    let session_id2 = extract_session_id(&output2.stdout_lines);
+    assert!(
+        session_id2.is_some(),
+        "resumed session should emit sessionID"
     );
 
     // Stdout should contain some response.
