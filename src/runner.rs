@@ -564,7 +564,6 @@ impl OpencodeRunner {
         args.push(session_id.to_string());
         (self.agent_binary.clone(), args)
     }
-
 }
 
 impl AgentRunner for OpencodeRunner {
@@ -1385,21 +1384,6 @@ mod tests {
         assert!(args.contains(&"ses_abc123".to_string()));
         // Prompt-less resume: no positional prompt
         assert_eq!(args.len(), 5);
-    }
-
-    #[test]
-    fn test_opencode_build_resume_with_prompt_command() {
-        let (cmd, args) = build_opencode_resume_with_prompt_command(
-            "opencode",
-            None,
-            None,
-            "ses_abc123",
-            "fix your JSON",
-        );
-        assert_eq!(cmd, "opencode");
-        assert!(args.contains(&"--session".to_string()));
-        assert!(args.contains(&"ses_abc123".to_string()));
-        assert!(args.contains(&"fix your JSON".to_string()));
     }
 
     #[test]

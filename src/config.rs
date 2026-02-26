@@ -271,8 +271,8 @@ fn runner_default_model(runner: RunnerKind) -> Option<&'static str> {
 
 fn runner_default_effort(runner: RunnerKind) -> Option<&'static str> {
     match runner {
-        RunnerKind::Claude => Some("high"),
         RunnerKind::Codex => None,
+        RunnerKind::Claude => Some("high"),
         RunnerKind::OpenCode => None,
     }
 }
