@@ -133,7 +133,7 @@ impl AgentRunner for MockRunner {
             }),
             Phase::ReviewFix => Ok(RunResult {
                 exit_code: 0,
-                stdout: "FIX_COMPLETE: applied fixes".into(),
+                stdout: r#"{"status":"fixed","summary":"applied fixes","files_changed":["src/main.rs"]}"#.into(),
                 stderr: String::new(),
             }),
         }
@@ -266,7 +266,7 @@ impl AgentRunner for CountingRunner {
             }),
             Phase::ReviewFix => Ok(RunResult {
                 exit_code: 0,
-                stdout: "FIX_COMPLETE: done".into(),
+                stdout: r#"{"status":"fixed","summary":"done","files_changed":[]}"#.into(),
                 stderr: String::new(),
             }),
         }
@@ -317,7 +317,7 @@ impl AgentRunner for FailAtPhaseRunner {
             }),
             Phase::ReviewFix => Ok(RunResult {
                 exit_code: 0,
-                stdout: "FIX_COMPLETE: done".into(),
+                stdout: r#"{"status":"fixed","summary":"done","files_changed":[]}"#.into(),
                 stderr: String::new(),
             }),
         }
@@ -411,7 +411,7 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
             Box::pin(async move {
                 let stdout = match phase {
                     Phase::ReviewAggregate => r#"{"verdict":"approved","comment":"All good.","findings":[],"fix_instructions":null}"#.to_string(),
-                    Phase::ReviewFix => "FIX_COMPLETE: done".to_string(),
+                    Phase::ReviewFix => r#"{"status":"fixed","summary":"done","files_changed":[]}"#.to_string(),
                     _ => String::new(),
                 };
                 Ok(RunResult {
@@ -447,7 +447,7 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
                     Phase::ReviewAggregate => {
                         r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"issue"}],"fix_instructions":"fix everything"}"#.to_string()
                     }
-                    Phase::ReviewFix => "FIX_COMPLETE: attempted fixes".to_string(),
+                    Phase::ReviewFix => r#"{"status":"fixed","summary":"attempted fixes","files_changed":["src/main.rs"]}"#.to_string(),
                     _ => String::new(),
                 };
                 Ok(RunResult {
