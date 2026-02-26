@@ -27,7 +27,7 @@ fn parse_pr_ref(s: &str) -> Result<u64, String> {
         s.trim_end_matches('/')
             .rsplit('/')
             .next()
-            .unwrap_or("")
+            .unwrap()
             .parse()
             .map_err(|_| {
                 format!("invalid PR reference '{s}' — expected a number or GitHub PR URL")
