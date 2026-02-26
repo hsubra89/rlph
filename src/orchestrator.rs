@@ -835,14 +835,17 @@ impl<
         working_dir: &Path,
         parser: impl Fn(&str) -> Result<T>,
     ) -> Option<T> {
+        const MAX_RETRIES: u32 = 2;
         let session_id = session_id?;
-        let max_retries = 2u32;
         let mut last_error = initial_error.to_string();
 
-        for attempt in 1..=max_retries {
+        for attempt in 1..=MAX_RETRIES {
             let prompt = correction_prompt(schema, &last_error);
-            eprintln!(
-                "[rlph] resuming session {session_id} with correction prompt (attempt {attempt}/{max_retries})"
+            info!(
+                session_id,
+                attempt,
+                MAX_RETRIES,
+                "resuming session with correction prompt"
             );
 
             match resume_with_correction(

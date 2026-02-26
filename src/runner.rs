@@ -361,23 +361,26 @@ pub async fn resume_with_correction(
     working_dir: &Path,
     timeout: Option<Duration>,
 ) -> Result<RunResult> {
-    let (command, args, stdin_data) = if runner_type == RunnerKind::Codex {
-        let (cmd, a) = build_codex_resume_with_prompt_command(
-            agent_binary,
-            model,
-            effort,
-            session_id,
-        );
-        (cmd, a, Some(correction_prompt.to_string()))
-    } else {
-        let (cmd, a) = build_claude_resume_with_prompt_command(
-            agent_binary,
-            model,
-            effort,
-            session_id,
-            correction_prompt,
-        );
-        (cmd, a, None)
+    let (command, args, stdin_data) = match runner_type {
+        RunnerKind::Codex => {
+            let (cmd, a) = build_codex_resume_with_prompt_command(
+                agent_binary,
+                model,
+                effort,
+                session_id,
+            );
+            (cmd, a, Some(correction_prompt.to_string()))
+        }
+        RunnerKind::Claude => {
+            let (cmd, a) = build_claude_resume_with_prompt_command(
+                agent_binary,
+                model,
+                effort,
+                session_id,
+                correction_prompt,
+            );
+            (cmd, a, None)
+        }
     };
 
     let config = ProcessConfig {
@@ -394,18 +397,17 @@ pub async fn resume_with_correction(
 
     let output = spawn_and_stream(config).await?;
 
-    let (stdout, session_id) = if runner_type == RunnerKind::Codex {
-        (
+    let (stdout, session_id) = match runner_type {
+        RunnerKind::Codex => (
             extract_codex_result(&output.stdout_lines)
                 .unwrap_or_else(|| output.stdout_lines.join("\n")),
             extract_thread_id(&output.stdout_lines),
-        )
-    } else {
-        (
+        ),
+        RunnerKind::Claude => (
             extract_claude_result(&output.stdout_lines)
                 .unwrap_or_else(|| output.stdout_lines.join("\n")),
             extract_session_id(&output.stdout_lines),
-        )
+        ),
     };
     let stderr = output.stderr_lines.join("\n");
 
