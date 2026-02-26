@@ -441,28 +441,35 @@ impl<
         info!(count = tasks.len(), "found eligible tasks");
         self.reporter.tasks_found(tasks.len());
 
-        // 2. Choose phase — agent selects a task
-        info!("running choose phase");
-        let mut choose_vars = HashMap::new();
-        choose_vars.insert(
-            "repo_path".to_string(),
-            self.repo_root.display().to_string(),
-        );
-        let issues_json = serde_json::to_string_pretty(&tasks)
-            .map_err(|e| Error::Orchestrator(format!("failed to serialize tasks: {e}")))?;
-        choose_vars.insert("issues_json".to_string(), issues_json);
-        let choose_prompt = self.prompt_engine.render_phase("choose", &choose_vars)?;
-        let choose_started = Instant::now();
-        self.runner
-            .run(Phase::Choose, &choose_prompt, &self.repo_root)
-            .await?;
-        info!(
-            elapsed_secs = choose_started.elapsed().as_secs(),
-            "choose phase complete"
-        );
+        // 2. Choose phase — agent selects a task (skip if only one)
+        let task_id = if tasks.len() == 1 {
+            let only = &tasks[0];
+            let id = format!("gh-{}", only.id);
+            info!(task_id = id, "auto-selected only eligible task");
+            id
+        } else {
+            info!("running choose phase");
+            let mut choose_vars = HashMap::new();
+            choose_vars.insert(
+                "repo_path".to_string(),
+                self.repo_root.display().to_string(),
+            );
+            let issues_json = serde_json::to_string_pretty(&tasks)
+                .map_err(|e| Error::Orchestrator(format!("failed to serialize tasks: {e}")))?;
+            choose_vars.insert("issues_json".to_string(), issues_json);
+            let choose_prompt = self.prompt_engine.render_phase("choose", &choose_vars)?;
+            let choose_started = Instant::now();
+            self.runner
+                .run(Phase::Choose, &choose_prompt, &self.repo_root)
+                .await?;
+            info!(
+                elapsed_secs = choose_started.elapsed().as_secs(),
+                "choose phase complete"
+            );
 
-        // 3. Parse task selection from .rlph/task.toml
-        let task_id = self.parse_task_selection()?;
+            // Parse task selection from .rlph/task.toml
+            self.parse_task_selection()?
+        };
         let issue_number = parse_issue_number(&task_id)?;
         info!(task_id, issue_number, "selected task");
         let existing_pr_number = if self.config.dry_run {
