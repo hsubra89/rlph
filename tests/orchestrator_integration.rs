@@ -651,6 +651,7 @@ fn make_config(dry_run: bool) -> Config {
         agent_model: None,
         agent_timeout: None,
         agent_effort: None,
+        agent_variant: None,
         max_review_rounds: 3,
         agent_timeout_retries: 2,
         review_phases: default_review_phases(),
@@ -1888,6 +1889,7 @@ impl CorrectionRunner for MockCorrectionRunner {
         _agent_binary: &str,
         _model: Option<&str>,
         _effort: Option<&str>,
+        _variant: Option<&str>,
         _session_id: &str,
         _correction_prompt: &str,
         _working_dir: &Path,
@@ -2120,15 +2122,15 @@ async fn test_phase_malformed_json_correction_succeeds() {
         stdout: "NOT VALID JSON {{{{".into(),
     };
     // Correction returns valid phase JSON — one response per phase (3 phases)
-    let valid_phase = || Ok(RunResult {
+    let valid_phase = || {
+        Ok(RunResult {
         exit_code: 0,
         stdout: r#"{"findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"corrected finding"}]}"#.into(),
         stderr: String::new(),
         session_id: Some("sess-phase-123".into()),
-    });
-    let correction = MockCorrectionRunner::new(vec![
-        valid_phase(), valid_phase(), valid_phase(),
-    ]);
+    })
+    };
+    let correction = MockCorrectionRunner::new(vec![valid_phase(), valid_phase(), valid_phase()]);
 
     let (fut, events) = build_correction_test_orchestrator(
         repo_dir.path(),

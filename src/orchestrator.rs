@@ -67,6 +67,7 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
             &phase.agent_binary,
             phase.agent_model.as_deref(),
             phase.agent_effort.as_deref(),
+            phase.agent_variant.as_deref(),
             phase.agent_timeout.map(Duration::from_secs),
             timeout_retries,
         )
@@ -78,6 +79,7 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
             &step.agent_binary,
             step.agent_model.as_deref(),
             step.agent_effort.as_deref(),
+            step.agent_variant.as_deref(),
             step.agent_timeout.map(Duration::from_secs),
             timeout_retries,
         )
@@ -94,6 +96,7 @@ pub trait CorrectionRunner: Send + Sync {
         agent_binary: &str,
         model: Option<&str>,
         effort: Option<&str>,
+        variant: Option<&str>,
         session_id: &str,
         correction_prompt: &str,
         working_dir: &Path,
@@ -111,6 +114,7 @@ impl CorrectionRunner for DefaultCorrectionRunner {
         agent_binary: &str,
         model: Option<&str>,
         effort: Option<&str>,
+        variant: Option<&str>,
         session_id: &str,
         correction_prompt: &str,
         working_dir: &Path,
@@ -121,6 +125,7 @@ impl CorrectionRunner for DefaultCorrectionRunner {
             agent_binary,
             model,
             effort,
+            variant,
             session_id,
             correction_prompt,
             working_dir,
@@ -705,6 +710,7 @@ impl<
                                 &pc.agent_binary,
                                 pc.agent_model.as_deref(),
                                 pc.agent_effort.as_deref(),
+                                pc.agent_variant.as_deref(),
                                 pc.agent_timeout,
                                 SchemaName::Phase,
                                 &e.to_string(),
@@ -719,9 +725,8 @@ impl<
                             Some(phase) => render_findings_for_prompt(&phase.findings),
                             None => {
                                 warn!(phase = %o.name, error = %e, "phase JSON correction exhausted — retrying round");
-                                last_json_failure = Some(format!(
-                                    "review phase '{}' malformed JSON: {e}", o.name
-                                ));
+                                last_json_failure =
+                                    Some(format!("review phase '{}' malformed JSON: {e}", o.name));
                                 phase_parse_failed = true;
                                 break;
                             }
@@ -763,6 +768,7 @@ impl<
                             &agg_config.agent_binary,
                             agg_config.agent_model.as_deref(),
                             agg_config.agent_effort.as_deref(),
+                            agg_config.agent_variant.as_deref(),
                             agg_config.agent_timeout,
                             SchemaName::Aggregator,
                             &e.to_string(),
@@ -774,9 +780,7 @@ impl<
                         Some(output) => output,
                         None => {
                             warn!(error = %e, "aggregator JSON correction failed — retrying round");
-                            last_json_failure = Some(format!(
-                                "aggregator malformed JSON: {e}"
-                            ));
+                            last_json_failure = Some(format!("aggregator malformed JSON: {e}"));
                             continue;
                         }
                     }
@@ -852,6 +856,7 @@ impl<
                             &fix_config.agent_binary,
                             fix_config.agent_model.as_deref(),
                             fix_config.agent_effort.as_deref(),
+                            fix_config.agent_variant.as_deref(),
                             fix_config.agent_timeout,
                             SchemaName::Fix,
                             &e.to_string(),
@@ -870,9 +875,7 @@ impl<
                         }
                         None => {
                             warn!(error = %e, "fix agent JSON correction failed — retrying round");
-                            last_json_failure = Some(format!(
-                                "fix agent malformed JSON: {e}"
-                            ));
+                            last_json_failure = Some(format!("fix agent malformed JSON: {e}"));
                             continue;
                         }
                     }
@@ -924,6 +927,7 @@ impl<
         agent_binary: &str,
         agent_model: Option<&str>,
         agent_effort: Option<&str>,
+        agent_variant: Option<&str>,
         agent_timeout: Option<u64>,
         schema: SchemaName,
         initial_error: &str,
@@ -948,6 +952,7 @@ impl<
                     agent_binary,
                     agent_model,
                     agent_effort,
+                    agent_variant,
                     session_id,
                     &prompt,
                     working_dir,

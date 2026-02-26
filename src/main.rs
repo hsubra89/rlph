@@ -141,6 +141,7 @@ async fn main() {
                     &config.agent_binary,
                     config.agent_model.as_deref(),
                     config.agent_effort.as_deref(),
+                    config.agent_variant.as_deref(),
                     timeout,
                     config.agent_timeout_retries,
                 ),
@@ -255,6 +256,7 @@ async fn main() {
         &config.agent_binary,
         config.agent_model.as_deref(),
         config.agent_effort.as_deref(),
+        config.agent_variant.as_deref(),
         timeout,
         config.agent_timeout_retries,
     );

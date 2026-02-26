@@ -221,6 +221,7 @@ mod tests {
             agent_model: model.map(str::to_string),
             agent_timeout: Some(600),
             agent_effort: Some("high".to_string()),
+            agent_variant: None,
             max_review_rounds: 3,
             agent_timeout_retries: 2,
             review_phases: default_review_phases(),
