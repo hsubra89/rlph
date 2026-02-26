@@ -188,6 +188,46 @@ impl ClaudeRunner {
     }
 }
 
+/// Display a single Claude `--output-format stream-json` line in real time.
+///
+/// Parses the JSON event and prints meaningful content to stderr:
+/// - `content_block_delta` with `text` delta → print text (no newline)
+/// - `content_block_start` with `tool_use` → print `[tool: <name>]`
+/// - `content_block_stop` → print a newline (ends the current text block)
+/// - Everything else → ignored
+fn display_claude_stream_line(line: &str) {
+    use std::io::Write;
+
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+        return;
+    };
+
+    let event_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    match event_type {
+        "content_block_delta" => {
+            if let Some(delta) = val.get("delta")
+                && let Some(text) = delta.get("text").and_then(|v| v.as_str())
+            {
+                eprint!("{text}");
+                let _ = std::io::stderr().flush();
+            }
+        }
+        "content_block_start" => {
+            if let Some(cb) = val.get("content_block")
+                && cb.get("type").and_then(|v| v.as_str()) == Some("tool_use")
+                && let Some(name) = cb.get("name").and_then(|v| v.as_str())
+            {
+                eprintln!("[tool: {name}]");
+            }
+        }
+        "content_block_stop" => {
+            eprintln!();
+        }
+        _ => {}
+    }
+}
+
 /// Extract session_id from stream-json stdout lines.
 ///
 /// Scans lines for JSON objects with a top-level `session_id` field.
@@ -260,10 +300,11 @@ impl AgentRunner for ClaudeRunner {
                 working_dir: working_dir.to_path_buf(),
                 timeout: self.timeout,
                 log_prefix: log_prefix.clone(),
-                stream_output: false,
+                stream_output: true,
                 env: vec![],
                 stdin_data: None,
-                quiet: true,
+                quiet: false,
+                stdout_line_handler: Some(display_claude_stream_line),
             };
 
             match spawn_and_stream(config).await {
@@ -401,16 +442,22 @@ pub async fn resume_with_correction(
         }
     };
 
+    let is_claude = matches!(runner_type, RunnerKind::Claude);
     let config = ProcessConfig {
         command,
         args,
         working_dir: working_dir.to_path_buf(),
         timeout,
         log_prefix: "agent:correction".to_string(),
-        stream_output: false,
+        stream_output: is_claude,
         env: vec![],
         stdin_data,
-        quiet: true,
+        quiet: !is_claude,
+        stdout_line_handler: if is_claude {
+            Some(display_claude_stream_line)
+        } else {
+            None
+        },
     };
 
     let output = spawn_and_stream(config).await?;
@@ -604,6 +651,7 @@ impl AgentRunner for OpencodeRunner {
                 env: vec![],
                 stdin_data: None,
                 quiet: true,
+                stdout_line_handler: None,
             };
 
             match spawn_and_stream(config).await {
@@ -844,6 +892,7 @@ impl AgentRunner for CodexRunner {
                 stream_output: false,
                 env: vec![],
                 stdin_data,
+                stdout_line_handler: None,
                 quiet: true,
             };
 

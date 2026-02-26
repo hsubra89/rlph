@@ -15,6 +15,7 @@ fn make_config(command: &str, args: &[&str]) -> ProcessConfig {
         stdin_data: None,
         stream_output: true,
         quiet: false,
+        stdout_line_handler: None,
     }
 }
 
@@ -123,6 +124,7 @@ async fn test_sigint_to_child() {
         stdin_data: None,
         stream_output: true,
         quiet: false,
+        stdout_line_handler: None,
     };
 
     let handle = tokio::spawn(spawn_and_stream(config));
@@ -174,6 +176,7 @@ async fn test_double_sigint_force_exit() {
         stdin_data: None,
         stream_output: true,
         quiet: false,
+        stdout_line_handler: None,
     };
 
     let handle = tokio::spawn(spawn_and_stream(config));
@@ -221,6 +224,7 @@ async fn test_timeout_kills_descendants() {
         stdin_data: None,
         stream_output: true,
         quiet: false,
+        stdout_line_handler: None,
     };
 
     let result = spawn_and_stream(config).await;
@@ -279,6 +283,7 @@ async fn test_stdin_data() {
         stdin_data: Some("hello from stdin".to_string()),
         stream_output: true,
         quiet: false,
+        stdout_line_handler: None,
     };
     let output = spawn_and_stream(config).await.unwrap();
     assert!(output.success());
@@ -298,6 +303,7 @@ async fn test_stdin_data_multiline() {
         stdin_data: Some("line1\nline2\nline3".to_string()),
         stream_output: true,
         quiet: false,
+        stdout_line_handler: None,
     };
     let output = spawn_and_stream(config).await.unwrap();
     assert!(output.success());
@@ -321,6 +327,7 @@ async fn test_stdin_write_error_propagated() {
         stdin_data: Some(large_data),
         stream_output: true,
         quiet: false,
+        stdout_line_handler: None,
     };
     let result = spawn_and_stream(config).await;
     assert!(result.is_err(), "should propagate stdin write failure");
@@ -346,6 +353,7 @@ async fn test_stdin_broken_pipe_ignored_for_nonzero_exit() {
         stdin_data: Some(large_data),
         stream_output: true,
         quiet: false,
+        stdout_line_handler: None,
     };
     let output = spawn_and_stream(config).await.unwrap();
     assert!(!output.success());
@@ -368,6 +376,7 @@ async fn test_stdin_blocked_still_times_out() {
         stdin_data: Some(large_data),
         stream_output: true,
         quiet: false,
+        stdout_line_handler: None,
     };
     let result = spawn_and_stream(config).await;
     assert!(result.is_err());
@@ -392,6 +401,7 @@ async fn test_quiet_suppresses_process_noise() {
         stdin_data: None,
         stream_output: false,
         quiet: true,
+        stdout_line_handler: None,
     };
     let output = spawn_and_stream(config).await.unwrap();
     assert!(output.success());

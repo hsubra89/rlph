@@ -33,6 +33,11 @@ pub struct ProcessConfig {
     pub stdin_data: Option<String>,
     /// Suppress heartbeat progress messages on stderr.
     pub quiet: bool,
+    /// Optional callback invoked for each stdout line when `stream_output` is
+    /// true.  When `Some`, the handler replaces the default
+    /// `println!("[{prefix}] {line}")` behaviour.  When `None`, the default
+    /// is used.
+    pub stdout_line_handler: Option<fn(&str)>,
 }
 
 /// Output from a completed child process.
@@ -120,6 +125,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let prefix_out = log_prefix.clone();
     let prefix_err = log_prefix.clone();
     let stream_output = config.stream_output;
+    let stdout_line_handler = config.stdout_line_handler;
 
     let stdout_task = tokio::spawn(async move {
         let mut lines = Vec::new();
@@ -128,7 +134,11 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
             match reader.next_line().await {
                 Ok(Some(line)) => {
                     if stream_output {
-                        println!("[{prefix_out}] {line}");
+                        if let Some(handler) = stdout_line_handler {
+                            handler(&line);
+                        } else {
+                            println!("[{prefix_out}] {line}");
+                        }
                     }
                     lines.push(line);
                 }
