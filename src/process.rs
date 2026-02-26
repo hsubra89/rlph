@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -16,8 +17,10 @@ const KILL_TIMEOUT: Duration = Duration::from_secs(5);
 const READER_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const COMMAND_PREVIEW_MAX_CHARS: usize = 600;
 
+/// Callback invoked for each stderr line when `stream_output` is true.
+pub type StreamLineHandler = Box<dyn Fn(&str) + Send>;
+
 /// Configuration for spawning a child process.
-#[derive(Debug, Clone)]
 pub struct ProcessConfig {
     pub command: String,
     pub args: Vec<String>,
@@ -33,11 +36,32 @@ pub struct ProcessConfig {
     pub stdin_data: Option<String>,
     /// Suppress heartbeat progress messages on stderr.
     pub quiet: bool,
-    /// Optional callback invoked for each stdout line when `stream_output` is
+    /// Optional callback invoked for each stderr line when `stream_output` is
     /// true.  When `Some`, the handler replaces the default
-    /// `println!("[{prefix}] {line}")` behaviour.  When `None`, the default
-    /// is used.
-    pub stdout_line_handler: Option<fn(&str)>,
+    /// `eprintln!("[{prefix}] {line}")` behaviour and stdout display is
+    /// suppressed (lines are still captured).  When `None`, the defaults
+    /// are used.
+    pub stderr_line_handler: Option<StreamLineHandler>,
+}
+
+impl fmt::Debug for ProcessConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProcessConfig")
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("working_dir", &self.working_dir)
+            .field("timeout", &self.timeout)
+            .field("log_prefix", &self.log_prefix)
+            .field("stream_output", &self.stream_output)
+            .field("env", &self.env)
+            .field("stdin_data", &self.stdin_data)
+            .field("quiet", &self.quiet)
+            .field(
+                "stderr_line_handler",
+                &self.stderr_line_handler.as_ref().map(|_| ".."),
+            )
+            .finish()
+    }
 }
 
 /// Output from a completed child process.
@@ -125,7 +149,10 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let prefix_out = log_prefix.clone();
     let prefix_err = log_prefix.clone();
     let stream_output = config.stream_output;
-    let stdout_line_handler = config.stdout_line_handler;
+    let stderr_line_handler = config.stderr_line_handler;
+    // When a stderr handler is set, stdout display is suppressed (lines are
+    // still captured for result extraction).
+    let show_stdout = stream_output && stderr_line_handler.is_none();
 
     let stdout_task = tokio::spawn(async move {
         let mut lines = Vec::new();
@@ -133,12 +160,8 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
         loop {
             match reader.next_line().await {
                 Ok(Some(line)) => {
-                    if stream_output {
-                        if let Some(handler) = stdout_line_handler {
-                            handler(&line);
-                        } else {
-                            println!("[{prefix_out}] {line}");
-                        }
+                    if show_stdout {
+                        println!("[{prefix_out}] {line}");
                     }
                     lines.push(line);
                 }
@@ -159,7 +182,11 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
             match reader.next_line().await {
                 Ok(Some(line)) => {
                     if stream_output {
-                        eprintln!("[{prefix_err}] {line}");
+                        if let Some(handler) = &stderr_line_handler {
+                            handler(&line);
+                        } else {
+                            eprintln!("[{prefix_err}] {line}");
+                        }
                     }
                     lines.push(line);
                 }

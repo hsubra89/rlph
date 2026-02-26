@@ -152,6 +152,7 @@ pub struct ClaudeRunner {
     effort: Option<String>,
     timeout: Option<Duration>,
     max_timeout_retries: u32,
+    stream_prefix: Option<String>,
 }
 
 impl ClaudeRunner {
@@ -168,7 +169,12 @@ impl ClaudeRunner {
             effort,
             timeout,
             max_timeout_retries,
+            stream_prefix: None,
         }
+    }
+
+    pub fn set_stream_prefix(&mut self, prefix: String) {
+        self.stream_prefix = Some(prefix);
     }
 
     /// Build the command and arguments for a given phase and prompt.
@@ -226,33 +232,51 @@ fn parse_claude_stream_event(val: &serde_json::Value) -> StreamEvent<'_> {
     }
 }
 
-/// Display a single Claude `--output-format stream-json` line in real time.
+/// Build a closure that displays Claude stream-json lines prefixed with `[prefix]`.
 ///
-/// Parses the JSON event and prints meaningful content to stderr:
-/// - `content_block_delta` with `text` delta → print text (no newline)
-/// - `content_block_start` with `tool_use` → print `[tool: <name>]`
-/// - `content_block_stop` → print a newline (ends the current text block)
-/// - Everything else → ignored
-fn display_claude_stream_line(line: &str) {
-    use std::io::Write;
+/// Each line of agent text output is prefixed at the start of a new logical line.
+/// Tool-use markers and block-stop events reset the prefix so the next text chunk
+/// gets a fresh `[prefix] ` leader.
+fn make_claude_stream_handler(prefix: String) -> Box<dyn Fn(&str) + Send> {
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
-        return;
-    };
+    let needs_prefix = AtomicBool::new(true);
+    let logged_first_line = AtomicBool::new(false);
+    Box::new(move |line: &str| {
+        use std::io::Write;
 
-    match parse_claude_stream_event(&val) {
-        StreamEvent::Text(text) => {
-            eprint!("{text}");
-            let _ = std::io::stderr().flush();
+        if !logged_first_line.swap(true, Ordering::Relaxed) {
+            let preview: String = line.chars().take(200).collect();
+            warn!(prefix = %prefix, line_len = line.len(), preview = %preview, "stream handler received first stdout line");
         }
-        StreamEvent::ToolUse(name) => {
-            eprintln!("[tool: {name}]");
+
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+            return;
+        };
+
+        match parse_claude_stream_event(&val) {
+            StreamEvent::Text(text) => {
+                if needs_prefix.load(Ordering::Relaxed) {
+                    eprint!("[{prefix}] ");
+                    needs_prefix.store(false, Ordering::Relaxed);
+                }
+                eprint!("{text}");
+                let _ = std::io::stderr().flush();
+            }
+            StreamEvent::ToolUse(name) => {
+                if needs_prefix.load(Ordering::Relaxed) {
+                    eprint!("[{prefix}] ");
+                }
+                eprintln!("[tool: {name}]");
+                needs_prefix.store(true, Ordering::Relaxed);
+            }
+            StreamEvent::BlockStop => {
+                eprintln!();
+                needs_prefix.store(true, Ordering::Relaxed);
+            }
+            StreamEvent::Ignore => {}
         }
-        StreamEvent::BlockStop => {
-            eprintln!();
-        }
-        StreamEvent::Ignore => {}
-    }
+    })
 }
 
 /// Extract session_id from stream-json stdout lines.
@@ -294,7 +318,16 @@ fn extract_claude_result(stdout_lines: &[String]) -> Option<String> {
 
 impl AgentRunner for ClaudeRunner {
     async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
-        let log_prefix = format!("agent:{phase}");
+        let basename = self
+            .agent_binary
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(&self.agent_binary);
+        let prefix = self
+            .stream_prefix
+            .clone()
+            .unwrap_or_else(|| format!("{phase}:{basename}"));
+        let log_prefix = prefix.clone();
         let max_attempts = 1 + self.max_timeout_retries;
         let mut all_stdout: Vec<String> = Vec::new();
         let mut all_stderr: Vec<String> = Vec::new();
@@ -331,7 +364,7 @@ impl AgentRunner for ClaudeRunner {
                 env: vec![],
                 stdin_data: None,
                 quiet: false,
-                stdout_line_handler: Some(display_claude_stream_line),
+                stderr_line_handler: Some(make_claude_stream_handler(prefix.clone())),
             };
 
             match spawn_and_stream(config).await {
@@ -470,6 +503,10 @@ pub async fn resume_with_correction(
     };
 
     let is_claude = matches!(runner_type, RunnerKind::Claude);
+    let basename = agent_binary
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(agent_binary);
     let config = ProcessConfig {
         command,
         args,
@@ -480,8 +517,8 @@ pub async fn resume_with_correction(
         env: vec![],
         stdin_data,
         quiet: !is_claude,
-        stdout_line_handler: if is_claude {
-            Some(display_claude_stream_line)
+        stderr_line_handler: if is_claude {
+            Some(make_claude_stream_handler(format!("correction:{basename}")))
         } else {
             None
         },
@@ -562,6 +599,14 @@ pub enum AnyRunner {
     Codex(CodexRunner),
     OpenCode(OpencodeRunner),
     Callback(CallbackRunner),
+}
+
+impl AnyRunner {
+    pub fn set_stream_prefix(&mut self, prefix: String) {
+        if let AnyRunner::Claude(r) = self {
+            r.set_stream_prefix(prefix);
+        }
+    }
 }
 
 impl AgentRunner for AnyRunner {
@@ -678,7 +723,7 @@ impl AgentRunner for OpencodeRunner {
                 env: vec![],
                 stdin_data: None,
                 quiet: true,
-                stdout_line_handler: None,
+                stderr_line_handler: None,
             };
 
             match spawn_and_stream(config).await {
@@ -919,7 +964,7 @@ impl AgentRunner for CodexRunner {
                 stream_output: false,
                 env: vec![],
                 stdin_data,
-                stdout_line_handler: None,
+                stderr_line_handler: None,
                 quiet: true,
             };
 

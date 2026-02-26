@@ -26,10 +26,10 @@ fn mock_claude_runner(script: &str) -> (ClaudeRunner, tempfile::TempDir) {
 
 #[tokio::test]
 async fn test_claude_stream_handler_runs_without_error() {
-    // Mock script emits realistic stream-json events to stdout, then a result.
+    // Mock script emits stream-json events to stderr (matching real Claude CLI
+    // behaviour) and the result/session_id to stdout.
     let script = r#"
-cat <<'EVENTS'
-{"type":"system","session_id":"sess-abc","subtype":"init"}
+cat >&2 <<'EVENTS'
 {"type":"content_block_start","content_block":{"type":"text","text":""}}
 {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello "}}
 {"type":"content_block_delta","delta":{"type":"text_delta","text":"world"}}
@@ -37,8 +37,11 @@ cat <<'EVENTS'
 {"type":"content_block_start","content_block":{"type":"tool_use","name":"Read","id":"tu_1"}}
 {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{}"}}
 {"type":"content_block_stop"}
-{"type":"result","result":"TASK_DONE","session_id":"sess-abc"}
 EVENTS
+cat <<'STDOUT'
+{"type":"system","session_id":"sess-abc","subtype":"init"}
+{"type":"result","result":"TASK_DONE","session_id":"sess-abc"}
+STDOUT
 "#;
     let (runner, tmp) = mock_claude_runner(script);
     let result = runner
@@ -52,11 +55,12 @@ EVENTS
 
 #[tokio::test]
 async fn test_claude_stream_non_json_lines_ignored() {
-    // Mix of non-JSON garbage and valid events — runner should not crash.
+    // Mix of non-JSON garbage and valid events on stderr — runner should not crash.
+    // Result and session_id go to stdout.
     let script = r#"
-echo "not json at all"
-echo "{"
-echo '{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}'
+echo "not json at all" >&2
+echo "{" >&2
+echo '{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}' >&2
 echo '{"type":"result","result":"DONE","session_id":"sess-xyz"}'
 "#;
     let (runner, tmp) = mock_claude_runner(script);

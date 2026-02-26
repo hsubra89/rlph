@@ -50,7 +50,7 @@ fn config_with_args(args: Vec<String>, stdin_data: Option<String>) -> ProcessCon
         env: vec![],
         stdin_data,
         quiet: true,
-        stdout_line_handler: None,
+        stderr_line_handler: None,
     }
 }
 

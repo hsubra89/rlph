@@ -667,9 +667,15 @@ impl<
 
             let mut join_set = tokio::task::JoinSet::new();
             for phase_config in &self.config.review_phases {
-                let phase_runner = self
+                let mut phase_runner = self
                     .review_factory
                     .create_phase_runner(phase_config, self.config.agent_timeout_retries);
+                let basename = phase_config
+                    .agent_binary
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(&phase_config.agent_binary);
+                phase_runner.set_stream_prefix(format!("{}:{}", phase_config.name, basename));
 
                 let mut phase_vars = vars.clone();
                 phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());
@@ -748,9 +754,17 @@ impl<
             let review_outputs_text = review_texts.join("\n\n---\n\n");
 
             let agg_config = &self.config.review_aggregate;
-            let agg_runner = self
+            let mut agg_runner = self
                 .review_factory
                 .create_step_runner(agg_config, self.config.agent_timeout_retries);
+            {
+                let basename = agg_config
+                    .agent_binary
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(&agg_config.agent_binary);
+                agg_runner.set_stream_prefix(format!("review-aggregate:{basename}"));
+            }
 
             let mut agg_vars = vars.clone();
             agg_vars.insert("review_outputs".to_string(), review_outputs_text);
@@ -831,9 +845,17 @@ impl<
             info!(round, "review needs fix, running fix agent");
 
             let fix_config = &self.config.review_fix;
-            let fix_runner = self
+            let mut fix_runner = self
                 .review_factory
                 .create_step_runner(fix_config, self.config.agent_timeout_retries);
+            {
+                let basename = fix_config
+                    .agent_binary
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(&fix_config.agent_binary);
+                fix_runner.set_stream_prefix(format!("review-fix:{basename}"));
+            }
 
             let mut fix_vars = vars.clone();
             fix_vars.insert("fix_instructions".to_string(), fix_instructions);
