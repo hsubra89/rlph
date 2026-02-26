@@ -34,15 +34,9 @@ pub trait GhClient {
     fn run(&self, args: &[&str]) -> Result<String>;
 
     /// Run a GraphQL query via `gh api graphql`.
-    fn graphql(
-        &self,
-        query: &str,
-        variables: &[(&str, &str)],
-        headers: &[&str],
-    ) -> Result<String> {
+    fn graphql(&self, query: &str, variables: &[(&str, &str)], headers: &[&str]) -> Result<String> {
         let query_arg = format!("query={query}");
-        let mut owned: Vec<String> =
-            vec!["api".into(), "graphql".into(), "-f".into(), query_arg];
+        let mut owned: Vec<String> = vec!["api".into(), "graphql".into(), "-f".into(), query_arg];
         for (key, value) in variables {
             owned.push("-f".into());
             owned.push(format!("{key}={value}"));
@@ -142,9 +136,7 @@ impl GitHubSource {
     }
 
     fn fetch_repo_nwo(&self) -> Result<(String, String)> {
-        let json = self
-            .client
-            .run(&["repo", "view", "--json", "owner,name"])?;
+        let json = self.client.run(&["repo", "view", "--json", "owner,name"])?;
         let info: RepoInfo = serde_json::from_str(&json)
             .map_err(|e| Error::TaskSource(format!("failed to parse repo info: {e}")))?;
         Ok((info.owner.login, info.name))
@@ -174,11 +166,7 @@ impl GitHubSource {
 
         let response = self.client.graphql(
             query,
-            &[
-                ("owner", &owner),
-                ("name", &name),
-                ("label", &self.label),
-            ],
+            &[("owner", &owner), ("name", &name), ("label", &self.label)],
             &["GraphQL-Features: sub_issues"],
         )?;
 
@@ -226,8 +214,10 @@ impl GitHubSource {
                 groups.push(TaskGroup::Standalone(Self::parse_gql_issue(issue)));
             } else {
                 let parent = Self::parse_gql_issue(issue);
-                let sub_tasks: Vec<Task> =
-                    labeled_sub.iter().map(|si| Self::parse_gql_sub(si)).collect();
+                let sub_tasks: Vec<Task> = labeled_sub
+                    .iter()
+                    .map(|si| Self::parse_gql_sub(si))
+                    .collect();
                 let sorted = deps::topological_sort_within_group(sub_tasks);
                 groups.push(TaskGroup::Group {
                     parent,

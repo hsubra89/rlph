@@ -616,10 +616,7 @@ mod tests {
     #[test]
     fn test_topo_sort_ignores_external_deps() {
         // Task 2 depends on #99 (not in group) — should be ignored
-        let tasks = vec![
-            make_task(1, ""),
-            make_task(2, "Blocked by #99"),
-        ];
+        let tasks = vec![make_task(1, ""), make_task(2, "Blocked by #99")];
         let sorted = topological_sort_within_group(tasks);
         let ids: Vec<&str> = sorted.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, vec!["1", "2"]);

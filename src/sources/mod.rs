@@ -45,10 +45,7 @@ pub struct Task {
 #[derive(Debug, Clone, Serialize)]
 pub enum TaskGroup {
     Standalone(Task),
-    Group {
-        parent: Task,
-        sub_issues: Vec<Task>,
-    },
+    Group { parent: Task, sub_issues: Vec<Task> },
 }
 
 impl TaskGroup {
@@ -97,19 +94,17 @@ impl TaskGroup {
                     Some(task)
                 }
             }
-            TaskGroup::Group { sub_issues, .. } => {
-                sub_issues.iter().find(|task| {
-                    let id = match task.id.parse::<u64>() {
-                        Ok(n) => n,
-                        Err(_) => return false,
-                    };
-                    if done_ids.contains(&id) {
-                        return false;
-                    }
-                    let task_deps = deps::parse_dependencies(&task.body);
-                    task_deps.iter().all(|d| done_ids.contains(d))
-                })
-            }
+            TaskGroup::Group { sub_issues, .. } => sub_issues.iter().find(|task| {
+                let id = match task.id.parse::<u64>() {
+                    Ok(n) => n,
+                    Err(_) => return false,
+                };
+                if done_ids.contains(&id) {
+                    return false;
+                }
+                let task_deps = deps::parse_dependencies(&task.body);
+                task_deps.iter().all(|d| done_ids.contains(d))
+            }),
         }
     }
 }
@@ -320,10 +315,7 @@ mod tests {
         // Sub-issue 12 depends on 11 (intra-group)
         let group = TaskGroup::Group {
             parent: make_task(10, ""),
-            sub_issues: vec![
-                make_task(11, "no deps"),
-                make_task(12, "Blocked by #11"),
-            ],
+            sub_issues: vec![make_task(11, "no deps"), make_task(12, "Blocked by #11")],
         };
         let empty: HashSet<u64> = HashSet::new();
         // 11 is eligible, 12 blocked by 11
@@ -338,10 +330,7 @@ mod tests {
         // Sub-issue 12 depends on #99 (external, not in group) — blocks until resolved
         let group = TaskGroup::Group {
             parent: make_task(10, ""),
-            sub_issues: vec![
-                make_task(11, ""),
-                make_task(12, "Blocked by #99"),
-            ],
+            sub_issues: vec![make_task(11, ""), make_task(12, "Blocked by #99")],
         };
         let empty: HashSet<u64> = HashSet::new();
         // 11 is eligible, but 12 is blocked by external #99
@@ -354,10 +343,7 @@ mod tests {
         );
         // Once #99 is also in done_ids, 12 becomes eligible
         let done_11_99: HashSet<u64> = [11, 99].into();
-        assert_eq!(
-            group.next_eligible_sub_issue(&done_11_99).unwrap().id,
-            "12"
-        );
+        assert_eq!(group.next_eligible_sub_issue(&done_11_99).unwrap().id, "12");
     }
 
     #[test]
