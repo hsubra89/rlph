@@ -878,7 +878,9 @@ async fn test_no_eligible_tasks() {
 #[tokio::test]
 async fn test_error_at_choose_phase() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
-    let task = make_task(42, "Fix bug");
+    // Need 2+ tasks so the choose phase is actually invoked (single candidate is auto-selected)
+    let task1 = make_task(42, "Fix bug");
+    let task2 = make_task(43, "Another bug");
 
     let runner = FailAtPhaseRunner {
         fail_at: Phase::Choose,
@@ -889,7 +891,7 @@ async fn test_error_at_choose_phase() {
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
     let orchestrator = Orchestrator::new(
-        MockSource::new(vec![task], Arc::clone(&source_tracker)),
+        MockSource::new(vec![task1, task2], Arc::clone(&source_tracker)),
         runner,
         MockSubmission::new(Arc::clone(&sub_tracker), None),
         WorktreeManager::new(
@@ -1186,7 +1188,8 @@ async fn test_continuous_mode_polls_with_empty_results() {
 
     orchestrator.run_loop(None).await.unwrap();
 
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 1);
+    // Single candidate is auto-selected, choose phase is skipped
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
 }
 
@@ -1221,7 +1224,8 @@ async fn test_max_iterations_stops_at_limit() {
 
     orchestrator.run_loop(None).await.unwrap();
 
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 3);
+    // Single candidate is auto-selected, choose phase is skipped
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 3);
 }
 
@@ -1260,7 +1264,8 @@ async fn test_continuous_shutdown_exits_between_iterations() {
 
     // Shutdown signal fires during implement, but the current iteration
     // completes fully. Shutdown is only checked between iterations.
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 1);
+    // Single candidate is auto-selected, choose phase is skipped.
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
 }
 

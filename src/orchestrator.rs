@@ -453,7 +453,7 @@ impl<
             })
             .collect();
         let dep_graph = DependencyGraph::build(
-            &standalone_tasks.iter().copied().cloned().collect::<Vec<_>>(),
+            &standalone_tasks.iter().map(|t| (*t).clone()).collect::<Vec<_>>(),
         );
         let eligible_standalone_ids: HashSet<String> = dep_graph
             .filter_eligible(
@@ -482,45 +482,64 @@ impl<
         info!(count = parent_tasks.len(), "found eligible tasks");
         self.reporter.tasks_found(parent_tasks.len());
 
-        // Choose phase — agent selects a task
-        info!("running choose phase");
-        let mut choose_vars = HashMap::new();
-        choose_vars.insert(
-            "repo_path".to_string(),
-            self.repo_root.display().to_string(),
-        );
-        let issues_json = serde_json::to_string_pretty(&parent_tasks)
-            .map_err(|e| Error::Orchestrator(format!("failed to serialize tasks: {e}")))?;
-        choose_vars.insert("issues_json".to_string(), issues_json);
-        let choose_prompt = self.prompt_engine.render_phase("choose", &choose_vars)?;
-        let choose_started = Instant::now();
-        self.runner
-            .run(Phase::Choose, &choose_prompt, &self.repo_root)
-            .await?;
-        info!(
-            elapsed_secs = choose_started.elapsed().as_secs(),
-            "choose phase complete"
-        );
+        // Auto-select when there is exactly one candidate
+        let selected_group = if groups.len() == 1 {
+            let group = groups.into_iter().next().unwrap();
+            info!(task_id = group.parent().id, "auto-selected single candidate");
+            group
+        } else {
+            // Choose phase — agent selects a task
+            info!("running choose phase");
+            let mut choose_vars = HashMap::new();
+            choose_vars.insert(
+                "repo_path".to_string(),
+                self.repo_root.display().to_string(),
+            );
+            let issues_json = serde_json::to_string_pretty(&parent_tasks)
+                .map_err(|e| Error::Orchestrator(format!("failed to serialize tasks: {e}")))?;
+            choose_vars.insert("issues_json".to_string(), issues_json);
+            let choose_prompt = self.prompt_engine.render_phase("choose", &choose_vars)?;
+            let choose_started = Instant::now();
+            self.runner
+                .run(Phase::Choose, &choose_prompt, &self.repo_root)
+                .await?;
+            info!(
+                elapsed_secs = choose_started.elapsed().as_secs(),
+                "choose phase complete"
+            );
 
-        // Parse task selection from .rlph/task.toml
-        let task_id = self.parse_task_selection()?;
-        let issue_number = parse_issue_number(&task_id)?;
-        info!(task_id, issue_number, "selected task");
+            // Parse task selection from .rlph/task.toml
+            let task_id = self.parse_task_selection()?;
+            let issue_number = parse_issue_number(&task_id)?;
+            info!(task_id, issue_number, "selected task");
 
-        // Find which group was selected
-        let selected_group = groups
-            .into_iter()
-            .find(|g| {
-                g.parent()
-                    .id
-                    .parse::<u64>()
-                    .ok()
-                    .is_some_and(|n| n == issue_number)
-            })
-            .ok_or_else(|| {
-                Error::Orchestrator(format!("selected task #{issue_number} not in fetched groups"))
+            // Find which group was selected
+            groups
+                .into_iter()
+                .find(|g| {
+                    g.parent()
+                        .id
+                        .parse::<u64>()
+                        .ok()
+                        .is_some_and(|n| n == issue_number)
+                })
+                .ok_or_else(|| {
+                    Error::Orchestrator(format!(
+                        "selected task #{issue_number} not in fetched groups"
+                    ))
+                })?
+        };
+
+        let issue_number: u64 = selected_group
+            .parent()
+            .id
+            .parse()
+            .map_err(|_| {
+                Error::Orchestrator(format!(
+                    "invalid parent id: {}",
+                    selected_group.parent().id
+                ))
             })?;
-
         match selected_group {
             TaskGroup::Standalone(task) => {
                 self.run_standalone_iteration(task, issue_number).await
@@ -643,8 +662,8 @@ impl<
             &worktree_info.branch,
         )?;
 
-        // Find first eligible sub-issue
-        let done_ids: HashSet<u64> = HashSet::new();
+        // Find first eligible sub-issue (include externally closed issues for dep resolution)
+        let done_ids: HashSet<u64> = self.source.fetch_closed_task_ids()?;
         let group = TaskGroup::Group {
             parent: parent.clone(),
             sub_issues,
@@ -693,11 +712,13 @@ impl<
             sub_issues.push(self.source.get_task_details(sub_id)?);
         }
 
-        let done_ids: HashSet<u64> = group_state
+        let mut done_ids: HashSet<u64> = group_state
             .completed_sub_issues
             .iter()
             .filter_map(|id| id.parse::<u64>().ok())
             .collect();
+        // Include externally closed issues so external deps are recognized
+        done_ids.extend(self.source.fetch_closed_task_ids()?);
 
         let group = TaskGroup::Group {
             parent: parent.clone(),
@@ -874,6 +895,10 @@ impl<
                 self.state_mgr.complete_current_task()?;
                 self.state_mgr.complete_current_group()?;
                 let _ = self.state_mgr.remove_worktree_mapping(&group_task_id);
+                // Remove worktree mappings for each sub-issue
+                for sub_id in &group.all_sub_issue_ids() {
+                    let _ = self.state_mgr.remove_worktree_mapping(&format!("gh-{sub_id}"));
+                }
                 info!("cleaning up group worktree");
                 if let Err(e) = self.worktree_mgr.remove(&worktree_info.path) {
                     warn!(error = %e, "failed to clean up group worktree");
