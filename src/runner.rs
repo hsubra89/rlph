@@ -565,18 +565,6 @@ impl OpencodeRunner {
         (self.agent_binary.clone(), args)
     }
 
-    /// Build a resume command with a new prompt for an existing session.
-    pub fn build_resume_with_prompt_command(
-        &self,
-        session_id: &str,
-        prompt: &str,
-    ) -> (String, Vec<String>) {
-        let mut args = base_opencode_args(self.model.as_deref(), self.variant.as_deref());
-        args.push("--session".to_string());
-        args.push(session_id.to_string());
-        args.push(prompt.to_string());
-        (self.agent_binary.clone(), args)
-    }
 }
 
 impl AgentRunner for OpencodeRunner {
@@ -687,9 +675,9 @@ pub fn extract_opencode_session_id(stdout_lines: &[String]) -> Option<String> {
 /// Extract the final human-readable result from OpenCode JSON output.
 ///
 /// OpenCode emits JSON events with `{"type":"text","part":{"type":"text","text":"..."}}`.
-/// Concatenates all `part.text` from `type == "text"` events.
+/// Returns the last `part.text` from `type == "text"` events.
 fn extract_opencode_result(stdout_lines: &[String]) -> Option<String> {
-    let mut texts: Vec<String> = Vec::new();
+    let mut last_text: Option<String> = None;
     for line in stdout_lines {
         let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -698,14 +686,10 @@ fn extract_opencode_result(stdout_lines: &[String]) -> Option<String> {
             && let Some(part) = val.get("part")
             && let Some(text) = part.get("text").and_then(|v| v.as_str())
         {
-            texts.push(text.to_string());
+            last_text = Some(text.to_string());
         }
     }
-    if texts.is_empty() {
-        None
-    } else {
-        Some(texts.last().unwrap().clone())
-    }
+    last_text
 }
 
 /// Build an OpenCode resume-with-prompt command for an existing session.
@@ -1405,8 +1389,13 @@ mod tests {
 
     #[test]
     fn test_opencode_build_resume_with_prompt_command() {
-        let runner = OpencodeRunner::new("opencode".to_string(), None, None, None, 2);
-        let (cmd, args) = runner.build_resume_with_prompt_command("ses_abc123", "fix your JSON");
+        let (cmd, args) = build_opencode_resume_with_prompt_command(
+            "opencode",
+            None,
+            None,
+            "ses_abc123",
+            "fix your JSON",
+        );
         assert_eq!(cmd, "opencode");
         assert!(args.contains(&"--session".to_string()));
         assert!(args.contains(&"ses_abc123".to_string()));
