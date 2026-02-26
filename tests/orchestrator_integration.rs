@@ -417,7 +417,7 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
             Box::pin(async {
                 Ok(RunResult {
                     exit_code: 0,
-                    stdout: "NO_ISSUES_FOUND".into(),
+                    stdout: r#"{"findings":[]}"#.into(),
                     stderr: String::new(),
                     session_id: None,
                 })
@@ -453,7 +453,7 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
             Box::pin(async {
                 Ok(RunResult {
                     exit_code: 0,
-                    stdout: "WARNING: issues found".into(),
+                    stdout: r#"{"findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"issues found"}]}"#.into(),
                     stderr: String::new(),
                     session_id: None,
                 })
@@ -2119,14 +2119,15 @@ async fn test_phase_malformed_json_correction_succeeds() {
     let factory = MalformedPhaseFactory {
         stdout: "NOT VALID JSON {{{{".into(),
     };
-    // Correction returns valid phase JSON on first attempt
+    // Correction returns valid phase JSON — one response per phase (3 phases)
+    let valid_phase = || Ok(RunResult {
+        exit_code: 0,
+        stdout: r#"{"findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"corrected finding"}]}"#.into(),
+        stderr: String::new(),
+        session_id: Some("sess-phase-123".into()),
+    });
     let correction = MockCorrectionRunner::new(vec![
-        Ok(RunResult {
-            exit_code: 0,
-            stdout: r#"{"findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"corrected finding"}]}"#.into(),
-            stderr: String::new(),
-            session_id: Some("sess-phase-123".into()),
-        }),
+        valid_phase(), valid_phase(), valid_phase(),
     ]);
 
     let (fut, events) = build_correction_test_orchestrator(
@@ -2149,7 +2150,7 @@ async fn test_phase_malformed_json_correction_succeeds() {
 }
 
 #[tokio::test]
-async fn test_phase_malformed_json_correction_exhausted_uses_raw_stdout() {
+async fn test_phase_malformed_json_correction_exhausted_fails_round() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
@@ -2172,23 +2173,23 @@ async fn test_phase_malformed_json_correction_exhausted_uses_raw_stdout() {
         }),
     ]);
 
-    let (fut, events) = build_correction_test_orchestrator(
+    let (fut, _events) = build_correction_test_orchestrator(
         repo_dir.path(),
         wt_dir.path(),
         &task,
         factory,
         correction,
     );
-    // Should still complete — falls back to raw stdout
-    fut.await.unwrap();
-
-    let events = events.lock().unwrap();
-    // Review should still produce a summary (raw stdout was used for aggregation)
+    // Should fail — phase JSON recovery exhausted retries the round until max_review_rounds
+    let err = fut.await.unwrap_err();
+    let msg = err.to_string();
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, PipelineEvent::ReviewSummary { .. })),
-        "expected ReviewSummary even after correction exhaustion (raw stdout fallback)"
+        msg.contains("review did not complete"),
+        "expected review failure after correction exhaustion, got: {msg}"
+    );
+    assert!(
+        msg.contains("review phase") && msg.contains("malformed JSON"),
+        "expected descriptive parse-failure context in error, got: {msg}"
     );
 }
 
@@ -2267,9 +2268,14 @@ async fn test_aggregator_malformed_json_correction_exhausted_retries_round() {
     // Aggregator correction exhaustion → `continue` each round → eventually exhausts
     // all max_review_rounds and hits "review did not complete"
     let err = fut.await.unwrap_err();
+    let msg = err.to_string();
     assert!(
-        err.to_string().contains("review did not complete"),
-        "expected review exhaustion error, got: {err}"
+        msg.contains("review did not complete"),
+        "expected review exhaustion error, got: {msg}"
+    );
+    assert!(
+        msg.contains("aggregator malformed JSON"),
+        "expected descriptive parse-failure context in error, got: {msg}"
     );
 }
 
@@ -2358,7 +2364,7 @@ async fn test_fix_malformed_json_correction_succeeds() {
 }
 
 #[tokio::test]
-async fn test_fix_malformed_json_correction_exhausted_continues_anyway() {
+async fn test_fix_malformed_json_correction_exhausted_retries_round() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
     let task = make_task(42, "Fix bug");
 
@@ -2386,7 +2392,7 @@ async fn test_fix_malformed_json_correction_exhausted_continues_anyway() {
         factory,
         correction,
     );
-    // Fix correction exhaustion → warn + continue → round 2 aggregator approves
+    // Fix correction exhaustion → retries round → round 2 aggregator approves
     orchestrator.run_once().await.unwrap();
 
     let events = events.lock().unwrap();
@@ -2394,6 +2400,6 @@ async fn test_fix_malformed_json_correction_exhausted_continues_anyway() {
         events
             .iter()
             .any(|e| matches!(e, PipelineEvent::ReviewSummary { .. })),
-        "expected review to complete even after fix correction exhaustion"
+        "expected review to complete after fix correction exhaustion triggers round retry"
     );
 }

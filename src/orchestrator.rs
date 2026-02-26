@@ -624,6 +624,7 @@ impl<
             self.config.max_review_rounds
         };
         let mut review_passed = false;
+        let mut last_json_failure: Option<String> = None;
 
         // Report phase names once before the loop (they don't change between rounds).
         let phase_names: Vec<String> = self
@@ -689,6 +690,7 @@ impl<
             }
 
             let mut review_texts = Vec::new();
+            let mut phase_parse_failed = false;
             for o in &review_outputs {
                 let rendered = match parse_phase_output(&o.stdout) {
                     Ok(phase) => render_findings_for_prompt(&phase.findings),
@@ -716,13 +718,20 @@ impl<
                         match recovered {
                             Some(phase) => render_findings_for_prompt(&phase.findings),
                             None => {
-                                warn!(phase = %o.name, error = %e, "failed to parse phase JSON, using raw stdout");
-                                o.stdout.clone()
+                                warn!(phase = %o.name, error = %e, "phase JSON correction exhausted — retrying round");
+                                last_json_failure = Some(format!(
+                                    "review phase '{}' malformed JSON: {e}", o.name
+                                ));
+                                phase_parse_failed = true;
+                                break;
                             }
                         }
                     }
                 };
                 review_texts.push(format!("## Review Phase: {}\n\n{}", o.name, rendered));
+            }
+            if phase_parse_failed {
+                continue;
             }
             let review_outputs_text = review_texts.join("\n\n---\n\n");
 
@@ -765,6 +774,9 @@ impl<
                         Some(output) => output,
                         None => {
                             warn!(error = %e, "aggregator JSON correction failed — retrying round");
+                            last_json_failure = Some(format!(
+                                "aggregator malformed JSON: {e}"
+                            ));
                             continue;
                         }
                     }
@@ -857,7 +869,11 @@ impl<
                             );
                         }
                         None => {
-                            warn!(error = %e, "fix agent JSON correction failed — continuing anyway");
+                            warn!(error = %e, "fix agent JSON correction failed — retrying round");
+                            last_json_failure = Some(format!(
+                                "fix agent malformed JSON: {e}"
+                            ));
+                            continue;
                         }
                     }
                 }
@@ -883,8 +899,11 @@ impl<
         }
 
         if !review_passed {
+            let reason = last_json_failure
+                .map(|f| format!(" (last failure: {f})"))
+                .unwrap_or_default();
             return Err(Error::Orchestrator(format!(
-                "review did not complete after {max_reviews} round(s)"
+                "review did not complete after {max_reviews} round(s){reason}"
             )));
         }
 
