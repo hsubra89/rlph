@@ -98,11 +98,6 @@ impl TaskGroup {
                 }
             }
             TaskGroup::Group { sub_issues, .. } => {
-                let group_ids: HashSet<u64> = sub_issues
-                    .iter()
-                    .filter_map(|t| t.id.parse::<u64>().ok())
-                    .collect();
-
                 sub_issues.iter().find(|task| {
                     let id = match task.id.parse::<u64>() {
                         Ok(n) => n,
@@ -112,10 +107,7 @@ impl TaskGroup {
                         return false;
                     }
                     let task_deps = deps::parse_dependencies(&task.body);
-                    task_deps
-                        .iter()
-                        .filter(|d| group_ids.contains(d))
-                        .all(|d| done_ids.contains(d))
+                    task_deps.iter().all(|d| done_ids.contains(d))
                 })
             }
         }
@@ -342,8 +334,8 @@ mod tests {
     }
 
     #[test]
-    fn test_group_next_eligible_external_dep_ignored() {
-        // Sub-issue 12 depends on #99 (external, not in group) — treated as satisfied
+    fn test_group_next_eligible_external_dep_blocks() {
+        // Sub-issue 12 depends on #99 (external, not in group) — blocks until resolved
         let group = TaskGroup::Group {
             parent: make_task(10, ""),
             sub_issues: vec![
@@ -352,8 +344,20 @@ mod tests {
             ],
         };
         let empty: HashSet<u64> = HashSet::new();
-        // Both eligible since #99 is external to the group
+        // 11 is eligible, but 12 is blocked by external #99
         assert_eq!(group.next_eligible_sub_issue(&empty).unwrap().id, "11");
+        // After completing 11, 12 is still blocked by #99
+        let done_11: HashSet<u64> = [11].into();
+        assert!(
+            group.next_eligible_sub_issue(&done_11).is_none(),
+            "sub-issue 12 should be blocked by external dep #99"
+        );
+        // Once #99 is also in done_ids, 12 becomes eligible
+        let done_11_99: HashSet<u64> = [11, 99].into();
+        assert_eq!(
+            group.next_eligible_sub_issue(&done_11_99).unwrap().id,
+            "12"
+        );
     }
 
     #[test]
