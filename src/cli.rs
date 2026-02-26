@@ -200,8 +200,7 @@ mod tests {
 
     #[test]
     fn test_parse_review_url() {
-        let cli =
-            Cli::parse_from(["rlph", "review", "https://github.com/owner/repo/pull/456"]);
+        let cli = Cli::parse_from(["rlph", "review", "https://github.com/owner/repo/pull/456"]);
         match cli.command {
             Some(CliCommand::Review { pr_ref }) => {
                 assert_eq!(pr_ref, "https://github.com/owner/repo/pull/456");

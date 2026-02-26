@@ -29,9 +29,7 @@ fn parse_pr_ref(s: &str) -> Result<u64, String> {
             .next()
             .unwrap()
             .parse()
-            .map_err(|_| {
-                format!("invalid PR reference '{s}' — expected a number or GitHub PR URL")
-            })
+            .map_err(|_| format!("invalid PR reference '{s}' — expected a number or GitHub PR URL"))
     })
 }
 
