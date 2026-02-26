@@ -1,14 +1,16 @@
-use std::path::PathBuf;
 use std::time::Duration;
 
 use rlph::runner::{AgentRunner, CodexRunner, Phase};
 
 /// Helper: creates a CodexRunner that invokes a bash script echoing its args and stdin.
-fn mock_codex_runner(script: &str) -> (CodexRunner, PathBuf) {
+///
+/// Returns the `TempDir` so the caller keeps it alive for the duration of the test.
+/// When the `TempDir` is dropped the directory and mock script are cleaned up.
+fn mock_codex_runner(script: &str) -> (CodexRunner, tempfile::TempDir) {
     mock_codex_runner_with_retries(script, 0)
 }
 
-fn mock_codex_runner_with_retries(script: &str, retries: u32) -> (CodexRunner, PathBuf) {
+fn mock_codex_runner_with_retries(script: &str, retries: u32) -> (CodexRunner, tempfile::TempDir) {
     mock_codex_runner_with_timeout_and_retries(script, Duration::from_secs(10), retries)
 }
 
@@ -16,7 +18,7 @@ fn mock_codex_runner_with_timeout_and_retries(
     script: &str,
     timeout: Duration,
     retries: u32,
-) -> (CodexRunner, PathBuf) {
+) -> (CodexRunner, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
     let script_path = tmp.path().join("mock_codex");
     std::fs::write(&script_path, format!("#!/bin/bash\n{script}")).unwrap();
@@ -32,10 +34,7 @@ fn mock_codex_runner_with_timeout_and_retries(
         Some(timeout),
         retries,
     );
-    let path = tmp.path().to_path_buf();
-    // Keep the tempdir alive so the mock script stays on disk.
-    std::mem::forget(tmp);
-    (runner, path)
+    (runner, tmp)
 }
 
 #[tokio::test]
@@ -72,7 +71,7 @@ async fn test_codex_prompt_via_stdin() {
     // Mock script reads from stdin and echoes it
     let (runner, tmp) = mock_codex_runner("cat");
     let result = runner
-        .run(Phase::Implement, "hello prompt", tmp.as_ref())
+        .run(Phase::Implement, "hello prompt", tmp.path())
         .await
         .unwrap();
     assert_eq!(result.exit_code, 0);
@@ -84,7 +83,7 @@ async fn test_codex_exec_bypass_flags() {
     // Consume stdin first so prompt write does not race with early process exit.
     let (runner, tmp) = mock_codex_runner(r#"cat >/dev/null; echo "$@""#);
     let result = runner
-        .run(Phase::Choose, "pick a task", tmp.as_ref())
+        .run(Phase::Choose, "pick a task", tmp.path())
         .await
         .unwrap();
     assert_eq!(result.exit_code, 0);
@@ -114,6 +113,7 @@ async fn test_codex_model_flag_passed() {
         Some(Duration::from_secs(10)),
         0,
     );
+    // `tmp` kept alive until end of test so the mock script remains on disk.
     let result = runner
         .run(Phase::Implement, "do stuff", tmp.path())
         .await
@@ -126,7 +126,7 @@ async fn test_codex_model_flag_passed() {
 async fn test_codex_nonzero_exit_detected() {
     let (runner, tmp) = mock_codex_runner("exit 1");
     let err = runner
-        .run(Phase::Implement, "fail", tmp.as_ref())
+        .run(Phase::Implement, "fail", tmp.path())
         .await
         .unwrap_err();
     let msg = err.to_string();
@@ -158,7 +158,7 @@ async fn test_codex_signal_propagation() {
     // Script sends SIGKILL to itself
     let (runner, tmp) = mock_codex_runner("kill -9 $$");
     let err = runner
-        .run(Phase::Implement, "die", tmp.as_ref())
+        .run(Phase::Implement, "die", tmp.path())
         .await
         .unwrap_err();
     assert!(err.to_string().contains("agent killed by signal"));
@@ -191,11 +191,9 @@ sleep 60
         Some(Duration::from_secs(2)),
         2,
     );
-    let work_dir = tmp.path().to_path_buf();
-    std::mem::forget(tmp);
-
+    // `tmp` kept alive until end of test so the mock script remains on disk.
     let result = runner
-        .run(Phase::Implement, "do work", work_dir.as_ref())
+        .run(Phase::Implement, "do work", tmp.path())
         .await
         .unwrap();
     assert_eq!(result.exit_code, 0);
@@ -209,7 +207,7 @@ async fn test_codex_timeout_exhausts_retries() {
     let (runner, tmp) =
         mock_codex_runner_with_timeout_and_retries("sleep 60", Duration::from_millis(200), 2);
     let err = runner
-        .run(Phase::Implement, "never finish", tmp.as_ref())
+        .run(Phase::Implement, "never finish", tmp.path())
         .await
         .unwrap_err();
     assert!(err.to_string().contains("agent timed out after 3 attempts"));
