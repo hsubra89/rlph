@@ -172,7 +172,7 @@ impl ClaudeRunner {
     }
 
     /// Build the command and arguments for a given phase and prompt.
-    pub fn build_command(&self, prompt: &str) -> (String, Vec<String>) {
+    pub(crate) fn build_command(&self, prompt: &str) -> (String, Vec<String>) {
         let mut args = base_claude_args(self.model.as_deref(), self.effort.as_deref());
         args.push("-p".to_string());
         args.push(prompt.to_string());
@@ -625,7 +625,7 @@ impl OpencodeRunner {
     }
 
     /// Build the command and arguments for a given prompt.
-    pub fn build_command(&self, prompt: &str) -> (String, Vec<String>) {
+    pub(crate) fn build_command(&self, prompt: &str) -> (String, Vec<String>) {
         let mut args = base_opencode_args(self.model.as_deref(), self.variant.as_deref());
         args.push(prompt.to_string());
         (self.agent_binary.clone(), args)
@@ -872,7 +872,7 @@ impl CodexRunner {
     }
 
     /// Build the command and arguments for codex invocation.
-    pub fn build_command(&self) -> (String, Vec<String>) {
+    pub(crate) fn build_command(&self) -> (String, Vec<String>) {
         let mut args = base_codex_args(self.model.as_deref(), self.effort.as_deref());
         args.push("-".to_string());
         (self.agent_binary.clone(), args)
