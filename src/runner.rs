@@ -74,6 +74,32 @@ pub trait AgentRunner {
     ) -> impl std::future::Future<Output = Result<RunResult>> + Send;
 }
 
+/// Build the base Claude CLI flags shared by all command builders.
+///
+/// Returns: `[--print, --verbose, --output-format, stream-json, --dangerously-skip-permissions]`
+/// plus optional `--model` and `--effort`.
+fn base_claude_args(model: Option<&str>, effort: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "--print".to_string(),
+        "--verbose".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+    ];
+
+    if let Some(model) = model {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+
+    if let Some(effort) = effort {
+        args.push("--effort".to_string());
+        args.push(effort.to_string());
+    }
+
+    args
+}
+
 /// Claude runner — invokes the claude CLI directly.
 pub struct ClaudeRunner {
     agent_binary: String,
@@ -102,53 +128,17 @@ impl ClaudeRunner {
 
     /// Build the command and arguments for a given phase and prompt.
     pub fn build_command(&self, prompt: &str) -> (String, Vec<String>) {
-        let mut args = vec![
-            "--print".to_string(),
-            "--verbose".to_string(),
-            "--output-format".to_string(),
-            "stream-json".to_string(),
-            "--dangerously-skip-permissions".to_string(),
-        ];
-
-        if let Some(ref model) = self.model {
-            args.push("--model".to_string());
-            args.push(model.clone());
-        }
-
-        if let Some(ref effort) = self.effort {
-            args.push("--effort".to_string());
-            args.push(effort.clone());
-        }
-
+        let mut args = base_claude_args(self.model.as_deref(), self.effort.as_deref());
         args.push("-p".to_string());
         args.push(prompt.to_string());
-
         (self.agent_binary.clone(), args)
     }
 
     /// Build a resume command for a timed-out session.
     pub fn build_resume_command(&self, session_id: &str) -> (String, Vec<String>) {
-        let mut args = vec![
-            "--print".to_string(),
-            "--verbose".to_string(),
-            "--output-format".to_string(),
-            "stream-json".to_string(),
-            "--dangerously-skip-permissions".to_string(),
-        ];
-
-        if let Some(ref model) = self.model {
-            args.push("--model".to_string());
-            args.push(model.clone());
-        }
-
-        if let Some(ref effort) = self.effort {
-            args.push("--effort".to_string());
-            args.push(effort.clone());
-        }
-
+        let mut args = base_claude_args(self.model.as_deref(), self.effort.as_deref());
         args.push("--resume".to_string());
         args.push(session_id.to_string());
-
         (self.agent_binary.clone(), args)
     }
 }
@@ -292,29 +282,11 @@ pub fn build_resume_with_prompt_command(
     session_id: &str,
     prompt: &str,
 ) -> (String, Vec<String>) {
-    let mut args = vec![
-        "--print".to_string(),
-        "--verbose".to_string(),
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-    ];
-
-    if let Some(model) = model {
-        args.push("--model".to_string());
-        args.push(model.to_string());
-    }
-
-    if let Some(effort) = effort {
-        args.push("--effort".to_string());
-        args.push(effort.to_string());
-    }
-
+    let mut args = base_claude_args(model, effort);
     args.push("--resume".to_string());
     args.push(session_id.to_string());
     args.push("-p".to_string());
     args.push(prompt.to_string());
-
     (agent_binary.to_string(), args)
 }
 
@@ -330,6 +302,7 @@ pub async fn resume_with_correction(
     session_id: &str,
     correction_prompt: &str,
     working_dir: &Path,
+    timeout: Option<Duration>,
 ) -> Result<RunResult> {
     let (command, args) = build_resume_with_prompt_command(
         agent_binary,
@@ -343,7 +316,7 @@ pub async fn resume_with_correction(
         command,
         args,
         working_dir: working_dir.to_path_buf(),
-        timeout: None,
+        timeout,
         log_prefix: "agent:correction".to_string(),
         stream_output: false,
         env: vec![],

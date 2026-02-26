@@ -25,6 +25,7 @@ use crate::worktree::{WorktreeInfo, WorktreeManager, validate_branch_name};
 struct ReviewPhaseOutput {
     name: String,
     stdout: String,
+    session_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -596,6 +597,7 @@ impl<
                     Ok::<ReviewPhaseOutput, Error>(ReviewPhaseOutput {
                         name: phase_name,
                         stdout: result.stdout,
+                        session_id: result.session_id,
                     })
                 });
             }
@@ -607,20 +609,45 @@ impl<
                 review_outputs.push(output);
             }
 
-            let review_outputs_text = review_outputs
-                .iter()
-                .map(|o| {
-                    let rendered = match parse_phase_output(&o.stdout) {
-                        Ok(phase) => render_findings_for_prompt(&phase.findings),
-                        Err(e) => {
-                            warn!(phase = %o.name, error = %e, "failed to parse phase JSON, using raw stdout");
-                            o.stdout.clone()
+            let mut review_texts = Vec::new();
+            for o in &review_outputs {
+                let rendered = match parse_phase_output(&o.stdout) {
+                    Ok(phase) => render_findings_for_prompt(&phase.findings),
+                    Err(e) => {
+                        // Try correction via session resume
+                        let phase_config = self
+                            .config
+                            .review_phases
+                            .iter()
+                            .find(|p| p.name == o.name);
+                        let recovered = if let Some(pc) = phase_config {
+                            self.retry_with_correction(
+                                o.session_id.as_deref(),
+                                &pc.agent_binary,
+                                pc.agent_model.as_deref(),
+                                pc.agent_effort.as_deref(),
+                                pc.agent_timeout,
+                                SchemaName::Phase,
+                                &e.to_string(),
+                                &worktree_info.path,
+                                parse_phase_output,
+                            )
+                            .await
+                        } else {
+                            None
+                        };
+                        match recovered {
+                            Some(phase) => render_findings_for_prompt(&phase.findings),
+                            None => {
+                                warn!(phase = %o.name, error = %e, "failed to parse phase JSON, using raw stdout");
+                                o.stdout.clone()
+                            }
                         }
-                    };
-                    format!("## Review Phase: {}\n\n{}", o.name, rendered)
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n---\n\n");
+                    }
+                };
+                review_texts.push(format!("## Review Phase: {}\n\n{}", o.name, rendered));
+            }
+            let review_outputs_text = review_texts.join("\n\n---\n\n");
 
             let agg_config = &self.config.review_aggregate;
             let agg_runner = self
@@ -645,23 +672,21 @@ impl<
                     // Attempt session resume with correction prompt
                     let recovered = self
                         .retry_with_correction(
-                            &agg_result,
-                            agg_config,
+                            agg_result.session_id.as_deref(),
+                            &agg_config.agent_binary,
+                            agg_config.agent_model.as_deref(),
+                            agg_config.agent_effort.as_deref(),
+                            agg_config.agent_timeout,
                             SchemaName::Aggregator,
                             &e.to_string(),
                             &worktree_info.path,
+                            parse_aggregator_output,
                         )
                         .await;
                     match recovered {
-                        Some(stdout) => match parse_aggregator_output(&stdout) {
-                            Ok(output) => output,
-                            Err(e2) => {
-                                warn!(error = %e2, "aggregator JSON still invalid after correction — retrying round");
-                                continue;
-                            }
-                        },
+                        Some(output) => output,
                         None => {
-                            warn!(error = %e, "failed to parse aggregator JSON, no session to resume — retrying round");
+                            warn!(error = %e, "aggregator JSON correction failed — retrying round");
                             continue;
                         }
                     }
@@ -732,29 +757,28 @@ impl<
                     // Attempt session resume with correction prompt for fix output
                     let recovered = self
                         .retry_with_correction(
-                            &fix_result,
-                            fix_config,
+                            fix_result.session_id.as_deref(),
+                            &fix_config.agent_binary,
+                            fix_config.agent_model.as_deref(),
+                            fix_config.agent_effort.as_deref(),
+                            fix_config.agent_timeout,
                             SchemaName::Fix,
                             &e.to_string(),
                             &worktree_info.path,
+                            parse_fix_output,
                         )
                         .await;
                     match recovered {
-                        Some(stdout) => match parse_fix_output(&stdout) {
-                            Ok(fix_output) => {
-                                info!(
-                                    status = ?fix_output.status,
-                                    summary = fix_output.summary,
-                                    files_changed = ?fix_output.files_changed,
-                                    "fix agent complete (after correction)"
-                                );
-                            }
-                            Err(e2) => {
-                                warn!(error = %e2, "fix agent JSON still invalid after correction — continuing anyway");
-                            }
-                        },
+                        Some(fix_output) => {
+                            info!(
+                                status = ?fix_output.status,
+                                summary = fix_output.summary,
+                                files_changed = ?fix_output.files_changed,
+                                "fix agent complete (after correction)"
+                            );
+                        }
                         None => {
-                            warn!(error = %e, "failed to parse fix agent JSON, no session to resume — continuing anyway");
+                            warn!(error = %e, "fix agent JSON correction failed — continuing anyway");
                         }
                     }
                 }
@@ -790,40 +814,54 @@ impl<
 
     /// Attempt to resume a session with a correction prompt when JSON parsing fails.
     ///
-    /// Returns `Some(stdout)` with the corrected output on success, or `None` if no
-    /// session_id is available or all retry attempts fail.
-    async fn retry_with_correction(
+    /// Re-parses the output inside the retry loop so that each subsequent attempt
+    /// uses the *actual* parse error from the previous correction (not the original).
+    /// Returns `Some(T)` on success, or `None` if no session_id is available or
+    /// all retry attempts fail.
+    #[allow(clippy::too_many_arguments)]
+    async fn retry_with_correction<T>(
         &self,
-        result: &crate::runner::RunResult,
-        step_config: &ReviewStepConfig,
+        session_id: Option<&str>,
+        agent_binary: &str,
+        agent_model: Option<&str>,
+        agent_effort: Option<&str>,
+        agent_timeout: Option<u64>,
         schema: SchemaName,
-        parse_error: &str,
+        initial_error: &str,
         working_dir: &Path,
-    ) -> Option<String> {
-        let session_id = result.session_id.as_deref()?;
+        parser: impl Fn(&str) -> Result<T>,
+    ) -> Option<T> {
+        let session_id = session_id?;
         let max_retries = 2u32;
+        let mut last_error = initial_error.to_string();
 
         for attempt in 1..=max_retries {
-            let prompt = correction_prompt(schema, parse_error);
+            let prompt = correction_prompt(schema, &last_error);
             eprintln!(
                 "[rlph] resuming session {session_id} with correction prompt (attempt {attempt}/{max_retries})"
             );
 
             match resume_with_correction(
-                &step_config.agent_binary,
-                step_config.agent_model.as_deref(),
-                step_config.agent_effort.as_deref(),
+                agent_binary,
+                agent_model,
+                agent_effort,
                 session_id,
                 &prompt,
                 working_dir,
+                agent_timeout.map(Duration::from_secs),
             )
             .await
             {
-                Ok(corrected) => {
-                    return Some(corrected.stdout);
-                }
+                Ok(corrected) => match parser(&corrected.stdout) {
+                    Ok(parsed) => return Some(parsed),
+                    Err(e) => {
+                        last_error = e.to_string();
+                        warn!(attempt, error = %last_error, "correction output still invalid");
+                    }
+                },
                 Err(e) => {
                     warn!(attempt, error = %e, "correction resume failed");
+                    return None;
                 }
             }
         }
