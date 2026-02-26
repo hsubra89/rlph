@@ -17,6 +17,7 @@ use crate::process::{ProcessConfig, spawn_and_stream};
 pub enum RunnerKind {
     Claude,
     Codex,
+    OpenCode,
 }
 
 impl fmt::Display for RunnerKind {
@@ -24,6 +25,7 @@ impl fmt::Display for RunnerKind {
         match self {
             RunnerKind::Claude => write!(f, "claude"),
             RunnerKind::Codex => write!(f, "codex"),
+            RunnerKind::OpenCode => write!(f, "opencode"),
         }
     }
 }
@@ -35,8 +37,9 @@ impl FromStr for RunnerKind {
         match s {
             "claude" => Ok(RunnerKind::Claude),
             "codex" => Ok(RunnerKind::Codex),
+            "opencode" => Ok(RunnerKind::OpenCode),
             other => Err(Error::ConfigValidation(format!(
-                "unknown runner: {other} (expected: claude, codex)"
+                "unknown runner: {other} (expected: claude, codex, opencode)"
             ))),
         }
     }
@@ -69,6 +72,7 @@ pub fn build_runner(
     agent_binary: &str,
     model: Option<&str>,
     effort: Option<&str>,
+    variant: Option<&str>,
     timeout: Option<Duration>,
     timeout_retries: u32,
 ) -> AnyRunner {
@@ -84,6 +88,13 @@ pub fn build_runner(
             agent_binary.to_string(),
             model.map(str::to_string),
             effort.map(str::to_string),
+            timeout,
+            timeout_retries,
+        )),
+        RunnerKind::OpenCode => AnyRunner::OpenCode(OpencodeRunner::new(
+            agent_binary.to_string(),
+            model.map(str::to_string),
+            variant.map(str::to_string),
             timeout,
             timeout_retries,
         )),
@@ -356,6 +367,7 @@ pub async fn resume_with_correction(
     agent_binary: &str,
     model: Option<&str>,
     effort: Option<&str>,
+    variant: Option<&str>,
     session_id: &str,
     correction_prompt: &str,
     working_dir: &Path,
@@ -372,6 +384,16 @@ pub async fn resume_with_correction(
                 agent_binary,
                 model,
                 effort,
+                session_id,
+                correction_prompt,
+            );
+            (cmd, a, None)
+        }
+        RunnerKind::OpenCode => {
+            let (cmd, a) = build_opencode_resume_with_prompt_command(
+                agent_binary,
+                model,
+                variant,
                 session_id,
                 correction_prompt,
             );
@@ -403,6 +425,11 @@ pub async fn resume_with_correction(
             extract_claude_result(&output.stdout_lines)
                 .unwrap_or_else(|| output.stdout_lines.join("\n")),
             extract_session_id(&output.stdout_lines),
+        ),
+        RunnerKind::OpenCode => (
+            extract_opencode_result(&output.stdout_lines)
+                .unwrap_or_else(|| output.stdout_lines.join("\n")),
+            extract_opencode_session_id(&output.stdout_lines),
         ),
     };
     let stderr = output.stderr_lines.join("\n");
@@ -455,10 +482,11 @@ impl AgentRunner for CallbackRunner {
     }
 }
 
-/// Enum dispatching to either Claude, Codex, or callback runner.
+/// Enum dispatching to either Claude, Codex, OpenCode, or callback runner.
 pub enum AnyRunner {
     Claude(ClaudeRunner),
     Codex(CodexRunner),
+    OpenCode(OpencodeRunner),
     Callback(CallbackRunner),
 }
 
@@ -467,9 +495,234 @@ impl AgentRunner for AnyRunner {
         match self {
             AnyRunner::Claude(r) => r.run(phase, prompt, working_dir).await,
             AnyRunner::Codex(r) => r.run(phase, prompt, working_dir).await,
+            AnyRunner::OpenCode(r) => r.run(phase, prompt, working_dir).await,
             AnyRunner::Callback(r) => r.run(phase, prompt, working_dir).await,
         }
     }
+}
+
+/// Build the base OpenCode CLI flags shared by all command builders.
+///
+/// Returns: `["run", "--format", "json"]` plus optional `--model` and `--variant`.
+fn base_opencode_args(model: Option<&str>, variant: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "run".to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+    ];
+
+    if let Some(model) = model {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+
+    if let Some(variant) = variant {
+        args.push("--variant".to_string());
+        args.push(variant.to_string());
+    }
+
+    args
+}
+
+/// OpenCode runner — invokes the opencode CLI.
+pub struct OpencodeRunner {
+    agent_binary: String,
+    model: Option<String>,
+    variant: Option<String>,
+    timeout: Option<Duration>,
+    max_timeout_retries: u32,
+}
+
+impl OpencodeRunner {
+    pub fn new(
+        agent_binary: String,
+        model: Option<String>,
+        variant: Option<String>,
+        timeout: Option<Duration>,
+        max_timeout_retries: u32,
+    ) -> Self {
+        Self {
+            agent_binary,
+            model,
+            variant,
+            timeout,
+            max_timeout_retries,
+        }
+    }
+
+    /// Build the command and arguments for a given prompt.
+    pub fn build_command(&self, prompt: &str) -> (String, Vec<String>) {
+        let mut args = base_opencode_args(self.model.as_deref(), self.variant.as_deref());
+        args.push(prompt.to_string());
+        (self.agent_binary.clone(), args)
+    }
+
+    /// Build a resume command for a timed-out session (prompt-less continue).
+    pub fn build_resume_command(&self, session_id: &str) -> (String, Vec<String>) {
+        let mut args = base_opencode_args(self.model.as_deref(), self.variant.as_deref());
+        args.push("--session".to_string());
+        args.push(session_id.to_string());
+        (self.agent_binary.clone(), args)
+    }
+
+    /// Build a resume command with a new prompt for an existing session.
+    pub fn build_resume_with_prompt_command(
+        &self,
+        session_id: &str,
+        prompt: &str,
+    ) -> (String, Vec<String>) {
+        let mut args = base_opencode_args(self.model.as_deref(), self.variant.as_deref());
+        args.push("--session".to_string());
+        args.push(session_id.to_string());
+        args.push(prompt.to_string());
+        (self.agent_binary.clone(), args)
+    }
+}
+
+impl AgentRunner for OpencodeRunner {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        let log_prefix = format!("agent:{phase}");
+        let max_attempts = 1 + self.max_timeout_retries;
+        let mut all_stdout: Vec<String> = Vec::new();
+        let mut all_stderr: Vec<String> = Vec::new();
+
+        for attempt in 0..max_attempts {
+            let (command, args) = if attempt == 0 {
+                self.build_command(prompt)
+            } else {
+                let session_id = match extract_opencode_session_id(&all_stdout) {
+                    Some(id) => id,
+                    None => {
+                        warn!(prefix = %log_prefix, attempt, "timeout retry: no sessionID found, cannot resume");
+                        return Err(Error::AgentRunner(
+                            "agent timed out and no sessionID found for resume".to_string(),
+                        ));
+                    }
+                };
+                eprintln!(
+                    "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{})",
+                    attempt + 1,
+                    max_attempts
+                );
+                self.build_resume_command(&session_id)
+            };
+
+            let config = ProcessConfig {
+                command,
+                args,
+                working_dir: working_dir.to_path_buf(),
+                timeout: self.timeout,
+                log_prefix: log_prefix.clone(),
+                stream_output: false,
+                env: vec![],
+                stdin_data: None,
+                quiet: true,
+            };
+
+            match spawn_and_stream(config).await {
+                Ok(output) => {
+                    all_stdout.extend(output.stdout_lines);
+                    all_stderr.extend(output.stderr_lines);
+
+                    let stdout = extract_opencode_result(&all_stdout)
+                        .unwrap_or_else(|| all_stdout.join("\n"));
+                    let stderr = all_stderr.join("\n");
+
+                    if let Some(sig) = output.signal {
+                        return Err(Error::AgentRunner(format!("agent killed by signal {sig}")));
+                    }
+
+                    if output.exit_code != 0 {
+                        return Err(Error::AgentRunner(format!(
+                            "agent exited with code {}",
+                            output.exit_code
+                        )));
+                    }
+
+                    let session_id = extract_opencode_session_id(&all_stdout);
+
+                    return Ok(RunResult {
+                        exit_code: output.exit_code,
+                        stdout,
+                        stderr,
+                        session_id,
+                    });
+                }
+                Err(Error::ProcessTimeout {
+                    timeout,
+                    stdout_lines,
+                    stderr_lines,
+                }) => {
+                    all_stdout.extend(stdout_lines);
+                    all_stderr.extend(stderr_lines);
+                    warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(Error::AgentRunner(format!(
+            "agent timed out after {max_attempts} attempts"
+        )))
+    }
+}
+
+/// Extract sessionID from OpenCode JSON output lines.
+///
+/// Scans lines for JSON objects with a top-level `sessionID` field (camelCase).
+/// Returns the last one found (most recent).
+pub fn extract_opencode_session_id(stdout_lines: &[String]) -> Option<String> {
+    let mut last_id = None;
+    for line in stdout_lines {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+            && let Some(id) = val.get("sessionID").and_then(|v| v.as_str())
+            && !id.is_empty()
+        {
+            last_id = Some(id.to_string());
+        }
+    }
+    last_id
+}
+
+/// Extract the final human-readable result from OpenCode JSON output.
+///
+/// OpenCode emits JSON events with `{"type":"text","part":{"type":"text","text":"..."}}`.
+/// Concatenates all `part.text` from `type == "text"` events.
+fn extract_opencode_result(stdout_lines: &[String]) -> Option<String> {
+    let mut texts: Vec<String> = Vec::new();
+    for line in stdout_lines {
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if val.get("type").and_then(|v| v.as_str()) == Some("text")
+            && let Some(part) = val.get("part")
+            && let Some(text) = part.get("text").and_then(|v| v.as_str())
+        {
+            texts.push(text.to_string());
+        }
+    }
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.last().unwrap().clone())
+    }
+}
+
+/// Build an OpenCode resume-with-prompt command for an existing session.
+///
+/// Sends a new user message to the session via `--session <id>` plus a positional prompt.
+pub fn build_opencode_resume_with_prompt_command(
+    agent_binary: &str,
+    model: Option<&str>,
+    variant: Option<&str>,
+    session_id: &str,
+    prompt: &str,
+) -> (String, Vec<String>) {
+    let mut args = base_opencode_args(model, variant);
+    args.push("--session".to_string());
+    args.push(session_id.to_string());
+    args.push(prompt.to_string());
+    (agent_binary.to_string(), args)
 }
 
 /// Build the base Codex CLI flags shared by all command builders.
@@ -824,6 +1077,7 @@ mod tests {
             Some("opus"),
             Some("high"),
             None,
+            None,
             2,
         );
         assert!(matches!(runner, AnyRunner::Claude(_)));
@@ -831,8 +1085,23 @@ mod tests {
 
     #[test]
     fn test_build_runner_codex() {
-        let runner = build_runner(RunnerKind::Codex, "codex", Some("gpt-5.3"), None, None, 2);
+        let runner =
+            build_runner(RunnerKind::Codex, "codex", Some("gpt-5.3"), None, None, None, 2);
         assert!(matches!(runner, AnyRunner::Codex(_)));
+    }
+
+    #[test]
+    fn test_build_runner_opencode() {
+        let runner = build_runner(
+            RunnerKind::OpenCode,
+            "opencode",
+            None,
+            None,
+            Some("high"),
+            None,
+            2,
+        );
+        assert!(matches!(runner, AnyRunner::OpenCode(_)));
     }
 
     #[test]
@@ -1044,7 +1313,7 @@ mod tests {
 
     #[test]
     fn test_build_runner_codex_with_effort() {
-        let runner = build_runner(RunnerKind::Codex, "codex", None, Some("high"), None, 2);
+        let runner = build_runner(RunnerKind::Codex, "codex", None, Some("high"), None, None, 2);
         assert!(matches!(runner, AnyRunner::Codex(_)));
         if let AnyRunner::Codex(r) = runner {
             let (_cmd, args) = r.build_command();
@@ -1068,5 +1337,247 @@ mod tests {
         assert!(args.contains(&"resume".to_string()));
         assert!(args.contains(&"thread-xyz".to_string()));
         assert!(args.contains(&"-".to_string()));
+    }
+
+    // --- OpenCode tests ---
+
+    #[test]
+    fn test_opencode_build_command_defaults() {
+        let runner = OpencodeRunner::new("opencode".to_string(), None, None, None, 2);
+        let (cmd, args) = runner.build_command("do something");
+        assert_eq!(cmd, "opencode");
+        assert!(args.contains(&"run".to_string()));
+        assert!(args.contains(&"--format".to_string()));
+        assert!(args.contains(&"json".to_string()));
+        assert!(args.contains(&"do something".to_string()));
+        assert!(!args.contains(&"--model".to_string()));
+        assert!(!args.contains(&"--variant".to_string()));
+    }
+
+    #[test]
+    fn test_opencode_build_command_with_model() {
+        let runner = OpencodeRunner::new(
+            "opencode".to_string(),
+            Some("anthropic/claude-opus-4-6".to_string()),
+            None,
+            None,
+            2,
+        );
+        let (_cmd, args) = runner.build_command("pick a task");
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"anthropic/claude-opus-4-6".to_string()));
+    }
+
+    #[test]
+    fn test_opencode_build_command_with_variant() {
+        let runner = OpencodeRunner::new(
+            "opencode".to_string(),
+            None,
+            Some("high".to_string()),
+            None,
+            2,
+        );
+        let (_cmd, args) = runner.build_command("implement feature");
+        assert!(args.contains(&"--variant".to_string()));
+        assert!(args.contains(&"high".to_string()));
+    }
+
+    #[test]
+    fn test_opencode_build_command_custom_binary() {
+        let runner = OpencodeRunner::new("/usr/local/bin/oc".to_string(), None, None, None, 2);
+        let (cmd, _args) = runner.build_command("review code");
+        assert_eq!(cmd, "/usr/local/bin/oc");
+    }
+
+    #[test]
+    fn test_opencode_build_resume_command() {
+        let runner = OpencodeRunner::new("opencode".to_string(), None, None, None, 2);
+        let (cmd, args) = runner.build_resume_command("ses_abc123");
+        assert_eq!(cmd, "opencode");
+        assert!(args.contains(&"run".to_string()));
+        assert!(args.contains(&"--format".to_string()));
+        assert!(args.contains(&"json".to_string()));
+        assert!(args.contains(&"--session".to_string()));
+        assert!(args.contains(&"ses_abc123".to_string()));
+        // Prompt-less resume: no positional prompt
+        assert_eq!(args.len(), 5);
+    }
+
+    #[test]
+    fn test_opencode_build_resume_with_prompt_command() {
+        let runner = OpencodeRunner::new("opencode".to_string(), None, None, None, 2);
+        let (cmd, args) = runner.build_resume_with_prompt_command("ses_abc123", "fix your JSON");
+        assert_eq!(cmd, "opencode");
+        assert!(args.contains(&"--session".to_string()));
+        assert!(args.contains(&"ses_abc123".to_string()));
+        assert!(args.contains(&"fix your JSON".to_string()));
+    }
+
+    #[test]
+    fn test_opencode_build_resume_command_with_model() {
+        let runner = OpencodeRunner::new(
+            "opencode".to_string(),
+            Some("anthropic/claude-opus-4-6".to_string()),
+            None,
+            None,
+            2,
+        );
+        let (_cmd, args) = runner.build_resume_command("ses_xyz");
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"anthropic/claude-opus-4-6".to_string()));
+        assert!(args.contains(&"--session".to_string()));
+        assert!(args.contains(&"ses_xyz".to_string()));
+    }
+
+    #[test]
+    fn test_extract_opencode_session_id_camel_case() {
+        let lines = vec![
+            r#"{"type":"step_start","sessionID":"ses_abc123","part":{"type":"step-start"}}"#
+                .to_string(),
+            r#"{"type":"text","sessionID":"ses_abc123","part":{"type":"text","text":"hello"}}"#
+                .to_string(),
+        ];
+        assert_eq!(
+            extract_opencode_session_id(&lines),
+            Some("ses_abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_opencode_session_id_returns_last() {
+        let lines = vec![
+            r#"{"sessionID":"first"}"#.to_string(),
+            r#"{"sessionID":"second"}"#.to_string(),
+        ];
+        assert_eq!(
+            extract_opencode_session_id(&lines),
+            Some("second".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_opencode_session_id_none_for_empty() {
+        assert_eq!(extract_opencode_session_id(&[]), None);
+    }
+
+    #[test]
+    fn test_extract_opencode_session_id_none_for_snake_case() {
+        // OpenCode uses camelCase sessionID, not snake_case session_id
+        let lines = vec![r#"{"session_id":"abc"}"#.to_string()];
+        assert_eq!(extract_opencode_session_id(&lines), None);
+    }
+
+    #[test]
+    fn test_extract_opencode_session_id_none_for_empty_id() {
+        let lines = vec![r#"{"sessionID":""}"#.to_string()];
+        assert_eq!(extract_opencode_session_id(&lines), None);
+    }
+
+    #[test]
+    fn test_extract_opencode_result_text_events() {
+        let lines = vec![
+            r#"{"type":"step_start","sessionID":"ses_abc","part":{"type":"step-start"}}"#
+                .to_string(),
+            r#"{"type":"text","sessionID":"ses_abc","part":{"type":"text","text":"hello world"}}"#
+                .to_string(),
+            r#"{"type":"step_finish","sessionID":"ses_abc","part":{"type":"step-finish","reason":"stop"}}"#
+                .to_string(),
+        ];
+        assert_eq!(
+            extract_opencode_result(&lines).as_deref(),
+            Some("hello world")
+        );
+    }
+
+    #[test]
+    fn test_extract_opencode_result_returns_last_text() {
+        let lines = vec![
+            r#"{"type":"text","sessionID":"ses_abc","part":{"type":"text","text":"first"}}"#
+                .to_string(),
+            r#"{"type":"text","sessionID":"ses_abc","part":{"type":"text","text":"second"}}"#
+                .to_string(),
+        ];
+        assert_eq!(extract_opencode_result(&lines).as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn test_extract_opencode_result_none_without_text_event() {
+        let lines = vec![
+            r#"{"type":"step_start","sessionID":"ses_abc","part":{"type":"step-start"}}"#
+                .to_string(),
+            r#"{"type":"step_finish","sessionID":"ses_abc","part":{"type":"step-finish"}}"#
+                .to_string(),
+        ];
+        assert_eq!(extract_opencode_result(&lines), None);
+    }
+
+    #[test]
+    fn test_build_opencode_resume_with_prompt_command() {
+        let (cmd, args) = build_opencode_resume_with_prompt_command(
+            "opencode",
+            None,
+            None,
+            "ses_abc",
+            "fix your JSON",
+        );
+        assert_eq!(cmd, "opencode");
+        assert!(args.contains(&"run".to_string()));
+        assert!(args.contains(&"--format".to_string()));
+        assert!(args.contains(&"json".to_string()));
+        assert!(args.contains(&"--session".to_string()));
+        assert!(args.contains(&"ses_abc".to_string()));
+        assert!(args.contains(&"fix your JSON".to_string()));
+    }
+
+    #[test]
+    fn test_build_opencode_resume_with_prompt_command_with_model_and_variant() {
+        let (_cmd, args) = build_opencode_resume_with_prompt_command(
+            "opencode",
+            Some("anthropic/claude-opus-4-6"),
+            Some("high"),
+            "ses_xyz",
+            "correction",
+        );
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"anthropic/claude-opus-4-6".to_string()));
+        assert!(args.contains(&"--variant".to_string()));
+        assert!(args.contains(&"high".to_string()));
+        assert!(args.contains(&"--session".to_string()));
+        assert!(args.contains(&"ses_xyz".to_string()));
+        assert!(args.contains(&"correction".to_string()));
+    }
+
+    #[test]
+    fn test_runner_kind_display_opencode() {
+        assert_eq!(RunnerKind::OpenCode.to_string(), "opencode");
+    }
+
+    #[test]
+    fn test_runner_kind_from_str_opencode() {
+        assert_eq!(
+            "opencode".parse::<RunnerKind>().unwrap(),
+            RunnerKind::OpenCode
+        );
+    }
+
+    #[test]
+    fn test_build_runner_opencode_with_variant() {
+        let runner = build_runner(
+            RunnerKind::OpenCode,
+            "opencode",
+            Some("anthropic/claude-opus-4-6"),
+            None,
+            Some("high"),
+            None,
+            2,
+        );
+        assert!(matches!(runner, AnyRunner::OpenCode(_)));
+        if let AnyRunner::OpenCode(r) = runner {
+            let (_cmd, args) = r.build_command("test");
+            assert!(args.contains(&"--model".to_string()));
+            assert!(args.contains(&"anthropic/claude-opus-4-6".to_string()));
+            assert!(args.contains(&"--variant".to_string()));
+            assert!(args.contains(&"high".to_string()));
+        }
     }
 }

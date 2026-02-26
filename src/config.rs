@@ -36,6 +36,7 @@ pub struct ReviewPhaseConfigFile {
     pub agent_binary: Option<String>,
     pub agent_model: Option<String>,
     pub agent_effort: Option<String>,
+    pub agent_variant: Option<String>,
     pub agent_timeout: Option<u64>,
 }
 
@@ -47,6 +48,7 @@ pub struct ReviewPhaseConfig {
     pub agent_binary: String,
     pub agent_model: Option<String>,
     pub agent_effort: Option<String>,
+    pub agent_variant: Option<String>,
     pub agent_timeout: Option<u64>,
 }
 
@@ -58,6 +60,7 @@ pub struct ReviewStepConfigFile {
     pub agent_binary: Option<String>,
     pub agent_model: Option<String>,
     pub agent_effort: Option<String>,
+    pub agent_variant: Option<String>,
     pub agent_timeout: Option<u64>,
 }
 
@@ -68,6 +71,7 @@ pub struct ReviewStepConfig {
     pub agent_binary: String,
     pub agent_model: Option<String>,
     pub agent_effort: Option<String>,
+    pub agent_variant: Option<String>,
     pub agent_timeout: Option<u64>,
 }
 
@@ -88,6 +92,7 @@ pub struct ConfigFile {
     pub agent_model: Option<String>,
     pub agent_timeout: Option<u64>,
     pub agent_effort: Option<String>,
+    pub agent_variant: Option<String>,
     pub max_review_rounds: Option<u32>,
     pub agent_timeout_retries: Option<u32>,
     pub review_phases: Option<Vec<ReviewPhaseConfigFile>>,
@@ -113,6 +118,7 @@ pub struct Config {
     pub agent_model: Option<String>,
     pub agent_timeout: Option<u64>,
     pub agent_effort: Option<String>,
+    pub agent_variant: Option<String>,
     pub max_review_rounds: u32,
     pub agent_timeout_retries: u32,
     pub review_phases: Vec<ReviewPhaseConfig>,
@@ -139,6 +145,7 @@ pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {
             agent_binary: "claude".to_string(),
             agent_model: None,
             agent_effort: None,
+            agent_variant: None,
             agent_timeout: None,
         },
         ReviewPhaseConfig {
@@ -148,6 +155,7 @@ pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {
             agent_binary: "claude".to_string(),
             agent_model: None,
             agent_effort: None,
+            agent_variant: None,
             agent_timeout: None,
         },
         ReviewPhaseConfig {
@@ -157,6 +165,7 @@ pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {
             agent_binary: "claude".to_string(),
             agent_model: None,
             agent_effort: None,
+            agent_variant: None,
             agent_timeout: None,
         },
     ]
@@ -170,6 +179,7 @@ pub fn default_review_step(prompt: &str) -> ReviewStepConfig {
         agent_binary: "claude".to_string(),
         agent_model: None,
         agent_effort: None,
+        agent_variant: None,
         agent_timeout: None,
     }
 }
@@ -247,6 +257,7 @@ fn runner_default_binary(runner: RunnerKind) -> &'static str {
     match runner {
         RunnerKind::Codex => "codex",
         RunnerKind::Claude => "claude",
+        RunnerKind::OpenCode => "opencode",
     }
 }
 
@@ -254,6 +265,7 @@ fn runner_default_model(runner: RunnerKind) -> Option<&'static str> {
     match runner {
         RunnerKind::Codex => Some("gpt-5.3-codex"),
         RunnerKind::Claude => Some("claude-opus-4-6"),
+        RunnerKind::OpenCode => None,
     }
 }
 
@@ -261,6 +273,7 @@ fn runner_default_effort(runner: RunnerKind) -> Option<&'static str> {
     match runner {
         RunnerKind::Claude => Some("high"),
         RunnerKind::Codex => None,
+        RunnerKind::OpenCode => None,
     }
 }
 
@@ -295,6 +308,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
     let global_binary_override = cli.agent_binary.clone().or(file.agent_binary.clone());
     let global_model_override = cli.agent_model.clone().or(file.agent_model.clone());
     let global_effort_override = cli.agent_effort.clone().or(file.agent_effort.clone());
+    let global_variant_override = cli.agent_variant.clone().or(file.agent_variant.clone());
 
     let global_binary = global_binary_override
         .clone()
@@ -305,6 +319,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
     let global_effort = global_effort_override
         .clone()
         .or_else(|| default_effort.map(str::to_string));
+    let global_variant = global_variant_override.clone();
     let global_timeout = cli.agent_timeout.or(file.agent_timeout).or(Some(600));
 
     let review_phases: Vec<ReviewPhaseConfig> = file
@@ -319,6 +334,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
                     agent_binary: None,
                     agent_model: None,
                     agent_effort: None,
+                    agent_variant: None,
                     agent_timeout: None,
                 })
                 .collect()
@@ -347,6 +363,9 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
                     .agent_effort
                     .or_else(|| global_effort_override.clone())
                     .or_else(|| runner_effort.map(str::to_string)),
+                agent_variant: p
+                    .agent_variant
+                    .or_else(|| global_variant_override.clone()),
                 agent_timeout: p.agent_timeout.or(global_timeout),
                 runner: effective_runner,
             })
@@ -377,6 +396,9 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
                     .agent_effort
                     .or_else(|| global_effort_override.clone())
                     .or_else(|| runner_effort.map(str::to_string)),
+                agent_variant: s
+                    .agent_variant
+                    .or_else(|| global_variant_override.clone()),
                 agent_timeout: s.agent_timeout.or(global_timeout),
                 runner: effective_runner,
             })
@@ -421,6 +443,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         agent_model: global_model,
         agent_timeout: global_timeout,
         agent_effort: global_effort,
+        agent_variant: global_variant,
         max_review_rounds: cli
             .max_review_rounds
             .or(file.max_review_rounds)
@@ -454,6 +477,18 @@ fn validate(config: &Config) -> Result<()> {
                 "unknown submission: {other} (expected: github, graphite)"
             )));
         }
+    }
+    if config.runner == RunnerKind::OpenCode && config.agent_effort.is_some() {
+        return Err(Error::ConfigValidation(
+            "opencode uses agent_variant, not agent_effort".to_string(),
+        ));
+    }
+    if matches!(config.runner, RunnerKind::Claude | RunnerKind::Codex)
+        && config.agent_variant.is_some()
+    {
+        return Err(Error::ConfigValidation(
+            "agent_variant is only supported by opencode".to_string(),
+        ));
     }
     if config.poll_seconds == 0 {
         return Err(Error::ConfigValidation(
@@ -1136,5 +1171,145 @@ prompt = "review-fix"
             Some("custom-model-v1")
         );
         assert_eq!(config.review_fix.agent_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn test_opencode_runner_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["rlph", "--once", "--runner", "opencode"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.runner, RunnerKind::OpenCode);
+        assert_eq!(config.agent_binary, "opencode");
+        assert_eq!(config.agent_model, None);
+        assert_eq!(config.agent_effort, None);
+    }
+
+    #[test]
+    fn test_opencode_with_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from([
+            "rlph",
+            "--once",
+            "--runner",
+            "opencode",
+            "--agent-variant",
+            "high",
+        ]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(config.runner, RunnerKind::OpenCode);
+        assert_eq!(config.agent_variant.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn test_opencode_with_effort_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from([
+            "rlph",
+            "--once",
+            "--runner",
+            "opencode",
+            "--agent-effort",
+            "high",
+        ]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("opencode uses agent_variant, not agent_effort"));
+    }
+
+    #[test]
+    fn test_claude_with_variant_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from([
+            "rlph",
+            "--once",
+            "--runner",
+            "claude",
+            "--agent-variant",
+            "high",
+        ]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("agent_variant is only supported by opencode"));
+    }
+
+    #[test]
+    fn test_codex_with_variant_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from([
+            "rlph",
+            "--once",
+            "--runner",
+            "codex",
+            "--agent-variant",
+            "low",
+        ]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("agent_variant is only supported by opencode"));
+    }
+
+    #[test]
+    fn test_opencode_variant_plumbed_to_review_phases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+runner = "opencode"
+agent_variant = "high"
+
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+
+[review_aggregate]
+prompt = "review-aggregate"
+
+[review_fix]
+prompt = "review-fix"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(
+            config.review_phases[0].agent_variant.as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            config.review_aggregate.agent_variant.as_deref(),
+            Some("high")
+        );
+        assert_eq!(config.review_fix.agent_variant.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn test_opencode_review_phase_variant_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+runner = "opencode"
+agent_variant = "high"
+
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+agent_variant = "low"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        assert_eq!(
+            config.review_phases[0].agent_variant.as_deref(),
+            Some("low")
+        );
     }
 }

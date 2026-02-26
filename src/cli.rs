@@ -23,7 +23,7 @@ pub struct Cli {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Agent runner to use (claude, codex)
+    /// Agent runner to use (claude, codex, opencode)
     #[arg(long)]
     pub runner: Option<String>,
 
@@ -67,9 +67,13 @@ pub struct Cli {
     #[arg(long)]
     pub agent_timeout: Option<u64>,
 
-    /// Effort level for the agent (low, medium, high) — Claude runner only
+    /// Effort level for the agent (low, medium, high) — Claude/Codex runner only
     #[arg(long)]
     pub agent_effort: Option<String>,
+
+    /// Variant for the agent (low, high) — OpenCode runner only
+    #[arg(long)]
+    pub agent_variant: Option<String>,
 
     /// Maximum review rounds per task
     #[arg(long)]
