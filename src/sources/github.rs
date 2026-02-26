@@ -162,7 +162,7 @@ impl GitHubSource {
                     labels(first: 20) { nodes { name } }
                     subIssues(first: 50) {
                       nodes {
-                        number title body url
+                        number title body url state
                         labels(first: 20) { nodes { name } }
                       }
                     }
@@ -194,6 +194,7 @@ impl GitHubSource {
                 .sub_issues
                 .nodes
                 .iter()
+                .filter(|si| si.state == "OPEN")
                 .filter(|si| si.labels.nodes.iter().any(|l| l.name == self.label))
                 .map(|si| si.number)
                 .collect();
@@ -217,6 +218,7 @@ impl GitHubSource {
                 .sub_issues
                 .nodes
                 .iter()
+                .filter(|si| si.state == "OPEN")
                 .filter(|si| si.labels.nodes.iter().any(|l| l.name == self.label))
                 .collect();
 
@@ -302,6 +304,7 @@ struct GqlSubIssue {
     title: String,
     body: Option<String>,
     url: String,
+    state: String,
     labels: GqlLabelConnection,
 }
 
@@ -314,11 +317,11 @@ struct GqlSubIssueConnection {
 #[derive(Debug, Deserialize, Default)]
 struct GqlLabelConnection {
     #[serde(default)]
-    nodes: Vec<GqlLabel2>,
+    nodes: Vec<GqlLabel>,
 }
 
 #[derive(Debug, Deserialize)]
-struct GqlLabel2 {
+struct GqlLabel {
     name: String,
 }
 
@@ -645,10 +648,21 @@ mod tests {
     }
 
     fn gql_sub(number: u64, title: &str, labels: &[&str], body: &str) -> serde_json::Value {
+        gql_sub_with_state(number, title, labels, body, "OPEN")
+    }
+
+    fn gql_sub_with_state(
+        number: u64,
+        title: &str,
+        labels: &[&str],
+        body: &str,
+        state: &str,
+    ) -> serde_json::Value {
         serde_json::json!({
             "number": number,
             "title": title,
             "body": body,
+            "state": state,
             "url": format!("https://github.com/owner/repo/issues/{number}"),
             "labels": { "nodes": labels.iter().map(|l| serde_json::json!({"name": l})).collect::<Vec<_>>() }
         })
@@ -777,6 +791,53 @@ mod tests {
             }
             _ => panic!("expected Group variant"),
         }
+    }
+
+    #[test]
+    fn test_graphql_filters_closed_sub_issues() {
+        let resp = gql_response(vec![gql_issue(
+            10,
+            "Parent",
+            &["rlph"],
+            "",
+            vec![
+                gql_sub(11, "Open child", &["rlph"], ""),
+                gql_sub_with_state(12, "Closed child", &["rlph"], "", "CLOSED"),
+            ],
+        )]);
+        let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        assert_eq!(groups.len(), 1);
+        match &groups[0] {
+            TaskGroup::Group { sub_issues, .. } => {
+                assert_eq!(sub_issues.len(), 1);
+                assert_eq!(sub_issues[0].id, "11");
+            }
+            _ => panic!("expected Group variant"),
+        }
+    }
+
+    #[test]
+    fn test_graphql_all_sub_issues_closed_becomes_standalone() {
+        let resp = gql_response(vec![gql_issue(
+            10,
+            "Parent",
+            &["rlph"],
+            "",
+            vec![gql_sub_with_state(
+                11,
+                "Closed child",
+                &["rlph"],
+                "",
+                "CLOSED",
+            )],
+        )]);
+        let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert!(matches!(&groups[0], TaskGroup::Standalone(t) if t.id == "10"));
     }
 
     #[test]
