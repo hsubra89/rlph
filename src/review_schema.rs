@@ -78,10 +78,18 @@ pub fn parse_aggregator_output(raw: &str) -> Result<AggregatorOutput> {
         .map_err(|e| Error::Orchestrator(format!("failed to parse aggregator JSON: {e}")))
 }
 
+/// Status returned by the review-fix agent.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FixStatus {
+    Fixed,
+    Error,
+}
+
 /// Structured output from the review-fix agent.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FixOutput {
-    pub status: String,
+    pub status: FixStatus,
     pub summary: String,
     pub files_changed: Vec<String>,
 }
@@ -387,7 +395,7 @@ mod tests {
             "files_changed": ["src/main.rs", "src/db.rs"]
         }"#;
         let output = parse_fix_output(json).unwrap();
-        assert_eq!(output.status, "fixed");
+        assert_eq!(output.status, FixStatus::Fixed);
         assert_eq!(output.summary, "Applied SQL injection fix");
         assert_eq!(output.files_changed, vec!["src/main.rs", "src/db.rs"]);
     }
@@ -422,8 +430,27 @@ mod tests {
     fn test_parse_fix_output_fenced_json() {
         let input = "```json\n{\"status\": \"fixed\", \"summary\": \"done\", \"files_changed\": [\"a.rs\"]}\n```";
         let output = parse_fix_output(input).unwrap();
-        assert_eq!(output.status, "fixed");
+        assert_eq!(output.status, FixStatus::Fixed);
         assert_eq!(output.files_changed, vec!["a.rs"]);
+    }
+
+    #[test]
+    fn test_parse_fix_output_error_status() {
+        let json = r#"{
+            "status": "error",
+            "summary": "Could not apply fix",
+            "files_changed": []
+        }"#;
+        let output = parse_fix_output(json).unwrap();
+        assert_eq!(output.status, FixStatus::Error);
+        assert_eq!(output.summary, "Could not apply fix");
+        assert!(output.files_changed.is_empty());
+    }
+
+    #[test]
+    fn test_parse_fix_output_invalid_status_errors() {
+        let json = r#"{"status": "unknown", "summary": "done", "files_changed": []}"#;
+        assert!(parse_fix_output(json).is_err());
     }
 
     #[test]

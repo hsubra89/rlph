@@ -701,7 +701,7 @@ impl<
             match parse_fix_output(&fix_result.stdout) {
                 Ok(fix_output) => {
                     info!(
-                        status = fix_output.status,
+                        status = ?fix_output.status,
                         summary = fix_output.summary,
                         files_changed = ?fix_output.files_changed,
                         "fix agent complete"
