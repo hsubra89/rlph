@@ -461,6 +461,25 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
     Ok(config)
 }
 
+fn validate_runner_flags(
+    scope: &str,
+    runner: RunnerKind,
+    effort: &Option<String>,
+    variant: &Option<String>,
+) -> Result<()> {
+    if runner == RunnerKind::OpenCode && effort.is_some() {
+        return Err(Error::ConfigValidation(format!(
+            "{scope}: opencode uses agent_variant, not agent_effort"
+        )));
+    }
+    if matches!(runner, RunnerKind::Claude | RunnerKind::Codex) && variant.is_some() {
+        return Err(Error::ConfigValidation(format!(
+            "{scope}: agent_variant is only supported by opencode"
+        )));
+    }
+    Ok(())
+}
+
 fn validate(config: &Config) -> Result<()> {
     match config.source.as_str() {
         "github" | "linear" => {}
@@ -478,18 +497,27 @@ fn validate(config: &Config) -> Result<()> {
             )));
         }
     }
-    if config.runner == RunnerKind::OpenCode && config.agent_effort.is_some() {
-        return Err(Error::ConfigValidation(
-            "opencode uses agent_variant, not agent_effort".to_string(),
-        ));
+    validate_runner_flags("global", config.runner, &config.agent_effort, &config.agent_variant)?;
+    for phase in &config.review_phases {
+        validate_runner_flags(
+            &format!("review phase '{}'", phase.name),
+            phase.runner,
+            &phase.agent_effort,
+            &phase.agent_variant,
+        )?;
     }
-    if matches!(config.runner, RunnerKind::Claude | RunnerKind::Codex)
-        && config.agent_variant.is_some()
-    {
-        return Err(Error::ConfigValidation(
-            "agent_variant is only supported by opencode".to_string(),
-        ));
-    }
+    validate_runner_flags(
+        "review_aggregate",
+        config.review_aggregate.runner,
+        &config.review_aggregate.agent_effort,
+        &config.review_aggregate.agent_variant,
+    )?;
+    validate_runner_flags(
+        "review_fix",
+        config.review_fix.runner,
+        &config.review_fix.agent_effort,
+        &config.review_fix.agent_variant,
+    )?;
     if config.poll_seconds == 0 {
         return Err(Error::ConfigValidation(
             "poll_seconds must be > 0".to_string(),
@@ -1311,5 +1339,100 @@ agent_variant = "low"
             config.review_phases[0].agent_variant.as_deref(),
             Some("low")
         );
+    }
+
+    #[test]
+    fn test_phase_opencode_inheriting_effort_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+runner = "claude"
+agent_effort = "high"
+
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+runner = "opencode"
+
+[review_aggregate]
+prompt = "review-aggregate"
+
+[review_fix]
+prompt = "review-fix"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("review phase 'check': opencode uses agent_variant, not agent_effort"));
+    }
+
+    #[test]
+    fn test_phase_claude_inheriting_variant_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+runner = "opencode"
+agent_variant = "high"
+
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+runner = "claude"
+
+[review_aggregate]
+prompt = "review-aggregate"
+runner = "opencode"
+
+[review_fix]
+prompt = "review-fix"
+runner = "opencode"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("review phase 'check': agent_variant is only supported by opencode"));
+    }
+
+    #[test]
+    fn test_review_aggregate_opencode_inheriting_effort_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+runner = "claude"
+agent_effort = "high"
+
+[[review_phases]]
+name = "check"
+prompt = "check-review"
+
+[review_aggregate]
+prompt = "review-aggregate"
+runner = "opencode"
+
+[review_fix]
+prompt = "review-fix"
+"#,
+        )
+        .unwrap();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("review_aggregate: opencode uses agent_variant, not agent_effort"));
     }
 }
