@@ -728,7 +728,10 @@ impl<
         let all_complete = group_state
             .group_sub_issues
             .iter()
-            .all(|id| group_state.completed_sub_issues.contains(id));
+            .all(|id| {
+                group_state.completed_sub_issues.contains(id)
+                    || done_ids.contains(&id.parse::<u64>().unwrap_or(0))
+            });
 
         let sub = group.next_eligible_sub_issue(&done_ids);
         let Some(sub) = sub else {
