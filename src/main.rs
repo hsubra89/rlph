@@ -254,6 +254,7 @@ async fn main() {
         "codex" => AnyRunner::Codex(CodexRunner::new(
             config.agent_binary.clone(),
             config.agent_model.clone(),
+            config.agent_effort.clone(),
             timeout,
             config.agent_timeout_retries,
         )),

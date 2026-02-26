@@ -623,6 +623,7 @@ impl<
                         let recovered = if let Some(pc) = phase_config {
                             self.retry_with_correction(
                                 o.session_id.as_deref(),
+                                &pc.runner,
                                 &pc.agent_binary,
                                 pc.agent_model.as_deref(),
                                 pc.agent_effort.as_deref(),
@@ -673,6 +674,7 @@ impl<
                     let recovered = self
                         .retry_with_correction(
                             agg_result.session_id.as_deref(),
+                            &agg_config.runner,
                             &agg_config.agent_binary,
                             agg_config.agent_model.as_deref(),
                             agg_config.agent_effort.as_deref(),
@@ -758,6 +760,7 @@ impl<
                     let recovered = self
                         .retry_with_correction(
                             fix_result.session_id.as_deref(),
+                            &fix_config.runner,
                             &fix_config.agent_binary,
                             fix_config.agent_model.as_deref(),
                             fix_config.agent_effort.as_deref(),
@@ -822,6 +825,7 @@ impl<
     async fn retry_with_correction<T>(
         &self,
         session_id: Option<&str>,
+        runner_type: &str,
         agent_binary: &str,
         agent_model: Option<&str>,
         agent_effort: Option<&str>,
@@ -842,6 +846,7 @@ impl<
             );
 
             match resume_with_correction(
+                runner_type,
                 agent_binary,
                 agent_model,
                 agent_effort,
