@@ -188,6 +188,44 @@ impl ClaudeRunner {
     }
 }
 
+/// What to display for a Claude stream-json event.
+#[derive(Debug, PartialEq, Eq)]
+enum StreamEvent<'a> {
+    Text(&'a str),
+    ToolUse(&'a str),
+    BlockStop,
+    Ignore,
+}
+
+/// Parse a Claude `--output-format stream-json` JSON value into a display event.
+fn parse_claude_stream_event(val: &serde_json::Value) -> StreamEvent<'_> {
+    let event_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    match event_type {
+        "content_block_delta" => {
+            if let Some(delta) = val.get("delta")
+                && let Some(text) = delta.get("text").and_then(|v| v.as_str())
+            {
+                StreamEvent::Text(text)
+            } else {
+                StreamEvent::Ignore
+            }
+        }
+        "content_block_start" => {
+            if let Some(cb) = val.get("content_block")
+                && cb.get("type").and_then(|v| v.as_str()) == Some("tool_use")
+                && let Some(name) = cb.get("name").and_then(|v| v.as_str())
+            {
+                StreamEvent::ToolUse(name)
+            } else {
+                StreamEvent::Ignore
+            }
+        }
+        "content_block_stop" => StreamEvent::BlockStop,
+        _ => StreamEvent::Ignore,
+    }
+}
+
 /// Display a single Claude `--output-format stream-json` line in real time.
 ///
 /// Parses the JSON event and prints meaningful content to stderr:
@@ -202,29 +240,18 @@ fn display_claude_stream_line(line: &str) {
         return;
     };
 
-    let event_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-    match event_type {
-        "content_block_delta" => {
-            if let Some(delta) = val.get("delta")
-                && let Some(text) = delta.get("text").and_then(|v| v.as_str())
-            {
-                eprint!("{text}");
-                let _ = std::io::stderr().flush();
-            }
+    match parse_claude_stream_event(&val) {
+        StreamEvent::Text(text) => {
+            eprint!("{text}");
+            let _ = std::io::stderr().flush();
         }
-        "content_block_start" => {
-            if let Some(cb) = val.get("content_block")
-                && cb.get("type").and_then(|v| v.as_str()) == Some("tool_use")
-                && let Some(name) = cb.get("name").and_then(|v| v.as_str())
-            {
-                eprintln!("[tool: {name}]");
-            }
+        StreamEvent::ToolUse(name) => {
+            eprintln!("[tool: {name}]");
         }
-        "content_block_stop" => {
+        StreamEvent::BlockStop => {
             eprintln!();
         }
-        _ => {}
+        StreamEvent::Ignore => {}
     }
 }
 
@@ -1595,6 +1622,71 @@ mod tests {
             "opencode".parse::<RunnerKind>().unwrap(),
             RunnerKind::OpenCode
         );
+    }
+
+    // --- StreamEvent parsing tests ---
+
+    #[test]
+    fn test_parse_stream_event_text_delta() {
+        let val: serde_json::Value = serde_json::json!({
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": "hello"}
+        });
+        assert_eq!(parse_claude_stream_event(&val), StreamEvent::Text("hello"));
+    }
+
+    #[test]
+    fn test_parse_stream_event_tool_use() {
+        let val: serde_json::Value = serde_json::json!({
+            "type": "content_block_start",
+            "content_block": {"type": "tool_use", "name": "Read", "id": "tu_1"}
+        });
+        assert_eq!(
+            parse_claude_stream_event(&val),
+            StreamEvent::ToolUse("Read")
+        );
+    }
+
+    #[test]
+    fn test_parse_stream_event_block_stop() {
+        let val: serde_json::Value = serde_json::json!({"type": "content_block_stop"});
+        assert_eq!(parse_claude_stream_event(&val), StreamEvent::BlockStop);
+    }
+
+    #[test]
+    fn test_parse_stream_event_ignores_result() {
+        let val: serde_json::Value = serde_json::json!({
+            "type": "result",
+            "result": "done"
+        });
+        assert_eq!(parse_claude_stream_event(&val), StreamEvent::Ignore);
+    }
+
+    #[test]
+    fn test_parse_stream_event_ignores_system() {
+        let val: serde_json::Value = serde_json::json!({
+            "type": "system",
+            "session_id": "abc"
+        });
+        assert_eq!(parse_claude_stream_event(&val), StreamEvent::Ignore);
+    }
+
+    #[test]
+    fn test_parse_stream_event_text_block_start_ignored() {
+        let val: serde_json::Value = serde_json::json!({
+            "type": "content_block_start",
+            "content_block": {"type": "text", "text": ""}
+        });
+        assert_eq!(parse_claude_stream_event(&val), StreamEvent::Ignore);
+    }
+
+    #[test]
+    fn test_parse_stream_event_delta_without_text() {
+        let val: serde_json::Value = serde_json::json!({
+            "type": "content_block_delta",
+            "delta": {"type": "input_json_delta", "partial_json": "{}"}
+        });
+        assert_eq!(parse_claude_stream_event(&val), StreamEvent::Ignore);
     }
 
     #[test]
