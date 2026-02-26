@@ -360,7 +360,7 @@ pub fn build_codex_resume_with_prompt_command(
 ///
 /// The `runner_type` parameter selects the appropriate command builder and
 /// result extractor: `Claude` uses Claude CLI flags, `Codex` uses Codex
-/// CLI flags with stdin delivery.
+/// CLI flags with stdin delivery, `OpenCode` uses the OpenCode CLI.
 #[allow(clippy::too_many_arguments)]
 pub async fn resume_with_correction(
     runner_type: RunnerKind,
@@ -1068,8 +1068,15 @@ mod tests {
 
     #[test]
     fn test_build_runner_codex() {
-        let runner =
-            build_runner(RunnerKind::Codex, "codex", Some("gpt-5.3"), None, None, None, 2);
+        let runner = build_runner(
+            RunnerKind::Codex,
+            "codex",
+            Some("gpt-5.3"),
+            None,
+            None,
+            None,
+            2,
+        );
         assert!(matches!(runner, AnyRunner::Codex(_)));
     }
 
@@ -1296,7 +1303,15 @@ mod tests {
 
     #[test]
     fn test_build_runner_codex_with_effort() {
-        let runner = build_runner(RunnerKind::Codex, "codex", None, Some("high"), None, None, 2);
+        let runner = build_runner(
+            RunnerKind::Codex,
+            "codex",
+            None,
+            Some("high"),
+            None,
+            None,
+            2,
+        );
         assert!(matches!(runner, AnyRunner::Codex(_)));
         if let AnyRunner::Codex(r) = runner {
             let (_cmd, args) = r.build_command();

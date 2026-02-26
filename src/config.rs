@@ -255,8 +255,8 @@ pub fn parse_config(content: &str) -> Result<ConfigFile> {
 
 fn runner_default_binary(runner: RunnerKind) -> &'static str {
     match runner {
-        RunnerKind::Codex => "codex",
         RunnerKind::Claude => "claude",
+        RunnerKind::Codex => "codex",
         RunnerKind::OpenCode => "opencode",
     }
 }
@@ -363,9 +363,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
                     .agent_effort
                     .or_else(|| global_effort_override.clone())
                     .or_else(|| runner_effort.map(str::to_string)),
-                agent_variant: p
-                    .agent_variant
-                    .or_else(|| global_variant_override.clone()),
+                agent_variant: p.agent_variant.or_else(|| global_variant_override.clone()),
                 agent_timeout: p.agent_timeout.or(global_timeout),
                 runner: effective_runner,
             })
@@ -396,9 +394,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
                     .agent_effort
                     .or_else(|| global_effort_override.clone())
                     .or_else(|| runner_effort.map(str::to_string)),
-                agent_variant: s
-                    .agent_variant
-                    .or_else(|| global_variant_override.clone()),
+                agent_variant: s.agent_variant.or_else(|| global_variant_override.clone()),
                 agent_timeout: s.agent_timeout.or(global_timeout),
                 runner: effective_runner,
             })
@@ -497,7 +493,12 @@ fn validate(config: &Config) -> Result<()> {
             )));
         }
     }
-    validate_runner_flags("global", config.runner, &config.agent_effort, &config.agent_variant)?;
+    validate_runner_flags(
+        "global",
+        config.runner,
+        &config.agent_effort,
+        &config.agent_variant,
+    )?;
     for phase in &config.review_phases {
         validate_runner_flags(
             &format!("review phase '{}'", phase.name),
@@ -1240,9 +1241,10 @@ prompt = "review-fix"
             "high",
         ]);
         let err = Config::load_from(&cli, tmp.path()).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("opencode uses agent_variant, not agent_effort"));
+        assert!(
+            err.to_string()
+                .contains("opencode uses agent_variant, not agent_effort")
+        );
     }
 
     #[test]
@@ -1257,9 +1259,10 @@ prompt = "review-fix"
             "high",
         ]);
         let err = Config::load_from(&cli, tmp.path()).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("agent_variant is only supported by opencode"));
+        assert!(
+            err.to_string()
+                .contains("agent_variant is only supported by opencode")
+        );
     }
 
     #[test]
@@ -1274,9 +1277,10 @@ prompt = "review-fix"
             "low",
         ]);
         let err = Config::load_from(&cli, tmp.path()).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("agent_variant is only supported by opencode"));
+        assert!(
+            err.to_string()
+                .contains("agent_variant is only supported by opencode")
+        );
     }
 
     #[test]
@@ -1367,9 +1371,10 @@ prompt = "review-fix"
         .unwrap();
         let cli = Cli::parse_from(["rlph", "--once"]);
         let err = Config::load_from(&cli, tmp.path()).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("review phase 'check': opencode uses agent_variant, not agent_effort"));
+        assert!(
+            err.to_string()
+                .contains("review phase 'check': opencode uses agent_variant, not agent_effort")
+        );
     }
 
     #[test]
@@ -1400,9 +1405,10 @@ runner = "opencode"
         .unwrap();
         let cli = Cli::parse_from(["rlph", "--once"]);
         let err = Config::load_from(&cli, tmp.path()).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("review phase 'check': agent_variant is only supported by opencode"));
+        assert!(
+            err.to_string()
+                .contains("review phase 'check': agent_variant is only supported by opencode")
+        );
     }
 
     #[test]
@@ -1431,8 +1437,9 @@ prompt = "review-fix"
         .unwrap();
         let cli = Cli::parse_from(["rlph", "--once"]);
         let err = Config::load_from(&cli, tmp.path()).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("review_aggregate: opencode uses agent_variant, not agent_effort"));
+        assert!(
+            err.to_string()
+                .contains("review_aggregate: opencode uses agent_variant, not agent_effort")
+        );
     }
 }

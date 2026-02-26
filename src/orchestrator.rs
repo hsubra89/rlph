@@ -725,9 +725,8 @@ impl<
                             Some(phase) => render_findings_for_prompt(&phase.findings),
                             None => {
                                 warn!(phase = %o.name, error = %e, "phase JSON correction exhausted — retrying round");
-                                last_json_failure = Some(format!(
-                                    "review phase '{}' malformed JSON: {e}", o.name
-                                ));
+                                last_json_failure =
+                                    Some(format!("review phase '{}' malformed JSON: {e}", o.name));
                                 phase_parse_failed = true;
                                 break;
                             }
@@ -781,9 +780,7 @@ impl<
                         Some(output) => output,
                         None => {
                             warn!(error = %e, "aggregator JSON correction failed — retrying round");
-                            last_json_failure = Some(format!(
-                                "aggregator malformed JSON: {e}"
-                            ));
+                            last_json_failure = Some(format!("aggregator malformed JSON: {e}"));
                             continue;
                         }
                     }
@@ -878,9 +875,7 @@ impl<
                         }
                         None => {
                             warn!(error = %e, "fix agent JSON correction failed — retrying round");
-                            last_json_failure = Some(format!(
-                                "fix agent malformed JSON: {e}"
-                            ));
+                            last_json_failure = Some(format!("fix agent malformed JSON: {e}"));
                             continue;
                         }
                     }

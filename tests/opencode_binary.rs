@@ -73,10 +73,7 @@ async fn test_opencode_emits_session_id() {
     );
 
     let session_id = extract_session_id(&output.stdout_lines);
-    assert!(
-        session_id.is_some(),
-        "expected sessionID in JSON output"
-    );
+    assert!(session_id.is_some(), "expected sessionID in JSON output");
     assert!(
         !session_id.unwrap().is_empty(),
         "sessionID should be non-empty"
