@@ -27,3 +27,4 @@ target
 .ralph/
 .ralph-gh/
 .rlph/state
+.rlph/config.toml
