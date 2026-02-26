@@ -6,7 +6,7 @@ The core loop in `orchestrator.rs` runs this sequence per iteration:
 
 ```
 Fetch tasks (TaskSource) → filter by dependency graph (deps.rs)
-  → Choose phase: agent picks task, writes .ralph/task.toml
+  → Choose phase: agent picks task, writes .rlph/task.toml
   → Create worktree (worktree.rs)
   → Implement phase: agent codes in worktree
   → Push branch, submit PR (SubmissionBackend)

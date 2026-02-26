@@ -12,7 +12,7 @@ Do NOT implement the task yet.
      body: `blocked by #N`, `depends on #N`, `blockedBy: [N, M]`.
    - Prefer higher-priority issues (labels: `p1`-`p9`, `priority-high/medium/low`).
 3. Do not run external commands or tools for this phase.
-4. Save the chosen issue in `.ralph/task.toml` as a TOML object:
+4. Save the chosen issue in `.rlph/task.toml` as a TOML object:
 
 ```toml
 id = "gh-<issue number>"
