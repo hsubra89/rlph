@@ -310,7 +310,10 @@ fn validate_system_init(events: &[Value]) -> &Value {
     let tools = init["tools"].as_array().unwrap();
     assert!(!tools.is_empty(), "system/init: tools should not be empty");
     for tool in tools {
-        assert!(tool.as_str().is_some(), "system/init: each tool must be a string");
+        assert!(
+            tool.as_str().is_some(),
+            "system/init: each tool must be a string"
+        );
     }
 
     // mcp_servers is an array of objects with name + status
@@ -332,7 +335,10 @@ fn validate_assistant_event(event: &Value, ctx: &str) {
     assert_str(event, "session_id", ctx);
     assert_str(event, "uuid", ctx);
     // parent_tool_use_id is either null (top-level) or a string (sub-agent)
-    assert!(event.get("parent_tool_use_id").is_some(), "{ctx}: must have parent_tool_use_id");
+    assert!(
+        event.get("parent_tool_use_id").is_some(),
+        "{ctx}: must have parent_tool_use_id"
+    );
 
     let msg = event
         .get("message")
@@ -387,7 +393,10 @@ fn validate_assistant_event(event: &Value, ctx: &str) {
 fn validate_user_event(event: &Value, ctx: &str) {
     assert_str(event, "session_id", ctx);
     assert_str(event, "uuid", ctx);
-    assert!(event.get("parent_tool_use_id").is_some(), "{ctx}: must have parent_tool_use_id");
+    assert!(
+        event.get("parent_tool_use_id").is_some(),
+        "{ctx}: must have parent_tool_use_id"
+    );
 
     let msg = event
         .get("message")
@@ -427,7 +436,10 @@ fn validate_result_event(events: &[Value]) -> &Value {
 
     // usage and modelUsage are objects
     assert!(res.get("usage").is_some(), "result: must have usage object");
-    assert!(res.get("modelUsage").is_some(), "result: must have modelUsage object");
+    assert!(
+        res.get("modelUsage").is_some(),
+        "result: must have modelUsage object"
+    );
 
     res
 }
@@ -476,7 +488,11 @@ async fn test_claude_stream_json_text_response_schema() {
     let Some(output) = run_claude_or_skip(args).await else {
         return;
     };
-    assert_eq!(output.exit_code, 0, "claude exited with {}", output.exit_code);
+    assert_eq!(
+        output.exit_code, 0,
+        "claude exited with {}",
+        output.exit_code
+    );
 
     let events = parse_events(&output);
     assert!(!events.is_empty(), "expected JSON events on stdout");
@@ -513,7 +529,11 @@ async fn test_claude_stream_json_text_response_schema() {
 
     // Verify event ordering: system/init comes first, result comes last
     let first_type = events[0].get("type").and_then(Value::as_str);
-    assert_eq!(first_type, Some("system"), "first event must be system/init");
+    assert_eq!(
+        first_type,
+        Some("system"),
+        "first event must be system/init"
+    );
     let last_type = events.last().unwrap().get("type").and_then(Value::as_str);
     assert_eq!(last_type, Some("result"), "last event must be result");
 }
@@ -550,9 +570,7 @@ async fn test_claude_stream_json_tool_use_schema() {
 
     let output = match spawn_and_stream(config).await {
         Ok(output) => {
-            if let Some(reason) =
-                classify_claude_skip(&output.stdout_lines, &output.stderr_lines)
-            {
+            if let Some(reason) = classify_claude_skip(&output.stdout_lines, &output.stderr_lines) {
                 eprintln!("skipping: {reason}");
                 return;
             }
@@ -572,7 +590,11 @@ async fn test_claude_stream_json_tool_use_schema() {
         Err(err) => panic!("failed: {err:?}"),
     };
 
-    assert_eq!(output.exit_code, 0, "claude exited with {}", output.exit_code);
+    assert_eq!(
+        output.exit_code, 0,
+        "claude exited with {}",
+        output.exit_code
+    );
 
     let events = parse_events(&output);
     let types = event_types(&events);
@@ -589,12 +611,10 @@ async fn test_claude_stream_json_tool_use_schema() {
     );
 
     let tool_use_assistant = assistant_events.iter().find(|e| {
-        e["message"]["content"]
-            .as_array()
-            .is_some_and(|c| {
-                c.iter()
-                    .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
-            })
+        e["message"]["content"].as_array().is_some_and(|c| {
+            c.iter()
+                .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+        })
     });
     assert!(
         tool_use_assistant.is_some(),
@@ -658,12 +678,10 @@ async fn test_claude_stream_json_tool_use_schema() {
 
     // Should have a final assistant event with text content (the answer)
     let text_assistant = assistant_events.iter().find(|e| {
-        e["message"]["content"]
-            .as_array()
-            .is_some_and(|c| {
-                c.iter()
-                    .any(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-            })
+        e["message"]["content"].as_array().is_some_and(|c| {
+            c.iter()
+                .any(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+        })
     });
     assert!(
         text_assistant.is_some(),
@@ -703,9 +721,7 @@ async fn test_claude_stream_json_subagent_schema() {
 
     let output = match spawn_and_stream(config).await {
         Ok(output) => {
-            if let Some(reason) =
-                classify_claude_skip(&output.stdout_lines, &output.stderr_lines)
-            {
+            if let Some(reason) = classify_claude_skip(&output.stdout_lines, &output.stderr_lines) {
                 eprintln!("skipping: {reason}");
                 return;
             }
@@ -725,7 +741,11 @@ async fn test_claude_stream_json_subagent_schema() {
         Err(err) => panic!("failed: {err:?}"),
     };
 
-    assert_eq!(output.exit_code, 0, "claude exited with {}", output.exit_code);
+    assert_eq!(
+        output.exit_code, 0,
+        "claude exited with {}",
+        output.exit_code
+    );
 
     let events = parse_events(&output);
     let types = event_types(&events);
@@ -783,11 +803,7 @@ async fn test_claude_stream_json_subagent_schema() {
     // There should be user events with the same parent_tool_use_id (sub-agent tool results)
     let subagent_users: Vec<&Value> = find_events(&events, "user")
         .into_iter()
-        .filter(|e| {
-            e.get("parent_tool_use_id")
-                .and_then(Value::as_str)
-                == Some(parent_tool_use_id)
-        })
+        .filter(|e| e.get("parent_tool_use_id").and_then(Value::as_str) == Some(parent_tool_use_id))
         .collect();
     assert!(
         !subagent_users.is_empty(),
