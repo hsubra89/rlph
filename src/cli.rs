@@ -89,10 +89,10 @@ pub enum CliCommand {
     /// Initialize the project for the configured task source (e.g., create labels)
     Init,
 
-    /// Run review phases directly for an existing GitHub PR number
+    /// Run review phases directly for an existing GitHub PR
     Review {
-        /// GitHub pull request number
-        pr_number: u64,
+        /// GitHub pull request number or URL
+        pr_ref: String,
     },
 
     /// Launch an interactive PRD-writing session
@@ -193,7 +193,18 @@ mod tests {
     fn test_parse_review() {
         let cli = Cli::parse_from(["rlph", "review", "123"]);
         match cli.command {
-            Some(CliCommand::Review { pr_number }) => assert_eq!(pr_number, 123),
+            Some(CliCommand::Review { pr_ref }) => assert_eq!(pr_ref, "123"),
+            _ => panic!("expected Review subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_review_url() {
+        let cli = Cli::parse_from(["rlph", "review", "https://github.com/owner/repo/pull/456"]);
+        match cli.command {
+            Some(CliCommand::Review { pr_ref }) => {
+                assert_eq!(pr_ref, "https://github.com/owner/repo/pull/456");
+            }
             _ => panic!("expected Review subcommand"),
         }
     }
@@ -204,7 +215,7 @@ mod tests {
             "rlph", "review", "77", "--source", "github", "--label", "rlph",
         ]);
         match cli.command {
-            Some(CliCommand::Review { pr_number }) => assert_eq!(pr_number, 77),
+            Some(CliCommand::Review { pr_ref }) => assert_eq!(pr_ref, "77"),
             _ => panic!("expected Review subcommand"),
         }
         assert_eq!(cli.source.as_deref(), Some("github"));

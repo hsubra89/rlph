@@ -21,6 +21,18 @@ use rlph::state::StateManager;
 use rlph::submission::GitHubSubmission;
 use rlph::worktree::WorktreeManager;
 
+/// Parse a PR reference that is either a plain number or a GitHub PR URL.
+fn parse_pr_ref(s: &str) -> Result<u64, String> {
+    s.parse().or_else(|_| {
+        s.trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .parse()
+            .map_err(|_| format!("invalid PR reference '{s}' — expected a number or GitHub PR URL"))
+    })
+}
+
 fn init_logging() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -57,7 +69,11 @@ async fn main() {
             }
             return;
         }
-        Some(CliCommand::Review { pr_number }) => {
+        Some(CliCommand::Review { ref pr_ref }) => {
+            let pr_number: u64 = parse_pr_ref(pr_ref).unwrap_or_else(|msg| {
+                eprintln!("error: {msg}");
+                std::process::exit(1);
+            });
             let config = match Config::load(&cli) {
                 Ok(c) => c,
                 Err(e) => {
@@ -298,5 +314,36 @@ async fn main() {
         }
         eprintln!("error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pr_ref_plain_number() {
+        assert_eq!(parse_pr_ref("42").unwrap(), 42);
+    }
+
+    #[test]
+    fn parse_pr_ref_github_url() {
+        assert_eq!(
+            parse_pr_ref("https://github.com/owner/repo/pull/123").unwrap(),
+            123
+        );
+    }
+
+    #[test]
+    fn parse_pr_ref_trailing_slash() {
+        assert_eq!(
+            parse_pr_ref("https://github.com/owner/repo/pull/456/").unwrap(),
+            456
+        );
+    }
+
+    #[test]
+    fn parse_pr_ref_invalid() {
+        assert!(parse_pr_ref("not-a-number").is_err());
     }
 }
