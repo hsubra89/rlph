@@ -57,7 +57,20 @@ async fn main() {
             }
             return;
         }
-        Some(CliCommand::Review { pr_number }) => {
+        Some(CliCommand::Review { ref pr_ref }) => {
+            let pr_number: u64 = pr_ref
+                .parse()
+                .or_else(|_| {
+                    pr_ref
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("")
+                        .parse()
+                })
+                .unwrap_or_else(|_| {
+                    eprintln!("error: invalid PR reference '{pr_ref}' — expected a number or GitHub PR URL");
+                    std::process::exit(1);
+                });
             let config = match Config::load(&cli) {
                 Ok(c) => c,
                 Err(e) => {
