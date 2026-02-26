@@ -129,6 +129,9 @@ pub trait TaskSource {
     /// Mark a task as in-review in the remote system.
     fn mark_in_review(&self, task_id: &str) -> Result<()>;
 
+    /// Mark a task as done in the remote system (adds `done` label, removes `in-progress`).
+    fn mark_done(&self, task_id: &str) -> Result<()>;
+
     /// Get full details for a task.
     fn get_task_details(&self, task_id: &str) -> Result<Task>;
 
@@ -167,6 +170,13 @@ impl TaskSource for AnySource {
         match self {
             AnySource::GitHub(s) => s.mark_in_review(task_id),
             AnySource::Linear(s) => s.mark_in_review(task_id),
+        }
+    }
+
+    fn mark_done(&self, task_id: &str) -> Result<()> {
+        match self {
+            AnySource::GitHub(s) => s.mark_done(task_id),
+            AnySource::Linear(s) => s.mark_done(task_id),
         }
     }
 

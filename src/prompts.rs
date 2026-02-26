@@ -30,6 +30,7 @@ const KNOWN_VARIABLES: &[&str] = &[
     "pr_comments",
     "pr_number",
     "pr_branch",
+    "parent_issue_body",
 ];
 
 fn default_template(phase: &str) -> Option<&'static str> {

@@ -17,6 +17,8 @@ The following instructions should be done without interaction or asking for perm
 
 {{issue_body}}
 
+{{parent_issue_body}}
+
 ## Workflow
 
 1. Study the issue description above to understand the task.

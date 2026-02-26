@@ -382,6 +382,22 @@ impl TaskSource for GitHubSource {
         Ok(())
     }
 
+    fn mark_done(&self, task_id: &str) -> Result<()> {
+        if let Err(e) = self.client.run(&[
+            "issue",
+            "edit",
+            task_id,
+            "--add-label",
+            "done",
+            "--remove-label",
+            "in-progress",
+        ]) {
+            warn!(task_id, error = %e, "failed to update labels for done");
+        }
+        debug!(task_id, "marked done");
+        Ok(())
+    }
+
     fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
         let json = self.client.run(&[
             "issue", "list", "--state", "closed", "--json", "number", "--limit", "200",
