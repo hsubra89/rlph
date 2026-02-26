@@ -363,12 +363,8 @@ pub async fn resume_with_correction(
 ) -> Result<RunResult> {
     let (command, args, stdin_data) = match runner_type {
         RunnerKind::Codex => {
-            let (cmd, a) = build_codex_resume_with_prompt_command(
-                agent_binary,
-                model,
-                effort,
-                session_id,
-            );
+            let (cmd, a) =
+                build_codex_resume_with_prompt_command(agent_binary, model, effort, session_id);
             (cmd, a, Some(correction_prompt.to_string()))
         }
         RunnerKind::Claude => {
@@ -566,8 +562,7 @@ impl CodexRunner {
 
     /// Build the command and arguments for codex invocation.
     pub fn build_command(&self) -> (String, Vec<String>) {
-        let mut args =
-            base_codex_args(self.model.as_deref(), self.effort.as_deref());
+        let mut args = base_codex_args(self.model.as_deref(), self.effort.as_deref());
         args.push("-".to_string());
         (self.agent_binary.clone(), args)
     }
@@ -576,8 +571,7 @@ impl CodexRunner {
     /// Uses `codex exec resume --last` which resumes the most recent session
     /// scoped to the current working directory.
     pub fn build_resume_command(&self) -> (String, Vec<String>) {
-        let mut args =
-            base_codex_args(self.model.as_deref(), self.effort.as_deref());
+        let mut args = base_codex_args(self.model.as_deref(), self.effort.as_deref());
         args.push("resume".to_string());
         args.push("--last".to_string());
         (self.agent_binary.clone(), args)
@@ -622,8 +616,8 @@ impl AgentRunner for CodexRunner {
                     all_stdout.extend(output.stdout_lines);
                     all_stderr.extend(output.stderr_lines);
 
-                    let stdout = extract_codex_result(&all_stdout)
-                        .unwrap_or_else(|| all_stdout.join("\n"));
+                    let stdout =
+                        extract_codex_result(&all_stdout).unwrap_or_else(|| all_stdout.join("\n"));
                     let stderr = all_stderr.join("\n");
 
                     if let Some(sig) = output.signal {
@@ -824,7 +818,14 @@ mod tests {
 
     #[test]
     fn test_build_runner_claude() {
-        let runner = build_runner(RunnerKind::Claude, "claude", Some("opus"), Some("high"), None, 2);
+        let runner = build_runner(
+            RunnerKind::Claude,
+            "claude",
+            Some("opus"),
+            Some("high"),
+            None,
+            2,
+        );
         assert!(matches!(runner, AnyRunner::Claude(_)));
     }
 
@@ -877,7 +878,13 @@ mod tests {
 
     #[test]
     fn test_codex_build_resume_command_with_model() {
-        let runner = CodexRunner::new("codex".to_string(), Some("gpt-5.3".to_string()), None, None, 2);
+        let runner = CodexRunner::new(
+            "codex".to_string(),
+            Some("gpt-5.3".to_string()),
+            None,
+            None,
+            2,
+        );
         let (_cmd, args) = runner.build_resume_command();
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"gpt-5.3".to_string()));
@@ -887,8 +894,13 @@ mod tests {
 
     #[test]
     fn test_build_claude_resume_with_prompt_command_has_both_resume_and_prompt() {
-        let (cmd, args) =
-            build_claude_resume_with_prompt_command("claude", None, None, "sess-123", "fix your JSON");
+        let (cmd, args) = build_claude_resume_with_prompt_command(
+            "claude",
+            None,
+            None,
+            "sess-123",
+            "fix your JSON",
+        );
         assert_eq!(cmd, "claude");
         assert!(args.contains(&"--resume".to_string()));
         assert!(args.contains(&"sess-123".to_string()));
@@ -924,7 +936,8 @@ mod tests {
     #[test]
     fn test_extract_thread_id_from_json() {
         let lines = vec![
-            r#"{"type":"thread.started","thread_id":"019c97dd-d6ce-7642-99c8-3717697fd004"}"#.to_string(),
+            r#"{"type":"thread.started","thread_id":"019c97dd-d6ce-7642-99c8-3717697fd004"}"#
+                .to_string(),
             r#"{"type":"turn.started"}"#.to_string(),
         ];
         assert_eq!(
@@ -974,8 +987,10 @@ mod tests {
     #[test]
     fn test_extract_codex_result_returns_last_agent_message() {
         let lines = vec![
-            r#"{"type":"item.completed","item":{"type":"agent_message","text":"first"}}"#.to_string(),
-            r#"{"type":"item.completed","item":{"type":"agent_message","text":"second"}}"#.to_string(),
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"first"}}"#
+                .to_string(),
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"second"}}"#
+                .to_string(),
         ];
         assert_eq!(extract_codex_result(&lines).as_deref(), Some("second"));
     }
@@ -992,7 +1007,8 @@ mod tests {
     #[test]
     fn test_extract_codex_result_skips_reasoning() {
         let lines = vec![
-            r#"{"type":"item.completed","item":{"type":"reasoning","text":"thinking hard"}}"#.to_string(),
+            r#"{"type":"item.completed","item":{"type":"reasoning","text":"thinking hard"}}"#
+                .to_string(),
         ];
         assert_eq!(extract_codex_result(&lines), None);
     }
@@ -1013,13 +1029,7 @@ mod tests {
 
     #[test]
     fn test_codex_effort_flag() {
-        let runner = CodexRunner::new(
-            "codex".to_string(),
-            None,
-            Some("low".to_string()),
-            None,
-            2,
-        );
+        let runner = CodexRunner::new("codex".to_string(), None, Some("low".to_string()), None, 2);
         let (_cmd, args) = runner.build_command();
         assert!(args.contains(&"--config".to_string()));
         assert!(args.contains(&"model_reasoning_effort=\"low\"".to_string()));

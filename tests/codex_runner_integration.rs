@@ -58,7 +58,12 @@ async fn test_codex_command_no_model() {
     assert_eq!(cmd, "codex");
     assert_eq!(
         args,
-        vec!["exec", "--dangerously-bypass-approvals-and-sandbox", "--json", "-"]
+        vec![
+            "exec",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--json",
+            "-"
+        ]
     );
 }
 

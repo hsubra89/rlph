@@ -3,12 +3,15 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rlph::config::{
     Config, ReviewPhaseConfig, ReviewStepConfig, default_review_phases, default_review_step,
 };
 use rlph::error::{Error, Result};
-use rlph::orchestrator::{Orchestrator, ProgressReporter, ReviewInvocation, ReviewRunnerFactory};
+use rlph::orchestrator::{
+    CorrectionRunner, Orchestrator, ProgressReporter, ReviewInvocation, ReviewRunnerFactory,
+};
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult, RunnerKind};
 use rlph::sources::{Task, TaskSource};
@@ -1859,5 +1862,538 @@ async fn test_iteration_reports_full_event_sequence() {
             issue_number: 42,
             title: "Fix bug".to_string(),
         }
+    );
+}
+
+// --- Malformed JSON correction tests ---
+
+/// Mock correction runner that returns a sequence of responses.
+/// Each call to `resume` pops the next response from the queue.
+struct MockCorrectionRunner {
+    responses: Mutex<VecDeque<Result<RunResult>>>,
+}
+
+impl MockCorrectionRunner {
+    fn new(responses: Vec<Result<RunResult>>) -> Self {
+        Self {
+            responses: Mutex::new(VecDeque::from(responses)),
+        }
+    }
+}
+
+impl CorrectionRunner for MockCorrectionRunner {
+    async fn resume(
+        &self,
+        _runner_type: RunnerKind,
+        _agent_binary: &str,
+        _model: Option<&str>,
+        _effort: Option<&str>,
+        _session_id: &str,
+        _correction_prompt: &str,
+        _working_dir: &Path,
+        _timeout: Option<Duration>,
+    ) -> Result<RunResult> {
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| Err(Error::AgentRunner("no more correction responses".into())))
+    }
+}
+
+/// Review factory where the phase runner returns malformed JSON (with session_id),
+/// but aggregator returns valid approved JSON.
+struct MalformedPhaseFactory {
+    /// If true, correction will eventually succeed (via MockCorrectionRunner).
+    /// The factory itself always returns the same malformed output.
+    stdout: String,
+}
+
+impl ReviewRunnerFactory for MalformedPhaseFactory {
+    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
+        let stdout = self.stdout.clone();
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(
+            move |_phase, _prompt, _dir| {
+                let stdout = stdout.clone();
+                Box::pin(async move {
+                    Ok(RunResult {
+                        exit_code: 0,
+                        stdout,
+                        stderr: String::new(),
+                        session_id: Some("sess-phase-123".into()),
+                    })
+                })
+            },
+        )))
+    }
+
+    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
+            Box::pin(async move {
+                let stdout = match phase {
+                    Phase::ReviewAggregate => r#"{"verdict":"approved","comment":"All good.","findings":[],"fix_instructions":null}"#.to_string(),
+                    Phase::ReviewFix => r#"{"status":"fixed","summary":"done","files_changed":[]}"#.to_string(),
+                    _ => String::new(),
+                };
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout,
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            })
+        })))
+    }
+}
+
+/// Review factory where aggregator returns malformed JSON (with session_id),
+/// but phase returns valid JSON.
+struct MalformedAggregatorFactory {
+    agg_stdout: String,
+}
+
+impl ReviewRunnerFactory for MalformedAggregatorFactory {
+    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async {
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: r#"{"findings":[]}"#.into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            })
+        })))
+    }
+
+    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
+        let agg_stdout = self.agg_stdout.clone();
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(
+            move |phase, _prompt, _dir| {
+                let agg_stdout = agg_stdout.clone();
+                Box::pin(async move {
+                    let stdout = match phase {
+                        Phase::ReviewAggregate => agg_stdout,
+                        Phase::ReviewFix => {
+                            r#"{"status":"fixed","summary":"done","files_changed":[]}"#.to_string()
+                        }
+                        _ => String::new(),
+                    };
+                    Ok(RunResult {
+                        exit_code: 0,
+                        stdout,
+                        stderr: String::new(),
+                        session_id: Some("sess-agg-456".into()),
+                    })
+                })
+            },
+        )))
+    }
+}
+
+/// Review factory where the fix runner returns malformed JSON (with session_id),
+/// aggregator returns needs_fix on the first round so the fix phase runs,
+/// then approved on subsequent rounds.
+struct MalformedFixFactory {
+    fix_stdout: String,
+    agg_calls: Arc<AtomicUsize>,
+}
+
+impl MalformedFixFactory {
+    fn new(fix_stdout: &str) -> Self {
+        Self {
+            fix_stdout: fix_stdout.into(),
+            agg_calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl ReviewRunnerFactory for MalformedFixFactory {
+    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async {
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: r#"{"findings":[]}"#.into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            })
+        })))
+    }
+
+    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
+        let fix_stdout = self.fix_stdout.clone();
+        let agg_calls = Arc::clone(&self.agg_calls);
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(
+            move |phase, _prompt, _dir| {
+                let fix_stdout = fix_stdout.clone();
+                let agg_calls = Arc::clone(&agg_calls);
+                Box::pin(async move {
+                    let stdout = match phase {
+                        Phase::ReviewAggregate => {
+                            let call = agg_calls.fetch_add(1, Ordering::SeqCst);
+                            if call == 0 {
+                                // First round: needs_fix
+                                r#"{"verdict":"needs_fix","comment":"Issues","findings":[],"fix_instructions":"fix it"}"#.to_string()
+                            } else {
+                                // Second round: approved
+                                r#"{"verdict":"approved","comment":"Fixed.","findings":[],"fix_instructions":null}"#.to_string()
+                            }
+                        }
+                        Phase::ReviewFix => fix_stdout,
+                        _ => String::new(),
+                    };
+                    Ok(RunResult {
+                        exit_code: 0,
+                        stdout,
+                        stderr: String::new(),
+                        session_id: Some("sess-fix-789".into()),
+                    })
+                })
+            },
+        )))
+    }
+}
+
+/// Helper to build an orchestrator for correction tests using `run_review_for_existing_pr`.
+fn build_correction_test_orchestrator<F: ReviewRunnerFactory>(
+    repo_dir: &Path,
+    wt_dir: &Path,
+    task: &Task,
+    factory: F,
+    correction_runner: MockCorrectionRunner,
+) -> (
+    impl std::future::Future<Output = Result<()>>,
+    Arc<Mutex<Vec<PipelineEvent>>>,
+) {
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = MockSource::new(vec![task.clone()], Arc::clone(&source_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.to_path_buf(),
+        wt_dir.to_path_buf(),
+        "main".to_string(),
+    );
+    let worktree_info = worktree_mgr.create(42, "correction-test").unwrap();
+    let state_dir = repo_dir.join(".rlph-test-state");
+    let vars = make_review_vars(task, repo_dir, &worktree_info.branch, &worktree_info.path);
+
+    let (reporter, events) = CapturingReporter::new();
+
+    let orchestrator = Orchestrator::new(
+        source,
+        MockRunner::new("gh-42"),
+        submission,
+        worktree_mgr,
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        make_config(true),
+        repo_dir.to_path_buf(),
+    )
+    .with_review_factory(factory)
+    .with_reporter(reporter)
+    .with_correction_runner(correction_runner);
+
+    let invocation = ReviewInvocation {
+        task_id_for_state: "gh-42".to_string(),
+        mark_in_review_task_id: None,
+        worktree_info,
+        vars,
+        comment_pr_number: Some(77),
+        push_remote_branch: None,
+    };
+
+    let fut = async move { orchestrator.run_review_for_existing_pr(invocation).await };
+    (fut, events)
+}
+
+// --- Phase malformed JSON correction tests ---
+
+#[tokio::test]
+async fn test_phase_malformed_json_correction_succeeds() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let factory = MalformedPhaseFactory {
+        stdout: "NOT VALID JSON {{{{".into(),
+    };
+    // Correction returns valid phase JSON on first attempt
+    let correction = MockCorrectionRunner::new(vec![
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: r#"{"findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"corrected finding"}]}"#.into(),
+            stderr: String::new(),
+            session_id: Some("sess-phase-123".into()),
+        }),
+    ]);
+
+    let (fut, events) = build_correction_test_orchestrator(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        factory,
+        correction,
+    );
+    fut.await.unwrap();
+
+    // Review should complete successfully with corrected findings rendered in summary.
+    let events = events.lock().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::ReviewSummary { .. })),
+        "expected ReviewSummary after successful correction"
+    );
+}
+
+#[tokio::test]
+async fn test_phase_malformed_json_correction_exhausted_uses_raw_stdout() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let factory = MalformedPhaseFactory {
+        stdout: "MALFORMED PHASE OUTPUT".into(),
+    };
+    // Both correction attempts return invalid JSON
+    let correction = MockCorrectionRunner::new(vec![
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: "still not valid json".into(),
+            stderr: String::new(),
+            session_id: Some("sess-phase-123".into()),
+        }),
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: "yet more garbage".into(),
+            stderr: String::new(),
+            session_id: Some("sess-phase-123".into()),
+        }),
+    ]);
+
+    let (fut, events) = build_correction_test_orchestrator(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        factory,
+        correction,
+    );
+    // Should still complete — falls back to raw stdout
+    fut.await.unwrap();
+
+    let events = events.lock().unwrap();
+    // Review should still produce a summary (raw stdout was used for aggregation)
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::ReviewSummary { .. })),
+        "expected ReviewSummary even after correction exhaustion (raw stdout fallback)"
+    );
+}
+
+// --- Aggregator malformed JSON correction tests ---
+
+#[tokio::test]
+async fn test_aggregator_malformed_json_correction_succeeds() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let factory = MalformedAggregatorFactory {
+        agg_stdout: "BROKEN AGG JSON".into(),
+    };
+    // Correction returns valid aggregator JSON (approved)
+    let correction = MockCorrectionRunner::new(vec![
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: r#"{"verdict":"approved","comment":"Corrected review.","findings":[],"fix_instructions":null}"#.into(),
+            stderr: String::new(),
+            session_id: Some("sess-agg-456".into()),
+        }),
+    ]);
+
+    let (fut, events) = build_correction_test_orchestrator(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        factory,
+        correction,
+    );
+    fut.await.unwrap();
+
+    let events = events.lock().unwrap();
+    let summary = events.iter().find_map(|e| match e {
+        PipelineEvent::ReviewSummary { body } => Some(body.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        summary.as_deref(),
+        Some("Corrected review."),
+        "expected corrected aggregator comment in summary"
+    );
+}
+
+#[tokio::test]
+async fn test_aggregator_malformed_json_correction_exhausted_retries_round() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    // Aggregator always returns malformed JSON — after correction exhaustion the
+    // orchestrator will `continue` to the next review round. With max_review_rounds=3
+    // and 3 review phases, we need 3 rounds * (3 phases + 1 agg) * 2 corrections = 18
+    // correction responses. But actually, only the aggregator triggers correction,
+    // so we need 3 rounds * 2 retries = 6 correction responses, all invalid.
+    let factory = MalformedAggregatorFactory {
+        agg_stdout: "BROKEN AGG JSON".into(),
+    };
+    let mut correction_responses = Vec::new();
+    for _ in 0..6 {
+        correction_responses.push(Ok(RunResult {
+            exit_code: 0,
+            stdout: "still broken".into(),
+            stderr: String::new(),
+            session_id: Some("sess-agg-456".into()),
+        }));
+    }
+    let correction = MockCorrectionRunner::new(correction_responses);
+
+    let (fut, _events) = build_correction_test_orchestrator(
+        repo_dir.path(),
+        wt_dir.path(),
+        &task,
+        factory,
+        correction,
+    );
+    // Aggregator correction exhaustion → `continue` each round → eventually exhausts
+    // all max_review_rounds and hits "review did not complete"
+    let err = fut.await.unwrap_err();
+    assert!(
+        err.to_string().contains("review did not complete"),
+        "expected review exhaustion error, got: {err}"
+    );
+}
+
+// --- Fix malformed JSON correction tests ---
+// Fix phase only runs when review_only=false, so we use run_once() which goes
+// through the full choose→implement→review→fix flow.
+
+fn build_fix_correction_orchestrator(
+    repo_dir: &Path,
+    wt_dir: &Path,
+    task: Task,
+    factory: MalformedFixFactory,
+    correction: MockCorrectionRunner,
+) -> (
+    Orchestrator<
+        MockSource,
+        MockRunner,
+        MockSubmission,
+        MalformedFixFactory,
+        CapturingReporter,
+        MockCorrectionRunner,
+    >,
+    Arc<Mutex<Vec<PipelineEvent>>>,
+) {
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.to_path_buf(),
+        wt_dir.to_path_buf(),
+        "main".to_string(),
+    );
+    let state_dir = repo_dir.join(".rlph-test-state");
+    let (reporter, events) = CapturingReporter::new();
+
+    let orchestrator = Orchestrator::new(
+        source,
+        MockRunner::new("gh-42"),
+        submission,
+        worktree_mgr,
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        make_config(true),
+        repo_dir.to_path_buf(),
+    )
+    .with_review_factory(factory)
+    .with_reporter(reporter)
+    .with_correction_runner(correction);
+
+    (orchestrator, events)
+}
+
+#[tokio::test]
+async fn test_fix_malformed_json_correction_succeeds() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let factory = MalformedFixFactory::new("BROKEN FIX JSON");
+    // Correction returns valid fix JSON on first attempt
+    let correction = MockCorrectionRunner::new(vec![Ok(RunResult {
+        exit_code: 0,
+        stdout: r#"{"status":"fixed","summary":"corrected fix","files_changed":["src/main.rs"]}"#
+            .into(),
+        stderr: String::new(),
+        session_id: Some("sess-fix-789".into()),
+    })]);
+
+    let (orchestrator, events) = build_fix_correction_orchestrator(
+        repo_dir.path(),
+        wt_dir.path(),
+        task,
+        factory,
+        correction,
+    );
+    orchestrator.run_once().await.unwrap();
+
+    // Fix correction succeeded → review continues to round 2 where aggregator approves
+    let events = events.lock().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::ReviewSummary { .. })),
+        "expected review to complete after fix correction"
+    );
+}
+
+#[tokio::test]
+async fn test_fix_malformed_json_correction_exhausted_continues_anyway() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let task = make_task(42, "Fix bug");
+
+    let factory = MalformedFixFactory::new("BROKEN FIX JSON");
+    // Both correction attempts return invalid JSON
+    let correction = MockCorrectionRunner::new(vec![
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: "still broken fix".into(),
+            stderr: String::new(),
+            session_id: Some("sess-fix-789".into()),
+        }),
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: "yet more garbage fix".into(),
+            stderr: String::new(),
+            session_id: Some("sess-fix-789".into()),
+        }),
+    ]);
+
+    let (orchestrator, events) = build_fix_correction_orchestrator(
+        repo_dir.path(),
+        wt_dir.path(),
+        task,
+        factory,
+        correction,
+    );
+    // Fix correction exhaustion → warn + continue → round 2 aggregator approves
+    orchestrator.run_once().await.unwrap();
+
+    let events = events.lock().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::ReviewSummary { .. })),
+        "expected review to complete even after fix correction exhaustion"
     );
 }

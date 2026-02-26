@@ -15,7 +15,9 @@ use crate::review_schema::{
     SchemaName, Verdict, correction_prompt, parse_aggregator_output, parse_fix_output,
     parse_phase_output, render_findings_for_prompt,
 };
-use crate::runner::{AgentRunner, AnyRunner, Phase, RunnerKind, build_runner, resume_with_correction};
+use crate::runner::{
+    AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, resume_with_correction,
+};
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
 use crate::submission::{REVIEW_MARKER, SubmissionBackend, format_pr_comments_for_prompt};
@@ -79,6 +81,52 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
             step.agent_timeout.map(Duration::from_secs),
             timeout_retries,
         )
+    }
+}
+
+/// Abstraction over session-resume correction calls.
+/// Override in tests to avoid spawning real agent processes.
+pub trait CorrectionRunner: Send + Sync {
+    #[allow(clippy::too_many_arguments)]
+    fn resume(
+        &self,
+        runner_type: RunnerKind,
+        agent_binary: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        session_id: &str,
+        correction_prompt: &str,
+        working_dir: &Path,
+        timeout: Option<Duration>,
+    ) -> impl std::future::Future<Output = Result<RunResult>> + Send;
+}
+
+/// Default implementation that calls the real `resume_with_correction`.
+pub struct DefaultCorrectionRunner;
+
+impl CorrectionRunner for DefaultCorrectionRunner {
+    async fn resume(
+        &self,
+        runner_type: RunnerKind,
+        agent_binary: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        session_id: &str,
+        correction_prompt: &str,
+        working_dir: &Path,
+        timeout: Option<Duration>,
+    ) -> Result<RunResult> {
+        resume_with_correction(
+            runner_type,
+            agent_binary,
+            model,
+            effort,
+            session_id,
+            correction_prompt,
+            working_dir,
+            timeout,
+        )
+        .await
     }
 }
 
@@ -152,7 +200,14 @@ impl ProgressReporter for StderrReporter {
     }
 }
 
-pub struct Orchestrator<S, R, B, F = DefaultReviewRunnerFactory, P = StderrReporter> {
+pub struct Orchestrator<
+    S,
+    R,
+    B,
+    F = DefaultReviewRunnerFactory,
+    P = StderrReporter,
+    C = DefaultCorrectionRunner,
+> {
     source: S,
     runner: R,
     submission: B,
@@ -163,6 +218,7 @@ pub struct Orchestrator<S, R, B, F = DefaultReviewRunnerFactory, P = StderrRepor
     repo_root: PathBuf,
     review_factory: F,
     reporter: P,
+    correction_runner: C,
 }
 
 impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> {
@@ -188,12 +244,13 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             repo_root,
             review_factory: DefaultReviewRunnerFactory,
             reporter: StderrReporter,
+            correction_runner: DefaultCorrectionRunner,
         }
     }
 }
 
-impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P> Orchestrator<S, R, B, F, P> {
-    pub fn with_review_factory<F2>(self, review_factory: F2) -> Orchestrator<S, R, B, F2, P> {
+impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P, C> Orchestrator<S, R, B, F, P, C> {
+    pub fn with_review_factory<F2>(self, review_factory: F2) -> Orchestrator<S, R, B, F2, P, C> {
         Orchestrator {
             source: self.source,
             runner: self.runner,
@@ -205,10 +262,11 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P> Orchestrator<S, 
             repo_root: self.repo_root,
             review_factory,
             reporter: self.reporter,
+            correction_runner: self.correction_runner,
         }
     }
 
-    pub fn with_reporter<P2>(self, reporter: P2) -> Orchestrator<S, R, B, F, P2> {
+    pub fn with_reporter<P2>(self, reporter: P2) -> Orchestrator<S, R, B, F, P2, C> {
         Orchestrator {
             source: self.source,
             runner: self.runner,
@@ -220,6 +278,26 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P> Orchestrator<S, 
             repo_root: self.repo_root,
             review_factory: self.review_factory,
             reporter,
+            correction_runner: self.correction_runner,
+        }
+    }
+
+    pub fn with_correction_runner<C2>(
+        self,
+        correction_runner: C2,
+    ) -> Orchestrator<S, R, B, F, P, C2> {
+        Orchestrator {
+            source: self.source,
+            runner: self.runner,
+            submission: self.submission,
+            worktree_mgr: self.worktree_mgr,
+            state_mgr: self.state_mgr,
+            prompt_engine: self.prompt_engine,
+            config: self.config,
+            repo_root: self.repo_root,
+            review_factory: self.review_factory,
+            reporter: self.reporter,
+            correction_runner,
         }
     }
 }
@@ -230,7 +308,8 @@ impl<
     B: SubmissionBackend,
     F: ReviewRunnerFactory,
     P: ProgressReporter,
-> Orchestrator<S, R, B, F, P>
+    C: CorrectionRunner,
+> Orchestrator<S, R, B, F, P, C>
 {
     /// Run according to configured loop mode.
     ///
@@ -615,11 +694,8 @@ impl<
                     Ok(phase) => render_findings_for_prompt(&phase.findings),
                     Err(e) => {
                         // Try correction via session resume
-                        let phase_config = self
-                            .config
-                            .review_phases
-                            .iter()
-                            .find(|p| p.name == o.name);
+                        let phase_config =
+                            self.config.review_phases.iter().find(|p| p.name == o.name);
                         let recovered = if let Some(pc) = phase_config {
                             self.retry_with_correction(
                                 o.session_id.as_deref(),
@@ -843,22 +919,22 @@ impl<
             let prompt = correction_prompt(schema, &last_error);
             info!(
                 session_id,
-                attempt,
-                MAX_RETRIES,
-                "resuming session with correction prompt"
+                attempt, MAX_RETRIES, "resuming session with correction prompt"
             );
 
-            match resume_with_correction(
-                runner_type,
-                agent_binary,
-                agent_model,
-                agent_effort,
-                session_id,
-                &prompt,
-                working_dir,
-                agent_timeout.map(Duration::from_secs),
-            )
-            .await
+            match self
+                .correction_runner
+                .resume(
+                    runner_type,
+                    agent_binary,
+                    agent_model,
+                    agent_effort,
+                    session_id,
+                    &prompt,
+                    working_dir,
+                    agent_timeout.map(Duration::from_secs),
+                )
+                .await
             {
                 Ok(corrected) => match parser(&corrected.stdout) {
                     Ok(parsed) => return Some(parsed),
