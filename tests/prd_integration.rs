@@ -3,11 +3,12 @@ use std::collections::HashMap;
 use rlph::config::{Config, default_review_phases, default_review_step};
 use rlph::prd::{build_prd_command, submission_instructions};
 use rlph::prompts::PromptEngine;
+use rlph::runner::RunnerKind;
 
 fn test_config(source: &str) -> Config {
     Config {
         source: source.to_string(),
-        runner: "claude".to_string(),
+        runner: RunnerKind::Claude,
         submission: "github".to_string(),
         label: "rlph".to_string(),
         poll_seconds: 30,
@@ -32,7 +33,7 @@ fn test_config(source: &str) -> Config {
 
 fn test_config_codex(source: &str) -> Config {
     Config {
-        runner: "codex".to_string(),
+        runner: RunnerKind::Codex,
         agent_binary: "codex".to_string(),
         agent_model: Some("gpt-5.3-codex".to_string()),
         ..test_config(source)

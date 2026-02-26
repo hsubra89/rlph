@@ -1,13 +1,46 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::Deserialize;
 use tracing::warn;
 
 use crate::error::{Error, Result};
 use crate::process::{ProcessConfig, spawn_and_stream};
+
+/// Which agent backend to dispatch to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunnerKind {
+    Claude,
+    Codex,
+}
+
+impl fmt::Display for RunnerKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RunnerKind::Claude => write!(f, "claude"),
+            RunnerKind::Codex => write!(f, "codex"),
+        }
+    }
+}
+
+impl FromStr for RunnerKind {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "claude" => Ok(RunnerKind::Claude),
+            "codex" => Ok(RunnerKind::Codex),
+            other => Err(Error::ConfigValidation(format!(
+                "unknown runner: {other} (expected: claude, codex)"
+            ))),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
@@ -32,7 +65,7 @@ impl fmt::Display for Phase {
 
 /// Build an `AnyRunner` from config values.
 pub fn build_runner(
-    runner: &str,
+    runner: RunnerKind,
     agent_binary: &str,
     model: Option<&str>,
     effort: Option<&str>,
@@ -40,14 +73,14 @@ pub fn build_runner(
     timeout_retries: u32,
 ) -> AnyRunner {
     match runner {
-        "codex" => AnyRunner::Codex(CodexRunner::new(
+        RunnerKind::Codex => AnyRunner::Codex(CodexRunner::new(
             agent_binary.to_string(),
             model.map(str::to_string),
             effort.map(str::to_string),
             timeout,
             timeout_retries,
         )),
-        _ => AnyRunner::Claude(ClaudeRunner::new(
+        RunnerKind::Claude => AnyRunner::Claude(ClaudeRunner::new(
             agent_binary.to_string(),
             model.map(str::to_string),
             effort.map(str::to_string),
@@ -315,11 +348,11 @@ pub fn build_codex_resume_with_prompt_command(
 /// from malformed JSON without restarting the entire agent.
 ///
 /// The `runner_type` parameter selects the appropriate command builder and
-/// result extractor: `"claude"` uses Claude CLI flags, `"codex"` uses Codex
+/// result extractor: `Claude` uses Claude CLI flags, `Codex` uses Codex
 /// CLI flags with stdin delivery.
 #[allow(clippy::too_many_arguments)]
 pub async fn resume_with_correction(
-    runner_type: &str,
+    runner_type: RunnerKind,
     agent_binary: &str,
     model: Option<&str>,
     effort: Option<&str>,
@@ -328,7 +361,7 @@ pub async fn resume_with_correction(
     working_dir: &Path,
     timeout: Option<Duration>,
 ) -> Result<RunResult> {
-    let (command, args, stdin_data) = if runner_type == "codex" {
+    let (command, args, stdin_data) = if runner_type == RunnerKind::Codex {
         let (cmd, a) = build_codex_resume_with_prompt_command(
             agent_binary,
             model,
@@ -361,7 +394,7 @@ pub async fn resume_with_correction(
 
     let output = spawn_and_stream(config).await?;
 
-    let (stdout, session_id) = if runner_type == "codex" {
+    let (stdout, session_id) = if runner_type == RunnerKind::Codex {
         (
             extract_codex_result(&output.stdout_lines)
                 .unwrap_or_else(|| output.stdout_lines.join("\n")),
@@ -789,13 +822,13 @@ mod tests {
 
     #[test]
     fn test_build_runner_claude() {
-        let runner = build_runner("claude", "claude", Some("opus"), Some("high"), None, 2);
+        let runner = build_runner(RunnerKind::Claude, "claude", Some("opus"), Some("high"), None, 2);
         assert!(matches!(runner, AnyRunner::Claude(_)));
     }
 
     #[test]
     fn test_build_runner_codex() {
-        let runner = build_runner("codex", "codex", Some("gpt-5.3"), None, None, 2);
+        let runner = build_runner(RunnerKind::Codex, "codex", Some("gpt-5.3"), None, None, 2);
         assert!(matches!(runner, AnyRunner::Codex(_)));
     }
 
@@ -999,7 +1032,7 @@ mod tests {
 
     #[test]
     fn test_build_runner_codex_with_effort() {
-        let runner = build_runner("codex", "codex", None, Some("high"), None, 2);
+        let runner = build_runner(RunnerKind::Codex, "codex", None, Some("high"), None, 2);
         assert!(matches!(runner, AnyRunner::Codex(_)));
         if let AnyRunner::Codex(r) = runner {
             let (_cmd, args) = r.build_command();

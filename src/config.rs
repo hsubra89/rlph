@@ -4,6 +4,7 @@ use serde::Deserialize;
 
 use crate::cli::Cli;
 use crate::error::{Error, Result};
+use crate::runner::RunnerKind;
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -42,7 +43,7 @@ pub struct ReviewPhaseConfigFile {
 pub struct ReviewPhaseConfig {
     pub name: String,
     pub prompt: String,
-    pub runner: String,
+    pub runner: RunnerKind,
     pub agent_binary: String,
     pub agent_model: Option<String>,
     pub agent_effort: Option<String>,
@@ -63,7 +64,7 @@ pub struct ReviewStepConfigFile {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReviewStepConfig {
     pub prompt: String,
-    pub runner: String,
+    pub runner: RunnerKind,
     pub agent_binary: String,
     pub agent_model: Option<String>,
     pub agent_effort: Option<String>,
@@ -98,7 +99,7 @@ pub struct ConfigFile {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub source: String,
-    pub runner: String,
+    pub runner: RunnerKind,
     pub submission: String,
     pub label: String,
     pub poll_seconds: u64,
@@ -134,7 +135,7 @@ pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {
         ReviewPhaseConfig {
             name: "correctness".to_string(),
             prompt: "correctness-review".to_string(),
-            runner: "claude".to_string(),
+            runner: RunnerKind::Claude,
             agent_binary: "claude".to_string(),
             agent_model: None,
             agent_effort: None,
@@ -143,7 +144,7 @@ pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {
         ReviewPhaseConfig {
             name: "security".to_string(),
             prompt: "security-review".to_string(),
-            runner: "claude".to_string(),
+            runner: RunnerKind::Claude,
             agent_binary: "claude".to_string(),
             agent_model: None,
             agent_effort: None,
@@ -152,7 +153,7 @@ pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {
         ReviewPhaseConfig {
             name: "style".to_string(),
             prompt: "style-review".to_string(),
-            runner: "claude".to_string(),
+            runner: RunnerKind::Claude,
             agent_binary: "claude".to_string(),
             agent_model: None,
             agent_effort: None,
@@ -165,7 +166,7 @@ pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {
 pub fn default_review_step(prompt: &str) -> ReviewStepConfig {
     ReviewStepConfig {
         prompt: prompt.to_string(),
-        runner: "claude".to_string(),
+        runner: RunnerKind::Claude,
         agent_binary: "claude".to_string(),
         agent_model: None,
         agent_effort: None,
@@ -242,37 +243,38 @@ pub fn parse_config(content: &str) -> Result<ConfigFile> {
     Ok(config)
 }
 
-fn runner_default_binary(runner: &str) -> &'static str {
+fn runner_default_binary(runner: RunnerKind) -> &'static str {
     match runner {
-        "codex" => "codex",
-        _ => "claude",
+        RunnerKind::Codex => "codex",
+        RunnerKind::Claude => "claude",
     }
 }
 
-fn runner_default_model(runner: &str) -> Option<&'static str> {
+fn runner_default_model(runner: RunnerKind) -> Option<&'static str> {
     match runner {
-        "codex" => Some("gpt-5.3-codex"),
-        _ => Some("claude-opus-4-6"),
+        RunnerKind::Codex => Some("gpt-5.3-codex"),
+        RunnerKind::Claude => Some("claude-opus-4-6"),
     }
 }
 
-fn runner_default_effort(runner: &str) -> Option<&'static str> {
+fn runner_default_effort(runner: RunnerKind) -> Option<&'static str> {
     match runner {
-        "claude" => Some("high"),
-        _ => None,
+        RunnerKind::Claude => Some("high"),
+        RunnerKind::Codex => None,
     }
 }
 
 pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
-    let runner = cli
+    let runner: RunnerKind = cli
         .runner
-        .clone()
-        .or(file.runner)
-        .unwrap_or_else(|| "claude".to_string());
+        .as_deref()
+        .or(file.runner.as_deref())
+        .unwrap_or("claude")
+        .parse()?;
 
-    let default_binary = runner_default_binary(&runner);
-    let default_model = runner_default_model(&runner);
-    let default_effort = runner_default_effort(&runner);
+    let default_binary = runner_default_binary(runner);
+    let default_model = runner_default_model(runner);
+    let default_effort = runner_default_effort(runner);
 
     let linear = file.linear.map(|lc| LinearConfig {
         team: lc.team.unwrap_or_default(),
@@ -289,7 +291,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         done_state: lc.done_state.unwrap_or_else(|| "Done".to_string()),
     });
 
-    let global_runner = &runner;
+    let global_runner = runner;
     let global_binary_override = cli.agent_binary.clone().or(file.agent_binary.clone());
     let global_model_override = cli.agent_model.clone().or(file.agent_model.clone());
     let global_effort_override = cli.agent_effort.clone().or(file.agent_effort.clone());
@@ -323,11 +325,14 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         })
         .into_iter()
         .map(|p| {
-            let effective_runner = p.runner.unwrap_or_else(|| global_runner.clone());
-            let runner_binary = runner_default_binary(&effective_runner);
-            let runner_model = runner_default_model(&effective_runner);
-            let runner_effort = runner_default_effort(&effective_runner);
-            ReviewPhaseConfig {
+            let effective_runner: RunnerKind = match p.runner {
+                Some(s) => s.parse()?,
+                None => global_runner,
+            };
+            let runner_binary = runner_default_binary(effective_runner);
+            let runner_model = runner_default_model(effective_runner);
+            let runner_effort = runner_default_effort(effective_runner);
+            Ok(ReviewPhaseConfig {
                 name: p.name,
                 prompt: p.prompt,
                 agent_binary: p
@@ -344,18 +349,21 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
                     .or_else(|| runner_effort.map(str::to_string)),
                 agent_timeout: p.agent_timeout.or(global_timeout),
                 runner: effective_runner,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     let resolve_step =
-        |step: Option<ReviewStepConfigFile>, default_prompt: &str| -> ReviewStepConfig {
+        |step: Option<ReviewStepConfigFile>, default_prompt: &str| -> Result<ReviewStepConfig> {
             let s = step.unwrap_or_default();
-            let effective_runner = s.runner.unwrap_or_else(|| global_runner.clone());
-            let runner_binary = runner_default_binary(&effective_runner);
-            let runner_model = runner_default_model(&effective_runner);
-            let runner_effort = runner_default_effort(&effective_runner);
-            ReviewStepConfig {
+            let effective_runner: RunnerKind = match s.runner {
+                Some(s) => s.parse()?,
+                None => global_runner,
+            };
+            let runner_binary = runner_default_binary(effective_runner);
+            let runner_model = runner_default_model(effective_runner);
+            let runner_effort = runner_default_effort(effective_runner);
+            Ok(ReviewStepConfig {
                 prompt: s.prompt.unwrap_or_else(|| default_prompt.to_string()),
                 agent_binary: s
                     .agent_binary
@@ -371,11 +379,11 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
                     .or_else(|| runner_effort.map(str::to_string)),
                 agent_timeout: s.agent_timeout.or(global_timeout),
                 runner: effective_runner,
-            }
+            })
         };
 
-    let review_aggregate = resolve_step(file.review_aggregate, "review-aggregate");
-    let review_fix = resolve_step(file.review_fix, "review-fix");
+    let review_aggregate = resolve_step(file.review_aggregate, "review-aggregate")?;
+    let review_fix = resolve_step(file.review_fix, "review-fix")?;
 
     let config = Config {
         source: cli
@@ -439,14 +447,6 @@ fn validate(config: &Config) -> Result<()> {
             )));
         }
     }
-    match config.runner.as_str() {
-        "claude" | "codex" => {}
-        other => {
-            return Err(Error::ConfigValidation(format!(
-                "unknown runner: {other} (expected: claude, codex)"
-            )));
-        }
-    }
     match config.submission.as_str() {
         "github" | "graphite" => {}
         other => {
@@ -464,14 +464,6 @@ fn validate(config: &Config) -> Result<()> {
         return Err(Error::ConfigValidation(
             "at least one review phase is required".to_string(),
         ));
-    }
-    fn validate_runner(runner: &str, context: &str) -> Result<()> {
-        match runner {
-            "claude" | "codex" => Ok(()),
-            other => Err(Error::ConfigValidation(format!(
-                "unknown runner '{other}' in {context}"
-            ))),
-        }
     }
     {
         let mut seen_names = std::collections::HashSet::new();
@@ -493,11 +485,8 @@ fn validate(config: &Config) -> Result<()> {
                     phase.name
                 )));
             }
-            validate_runner(&phase.runner, &format!("review phase '{}'", phase.name))?;
         }
     }
-    validate_runner(&config.review_aggregate.runner, "review_aggregate")?;
-    validate_runner(&config.review_fix.runner, "review_fix")?;
     if config.source == "linear" {
         match &config.linear {
             Some(lc) if lc.team.is_empty() => {
@@ -520,6 +509,7 @@ fn validate(config: &Config) -> Result<()> {
 mod tests {
     use super::*;
     use crate::cli::Cli;
+    use crate::runner::RunnerKind;
     use clap::Parser;
 
     #[test]
@@ -624,7 +614,7 @@ worktree_dir = "/tmp/wt"
         let config = merge(file, &cli).unwrap();
         assert_eq!(config.source, "linear"); // CLI wins
         assert_eq!(config.label, "cli-label"); // CLI wins
-        assert_eq!(config.runner, "claude"); // file value kept
+        assert_eq!(config.runner, RunnerKind::Claude); // file value kept
         assert_eq!(config.poll_seconds, 120); // file value kept
         assert!(config.once);
     }
@@ -635,7 +625,7 @@ worktree_dir = "/tmp/wt"
         let cli = Cli::parse_from(["rlph", "--once"]);
         let config = merge(file, &cli).unwrap();
         assert_eq!(config.source, "github");
-        assert_eq!(config.runner, "claude");
+        assert_eq!(config.runner, RunnerKind::Claude);
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
         assert_eq!(config.poll_seconds, 30);
@@ -665,7 +655,7 @@ worktree_dir = "/tmp/wt"
         let cli = Cli::parse_from(["rlph", "--once"]);
         let config = Config::load_from(&cli, tmp.path()).unwrap();
         assert_eq!(config.source, "github");
-        assert_eq!(config.runner, "claude");
+        assert_eq!(config.runner, RunnerKind::Claude);
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
         assert_eq!(config.poll_seconds, 30);
@@ -681,7 +671,7 @@ worktree_dir = "/tmp/wt"
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from(["rlph", "--once", "--runner", "codex", "--label", "custom"]);
         let config = Config::load_from(&cli, tmp.path()).unwrap();
-        assert_eq!(config.runner, "codex");
+        assert_eq!(config.runner, RunnerKind::Codex);
         assert_eq!(config.label, "custom");
         assert_eq!(config.source, "github"); // default
     }
@@ -774,7 +764,7 @@ worktree_dir = "/tmp/wt"
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from(["rlph", "--once", "--runner", "codex"]);
         let config = Config::load_from(&cli, tmp.path()).unwrap();
-        assert_eq!(config.runner, "codex");
+        assert_eq!(config.runner, RunnerKind::Codex);
     }
 
     #[test]
@@ -842,7 +832,7 @@ agent_effort = "high"
         assert_eq!(config.review_phases.len(), 2);
         assert_eq!(config.review_phases[0].name, "correctness");
         assert_eq!(config.review_phases[0].prompt, "correctness-review");
-        assert_eq!(config.review_phases[0].runner, "claude"); // falls back to global
+        assert_eq!(config.review_phases[0].runner, RunnerKind::Claude); // falls back to global
         assert_eq!(config.review_phases[1].name, "security");
         assert_eq!(
             config.review_phases[1].agent_model.as_deref(),
@@ -915,8 +905,8 @@ prompt = "my-fix"
         let config = Config::load_from(&cli, tmp.path()).unwrap();
         assert_eq!(config.review_aggregate.prompt, "review-aggregate");
         assert_eq!(config.review_fix.prompt, "review-fix");
-        assert_eq!(config.review_aggregate.runner, "claude");
-        assert_eq!(config.review_fix.runner, "claude");
+        assert_eq!(config.review_aggregate.runner, RunnerKind::Claude);
+        assert_eq!(config.review_fix.runner, RunnerKind::Claude);
     }
 
     #[test]
@@ -985,7 +975,7 @@ runner = "podman"
         .unwrap();
         let cli = Cli::parse_from(["rlph", "--once"]);
         let err = Config::load_from(&cli, tmp.path()).unwrap_err();
-        assert!(err.to_string().contains("unknown runner 'podman'"));
+        assert!(err.to_string().contains("unknown runner: podman"));
     }
 
     #[test]
@@ -1006,7 +996,7 @@ prompt = "check-review"
         .unwrap();
         let cli = Cli::parse_from(["rlph", "--once"]);
         let config = Config::load_from(&cli, tmp.path()).unwrap();
-        assert_eq!(config.review_phases[0].runner, "codex");
+        assert_eq!(config.review_phases[0].runner, RunnerKind::Codex);
         assert_eq!(config.review_phases[0].agent_binary, "codex");
     }
 
@@ -1029,7 +1019,7 @@ runner = "claude"
         .unwrap();
         let cli = Cli::parse_from(["rlph", "--once"]);
         let config = Config::load_from(&cli, tmp.path()).unwrap();
-        assert_eq!(config.review_phases[0].runner, "claude");
+        assert_eq!(config.review_phases[0].runner, RunnerKind::Claude);
         assert_eq!(config.review_phases[0].agent_binary, "claude");
         assert_eq!(
             config.review_phases[0].agent_model.as_deref(),
@@ -1062,7 +1052,7 @@ runner = "claude"
         .unwrap();
         let cli = Cli::parse_from(["rlph", "--once"]);
         let config = Config::load_from(&cli, tmp.path()).unwrap();
-        assert_eq!(config.review_aggregate.runner, "claude");
+        assert_eq!(config.review_aggregate.runner, RunnerKind::Claude);
         assert_eq!(config.review_aggregate.agent_binary, "claude");
         assert_eq!(
             config.review_aggregate.agent_model.as_deref(),

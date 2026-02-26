@@ -15,7 +15,7 @@ use crate::review_schema::{
     SchemaName, Verdict, correction_prompt, parse_aggregator_output, parse_fix_output,
     parse_phase_output, render_findings_for_prompt,
 };
-use crate::runner::{AgentRunner, AnyRunner, Phase, build_runner, resume_with_correction};
+use crate::runner::{AgentRunner, AnyRunner, Phase, RunnerKind, build_runner, resume_with_correction};
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
 use crate::submission::{REVIEW_MARKER, SubmissionBackend, format_pr_comments_for_prompt};
@@ -61,7 +61,7 @@ pub struct DefaultReviewRunnerFactory;
 impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
     fn create_phase_runner(&self, phase: &ReviewPhaseConfig, timeout_retries: u32) -> AnyRunner {
         build_runner(
-            &phase.runner,
+            phase.runner,
             &phase.agent_binary,
             phase.agent_model.as_deref(),
             phase.agent_effort.as_deref(),
@@ -72,7 +72,7 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
 
     fn create_step_runner(&self, step: &ReviewStepConfig, timeout_retries: u32) -> AnyRunner {
         build_runner(
-            &step.runner,
+            step.runner,
             &step.agent_binary,
             step.agent_model.as_deref(),
             step.agent_effort.as_deref(),
@@ -623,7 +623,7 @@ impl<
                         let recovered = if let Some(pc) = phase_config {
                             self.retry_with_correction(
                                 o.session_id.as_deref(),
-                                &pc.runner,
+                                pc.runner,
                                 &pc.agent_binary,
                                 pc.agent_model.as_deref(),
                                 pc.agent_effort.as_deref(),
@@ -674,7 +674,7 @@ impl<
                     let recovered = self
                         .retry_with_correction(
                             agg_result.session_id.as_deref(),
-                            &agg_config.runner,
+                            agg_config.runner,
                             &agg_config.agent_binary,
                             agg_config.agent_model.as_deref(),
                             agg_config.agent_effort.as_deref(),
@@ -760,7 +760,7 @@ impl<
                     let recovered = self
                         .retry_with_correction(
                             fix_result.session_id.as_deref(),
-                            &fix_config.runner,
+                            fix_config.runner,
                             &fix_config.agent_binary,
                             fix_config.agent_model.as_deref(),
                             fix_config.agent_effort.as_deref(),
@@ -825,7 +825,7 @@ impl<
     async fn retry_with_correction<T>(
         &self,
         session_id: Option<&str>,
-        runner_type: &str,
+        runner_type: RunnerKind,
         agent_binary: &str,
         agent_model: Option<&str>,
         agent_effort: Option<&str>,

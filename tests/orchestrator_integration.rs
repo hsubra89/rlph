@@ -10,7 +10,7 @@ use rlph::config::{
 use rlph::error::{Error, Result};
 use rlph::orchestrator::{Orchestrator, ProgressReporter, ReviewInvocation, ReviewRunnerFactory};
 use rlph::prompts::PromptEngine;
-use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult};
+use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult, RunnerKind};
 use rlph::sources::{Task, TaskSource};
 use rlph::state::StateManager;
 use rlph::submission::{SubmissionBackend, SubmitResult};
@@ -634,7 +634,7 @@ fn make_task(number: u64, title: &str) -> Task {
 fn make_config(dry_run: bool) -> Config {
     Config {
         source: "github".to_string(),
-        runner: "claude".to_string(),
+        runner: RunnerKind::Claude,
         submission: "github".to_string(),
         label: "rlph".to_string(),
         poll_seconds: 30,
