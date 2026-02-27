@@ -229,49 +229,66 @@ fn extract_claude_result(stdout_lines: &[String]) -> Option<String> {
     last_result
 }
 
+/// Icons for stream formatter output.
+const ICON_CHECK: &str = "✔";
+const ICON_CROSS: &str = "✘";
+const ICON_PLAY: &str = "▶";
+
+/// Format a single Claude stream-json event line and write the result to `sink`.
+///
+/// Returns `true` if any output was written, `false` if the event was skipped.
+fn format_claude_line(prefix: &str, line: &str, sink: &mut impl std::io::Write) -> bool {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+        return false;
+    };
+    let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    if event_type != "assistant" {
+        return false;
+    }
+    let Some(content) = val.pointer("/message/content").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    let mut wrote = false;
+    for block in content {
+        let Some(block_type) = block.get("type").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        match block_type {
+            "text" => {
+                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                    for text_line in text.lines() {
+                        let _ = writeln!(sink, "[{prefix}] {text_line}");
+                    }
+                    wrote = true;
+                }
+            }
+            "tool_use" => {
+                if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                    let _ = writeln!(sink, "[{prefix}] {ICON_PLAY} {name}");
+                    wrote = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    wrote
+}
+
 /// Spawn a task that reads Claude stream-json lines from a channel and prints
 /// formatted agent messages to stderr, prefixed with `[prefix]`.
 ///
 /// Extracts text content from `assistant` events and tool names from `tool_use`
 /// content blocks. All other event types are silently skipped.
-fn spawn_stream_formatter(
+fn spawn_claude_stream_formatter(
     prefix: String,
     mut rx: mpsc::UnboundedReceiver<String>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut stderr = std::io::stderr();
         while let Some(line) = rx.recv().await {
-            let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
-            };
-            let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            if event_type != "assistant" {
-                continue;
-            }
-            let Some(content) = val.pointer("/message/content").and_then(|v| v.as_array()) else {
-                continue;
-            };
-            for block in content {
-                let Some(block_type) = block.get("type").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                match block_type {
-                    "text" => {
-                        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                            for text_line in text.lines() {
-                                eprintln!("[{prefix}] {text_line}");
-                            }
-                        }
-                    }
-                    "tool_use" => {
-                        if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                            eprintln!("[{prefix}] \u{25b6} {name}");
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            format_claude_line(&prefix, &line, &mut stderr);
         }
     })
 }
@@ -286,7 +303,7 @@ impl AgentRunner for ClaudeRunner {
         // Set up streaming channel if a stream prefix is configured.
         let (stdout_tx, stream_handle) = if let Some(ref prefix) = self.stream_prefix {
             let (tx, rx) = mpsc::unbounded_channel();
-            let handle = spawn_stream_formatter(prefix.clone(), rx);
+            let handle = spawn_claude_stream_formatter(prefix.clone(), rx);
             (Some(tx), Some(handle))
         } else {
             (None, None)
@@ -567,10 +584,11 @@ pub enum AnyRunner {
 
 impl AnyRunner {
     /// Enable streaming of formatted agent messages to stderr with the given prefix.
-    /// Currently only supported for the Claude runner; other runners ignore this.
     pub fn with_stream_prefix(mut self, prefix: String) -> Self {
-        if let AnyRunner::Claude(ref mut r) = self {
-            r.stream_prefix = Some(prefix);
+        match self {
+            AnyRunner::Claude(ref mut r) => r.stream_prefix = Some(prefix),
+            AnyRunner::Codex(ref mut r) => r.stream_prefix = Some(prefix),
+            _ => {}
         }
         self
     }
@@ -857,6 +875,85 @@ fn extract_codex_result(stdout_lines: &[String]) -> Option<String> {
     last_text
 }
 
+/// Format a single Codex JSON event line and write the result to `sink`.
+///
+/// Returns `true` if a line was written, `false` if the event was skipped.
+fn format_codex_line(prefix: &str, line: &str, sink: &mut impl std::io::Write) -> bool {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+        return false;
+    };
+    let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    match event_type {
+        "item.completed" => {
+            let Some(item) = val.get("item") else {
+                return false;
+            };
+            let Some(item_type) = item.get("type").and_then(|v| v.as_str()) else {
+                return false;
+            };
+            match item_type {
+                "agent_message" => {
+                    if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                        for text_line in text.lines() {
+                            let _ = writeln!(sink, "[{prefix}] {text_line}");
+                        }
+                        return true;
+                    }
+                }
+                "command_execution" => {
+                    if let Some(cmd) = item.get("command").and_then(|v| v.as_str()) {
+                        let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                        let icon = if status == "completed" {
+                            ICON_CHECK
+                        } else {
+                            ICON_CROSS
+                        };
+                        for cmd_line in cmd.lines() {
+                            let _ = writeln!(sink, "[{prefix}] {icon} {cmd_line}");
+                        }
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        "item.started" => {
+            let Some(item) = val.get("item") else {
+                return false;
+            };
+            if item.get("type").and_then(|v| v.as_str()) == Some("command_execution")
+                && let Some(cmd) = item.get("command").and_then(|v| v.as_str())
+            {
+                for cmd_line in cmd.lines() {
+                    let _ = writeln!(sink, "[{prefix}] {ICON_PLAY} {cmd_line}");
+                }
+                return true;
+            }
+        }
+        _ => {}
+    }
+    false
+}
+
+/// Spawn a task that reads Codex JSON event lines from a channel and prints
+/// formatted agent messages to stderr, prefixed with `[prefix]`.
+///
+/// Extracts text from `item.completed` agent_message events and command names
+/// from `item.started` command_execution events.
+fn spawn_codex_stream_formatter(
+    prefix: String,
+    mut rx: mpsc::UnboundedReceiver<String>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut stderr = std::io::stderr();
+        while let Some(line) = rx.recv().await {
+            format_codex_line(&prefix, &line, &mut stderr);
+        }
+    })
+}
+
 /// Codex runner — invokes the OpenAI Codex CLI.
 pub struct CodexRunner {
     agent_binary: String,
@@ -864,6 +961,7 @@ pub struct CodexRunner {
     effort: Option<String>,
     timeout: Option<Duration>,
     max_timeout_retries: u32,
+    stream_prefix: Option<String>,
 }
 
 impl CodexRunner {
@@ -880,6 +978,7 @@ impl CodexRunner {
             effort,
             timeout,
             max_timeout_retries,
+            stream_prefix: None,
         }
     }
 
@@ -908,78 +1007,100 @@ impl AgentRunner for CodexRunner {
         let mut all_stdout: Vec<String> = Vec::new();
         let mut all_stderr: Vec<String> = Vec::new();
 
-        for attempt in 0..max_attempts {
-            let (command, args, stdin_data) = if attempt == 0 {
-                let (cmd, a) = self.build_command();
-                (cmd, a, Some(prompt.to_string()))
-            } else {
-                eprintln!(
-                    "[{log_prefix}] resuming timed-out session (attempt {}/{})",
-                    attempt + 1,
-                    max_attempts
-                );
-                let (cmd, a) = self.build_resume_command();
-                (cmd, a, None)
-            };
+        // Set up streaming channel if a stream prefix is configured.
+        let (stdout_tx, stream_handle) = if let Some(ref prefix) = self.stream_prefix {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let handle = spawn_codex_stream_formatter(prefix.clone(), rx);
+            (Some(tx), Some(handle))
+        } else {
+            (None, None)
+        };
 
-            let config = ProcessConfig {
-                command,
-                args,
-                working_dir: working_dir.to_path_buf(),
-                timeout: self.timeout,
-                log_prefix: log_prefix.clone(),
-                stream_output: false,
-                env: vec![],
-                stdin_data,
-                quiet: true,
-                stdout_tx: None,
-            };
+        let result = 'attempts: {
+            for attempt in 0..max_attempts {
+                let (command, args, stdin_data) = if attempt == 0 {
+                    let (cmd, a) = self.build_command();
+                    (cmd, a, Some(prompt.to_string()))
+                } else {
+                    eprintln!(
+                        "[{log_prefix}] resuming timed-out session (attempt {}/{})",
+                        attempt + 1,
+                        max_attempts
+                    );
+                    let (cmd, a) = self.build_resume_command();
+                    (cmd, a, None)
+                };
 
-            match spawn_and_stream(config).await {
-                Ok(output) => {
-                    all_stdout.extend(output.stdout_lines);
-                    all_stderr.extend(output.stderr_lines);
+                let config = ProcessConfig {
+                    command,
+                    args,
+                    working_dir: working_dir.to_path_buf(),
+                    timeout: self.timeout,
+                    log_prefix: log_prefix.clone(),
+                    stream_output: false,
+                    env: vec![],
+                    stdin_data,
+                    quiet: true,
+                    stdout_tx: stdout_tx.clone(),
+                };
 
-                    let stdout =
-                        extract_codex_result(&all_stdout).unwrap_or_else(|| all_stdout.join("\n"));
-                    let stderr = all_stderr.join("\n");
+                match spawn_and_stream(config).await {
+                    Ok(output) => {
+                        all_stdout.extend(output.stdout_lines);
+                        all_stderr.extend(output.stderr_lines);
 
-                    if let Some(sig) = output.signal {
-                        return Err(Error::AgentRunner(format!("agent killed by signal {sig}")));
+                        let stdout = extract_codex_result(&all_stdout)
+                            .unwrap_or_else(|| all_stdout.join("\n"));
+                        let stderr = all_stderr.join("\n");
+
+                        if let Some(sig) = output.signal {
+                            break 'attempts Err(Error::AgentRunner(format!(
+                                "agent killed by signal {sig}"
+                            )));
+                        }
+
+                        if output.exit_code != 0 {
+                            break 'attempts Err(Error::AgentRunner(format!(
+                                "agent exited with code {}",
+                                output.exit_code
+                            )));
+                        }
+
+                        let session_id = extract_thread_id(&all_stdout);
+
+                        break 'attempts Ok(RunResult {
+                            exit_code: output.exit_code,
+                            stdout,
+                            stderr,
+                            session_id,
+                        });
                     }
-
-                    if output.exit_code != 0 {
-                        return Err(Error::AgentRunner(format!(
-                            "agent exited with code {}",
-                            output.exit_code
-                        )));
+                    Err(Error::ProcessTimeout {
+                        timeout,
+                        stdout_lines,
+                        stderr_lines,
+                    }) => {
+                        all_stdout.extend(stdout_lines);
+                        all_stderr.extend(stderr_lines);
+                        warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
                     }
-
-                    let session_id = extract_thread_id(&all_stdout);
-
-                    return Ok(RunResult {
-                        exit_code: output.exit_code,
-                        stdout,
-                        stderr,
-                        session_id,
-                    });
+                    Err(e) => break 'attempts Err(e),
                 }
-                Err(Error::ProcessTimeout {
-                    timeout,
-                    stdout_lines,
-                    stderr_lines,
-                }) => {
-                    all_stdout.extend(stdout_lines);
-                    all_stderr.extend(stderr_lines);
-                    warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
-                }
-                Err(e) => return Err(e),
             }
+
+            Err(Error::AgentRunner(format!(
+                "agent timed out after {max_attempts} attempts"
+            )))
+        };
+
+        // Drop the sender so the stream formatter sees channel closure,
+        // then await it to ensure all buffered messages are flushed to stderr.
+        drop(stdout_tx);
+        if let Some(handle) = stream_handle {
+            let _ = handle.await;
         }
 
-        Err(Error::AgentRunner(format!(
-            "agent timed out after {max_attempts} attempts"
-        )))
+        result
     }
 }
 
@@ -1655,5 +1776,190 @@ mod tests {
             assert!(args.contains(&"--variant".to_string()));
             assert!(args.contains(&"high".to_string()));
         }
+    }
+
+    // --- Codex stream formatter tests ---
+
+    /// Helper: run `format_codex_line` for each input line and return collected output.
+    fn run_codex_formatter(prefix: &str, lines: &[&str]) -> String {
+        let mut buf = Vec::new();
+        for line in lines {
+            format_codex_line(prefix, line, &mut buf);
+        }
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn test_codex_formatter_agent_message() {
+        let out = run_codex_formatter(
+            "test",
+            &[r#"{"type":"item.completed","item":{"type":"agent_message","text":"hello world"}}"#],
+        );
+        assert_eq!(out, "[test] hello world\n");
+    }
+
+    #[test]
+    fn test_codex_formatter_command_execution_completed() {
+        let out = run_codex_formatter(
+            "test",
+            &[
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"cargo test","status":"completed"}}"#,
+            ],
+        );
+        assert_eq!(out, format!("[test] {ICON_CHECK} cargo test\n"));
+    }
+
+    #[test]
+    fn test_codex_formatter_command_execution_failed() {
+        let out = run_codex_formatter(
+            "test",
+            &[
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"cargo test","status":"failed"}}"#,
+            ],
+        );
+        assert_eq!(out, format!("[test] {ICON_CROSS} cargo test\n"));
+    }
+
+    #[test]
+    fn test_codex_formatter_item_started_command() {
+        let out = run_codex_formatter(
+            "test",
+            &[r#"{"type":"item.started","item":{"type":"command_execution","command":"ls -la"}}"#],
+        );
+        assert_eq!(out, format!("[test] {ICON_PLAY} ls -la\n"));
+    }
+
+    #[test]
+    fn test_codex_formatter_skips_unknown_event_types() {
+        let out = run_codex_formatter(
+            "test",
+            &[
+                r#"{"type":"thread.started","thread_id":"abc"}"#,
+                r#"{"type":"turn.started"}"#,
+                r#"{"type":"turn.completed","usage":{}}"#,
+            ],
+        );
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_codex_formatter_skips_invalid_json() {
+        let out = run_codex_formatter("test", &["not json at all", "{invalid", ""]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_codex_formatter_skips_missing_item() {
+        let out = run_codex_formatter("test", &[r#"{"type":"item.completed"}"#]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_codex_formatter_skips_unknown_item_type() {
+        let out = run_codex_formatter(
+            "test",
+            &[r#"{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}"#],
+        );
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_codex_formatter_multiline_command() {
+        let out = run_codex_formatter(
+            "test",
+            &[
+                r#"{"type":"item.started","item":{"type":"command_execution","command":"echo hello\necho world"}}"#,
+            ],
+        );
+        assert_eq!(
+            out,
+            format!("[test] {ICON_PLAY} echo hello\n[test] {ICON_PLAY} echo world\n")
+        );
+    }
+
+    // --- Claude stream formatter tests ---
+
+    /// Helper: run `format_claude_line` for each input line and return collected output.
+    fn run_claude_formatter(prefix: &str, lines: &[&str]) -> String {
+        let mut buf = Vec::new();
+        for line in lines {
+            format_claude_line(prefix, line, &mut buf);
+        }
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn test_claude_formatter_text_block() {
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello world"}]}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl] hello world\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_tool_use_block() {
+        let out = run_claude_formatter(
+            "impl",
+            &[r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}"#],
+        );
+        assert_eq!(out, format!("[impl] {ICON_PLAY} Read\n"));
+    }
+
+    #[test]
+    fn test_claude_formatter_mixed_blocks() {
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"thinking"},{"type":"tool_use","name":"Edit"}]}}"#,
+            ],
+        );
+        assert_eq!(out, format!("[impl] thinking\n[impl] {ICON_PLAY} Edit\n"));
+    }
+
+    #[test]
+    fn test_claude_formatter_multiline_text() {
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"line1\nline2"}]}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl] line1\n[impl] line2\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_skips_non_assistant() {
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"user","message":{"content":[{"type":"text","text":"hi"}]}}"#,
+                r#"{"type":"result","message":{"content":[{"type":"text","text":"done"}]}}"#,
+            ],
+        );
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_claude_formatter_skips_invalid_json() {
+        let out = run_claude_formatter("impl", &["not json", "", "{bad"]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_claude_formatter_skips_missing_content() {
+        let out = run_claude_formatter("impl", &[r#"{"type":"assistant","message":{}}"#]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_claude_formatter_skips_unknown_block_type() {
+        let out = run_claude_formatter(
+            "impl",
+            &[r#"{"type":"assistant","message":{"content":[{"type":"thinking","text":"hmm"}]}}"#],
+        );
+        assert_eq!(out, "");
     }
 }
