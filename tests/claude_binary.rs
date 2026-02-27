@@ -1,5 +1,6 @@
+use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rlph::error::Error;
 use rlph::process::{ProcessConfig, spawn_and_stream};
@@ -550,16 +551,27 @@ async fn test_claude_stream_json_tool_use_schema() {
         return;
     }
 
+    let tmp = tempfile::tempdir().unwrap();
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let token = format!("tool-test-token-{nonce}");
+    let file_name = "must_read_for_tool_test.txt";
+    fs::write(tmp.path().join(file_name), format!("{token}\n")).unwrap();
+
     let mut args = base_args();
     args.extend([
         "-p".to_string(),
-        "Read the file Cargo.toml and tell me the package name. Be very concise.".to_string(),
+        format!(
+            "Read the file {file_name} and reply with exactly the token in that file. Do not guess."
+        ),
     ]);
 
     let config = ProcessConfig {
         command: "claude".to_string(),
         args,
-        working_dir: working_dir(),
+        working_dir: tmp.path().to_path_buf(),
         timeout: Some(TOOL_TIMEOUT),
         log_prefix: "test-claude-tool".to_string(),
         stream_output: false,
