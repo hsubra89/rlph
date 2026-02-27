@@ -234,6 +234,48 @@ const ICON_CHECK: &str = "✔";
 const ICON_CROSS: &str = "✘";
 const ICON_PLAY: &str = "▶";
 
+/// Format a single Claude stream-json event line and write the result to `sink`.
+///
+/// Returns `true` if any output was written, `false` if the event was skipped.
+fn format_claude_line(prefix: &str, line: &str, sink: &mut impl std::io::Write) -> bool {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+        return false;
+    };
+    let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    if event_type != "assistant" {
+        return false;
+    }
+    let Some(content) = val.pointer("/message/content").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    let mut wrote = false;
+    for block in content {
+        let Some(block_type) = block.get("type").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        match block_type {
+            "text" => {
+                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                    for text_line in text.lines() {
+                        let _ = writeln!(sink, "[{prefix}] {text_line}");
+                    }
+                    wrote = true;
+                }
+            }
+            "tool_use" => {
+                if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                    let _ = writeln!(sink, "[{prefix}] {ICON_PLAY} {name}");
+                    wrote = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    wrote
+}
+
 /// Spawn a task that reads Claude stream-json lines from a channel and prints
 /// formatted agent messages to stderr, prefixed with `[prefix]`.
 ///
@@ -244,39 +286,9 @@ fn spawn_claude_stream_formatter(
     mut rx: mpsc::UnboundedReceiver<String>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut stderr = std::io::stderr();
         while let Some(line) = rx.recv().await {
-            let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
-            };
-            let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            if event_type != "assistant" {
-                continue;
-            }
-            let Some(content) = val.pointer("/message/content").and_then(|v| v.as_array()) else {
-                continue;
-            };
-            for block in content {
-                let Some(block_type) = block.get("type").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                match block_type {
-                    "text" => {
-                        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                            for text_line in text.lines() {
-                                eprintln!("[{prefix}] {text_line}");
-                            }
-                        }
-                    }
-                    "tool_use" => {
-                        if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                            eprintln!("[{prefix}] {ICON_PLAY} {name}");
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            format_claude_line(&prefix, &line, &mut stderr);
         }
     })
 }
@@ -863,6 +875,68 @@ fn extract_codex_result(stdout_lines: &[String]) -> Option<String> {
     last_text
 }
 
+/// Format a single Codex JSON event line and write the result to `sink`.
+///
+/// Returns `true` if a line was written, `false` if the event was skipped.
+fn format_codex_line(prefix: &str, line: &str, sink: &mut impl std::io::Write) -> bool {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+        return false;
+    };
+    let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    match event_type {
+        "item.completed" => {
+            let Some(item) = val.get("item") else {
+                return false;
+            };
+            let Some(item_type) = item.get("type").and_then(|v| v.as_str()) else {
+                return false;
+            };
+            match item_type {
+                "agent_message" => {
+                    if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                        for text_line in text.lines() {
+                            let _ = writeln!(sink, "[{prefix}] {text_line}");
+                        }
+                        return true;
+                    }
+                }
+                "command_execution" => {
+                    if let Some(cmd) = item.get("command").and_then(|v| v.as_str()) {
+                        let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                        let icon = if status == "completed" {
+                            ICON_CHECK
+                        } else {
+                            ICON_CROSS
+                        };
+                        for cmd_line in cmd.lines() {
+                            let _ = writeln!(sink, "[{prefix}] {icon} {cmd_line}");
+                        }
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        "item.started" => {
+            let Some(item) = val.get("item") else {
+                return false;
+            };
+            if item.get("type").and_then(|v| v.as_str()) == Some("command_execution")
+                && let Some(cmd) = item.get("command").and_then(|v| v.as_str())
+            {
+                for cmd_line in cmd.lines() {
+                    let _ = writeln!(sink, "[{prefix}] {ICON_PLAY} {cmd_line}");
+                }
+                return true;
+            }
+        }
+        _ => {}
+    }
+    false
+}
+
 /// Spawn a task that reads Codex JSON event lines from a channel and prints
 /// formatted agent messages to stderr, prefixed with `[prefix]`.
 ///
@@ -873,60 +947,9 @@ fn spawn_codex_stream_formatter(
     mut rx: mpsc::UnboundedReceiver<String>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut stderr = std::io::stderr();
         while let Some(line) = rx.recv().await {
-            let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
-            };
-            let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            match event_type {
-                "item.completed" => {
-                    let Some(item) = val.get("item") else {
-                        continue;
-                    };
-                    let Some(item_type) = item.get("type").and_then(|v| v.as_str()) else {
-                        continue;
-                    };
-                    match item_type {
-                        "agent_message" => {
-                            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                                for text_line in text.lines() {
-                                    eprintln!("[{prefix}] {text_line}");
-                                }
-                            }
-                        }
-                        "command_execution" => {
-                            if let Some(cmd) = item.get("command").and_then(|v| v.as_str()) {
-                                let status =
-                                    item.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                                let icon = if status == "completed" {
-                                    ICON_CHECK
-                                } else {
-                                    ICON_CROSS
-                                };
-                                for cmd_line in cmd.lines() {
-                                    eprintln!("[{prefix}] {icon} {cmd_line}");
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                "item.started" => {
-                    let Some(item) = val.get("item") else {
-                        continue;
-                    };
-                    if item.get("type").and_then(|v| v.as_str()) == Some("command_execution")
-                        && let Some(cmd) = item.get("command").and_then(|v| v.as_str())
-                    {
-                        for cmd_line in cmd.lines() {
-                            eprintln!("[{prefix}] {ICON_PLAY} {cmd_line}");
-                        }
-                    }
-                }
-                _ => {}
-            }
+            format_codex_line(&prefix, &line, &mut stderr);
         }
     })
 }
@@ -1757,86 +1780,186 @@ mod tests {
 
     // --- Codex stream formatter tests ---
 
-    /// Helper: send lines into a codex stream formatter and collect stderr output.
-    async fn run_codex_formatter(lines: &[&str]) -> Vec<String> {
-        // Capture stderr by running formatter logic inline (same as spawn_codex_stream_formatter
-        // but collecting output instead of printing).
-        let (tx, rx) = mpsc::unbounded_channel();
-        let handle = spawn_codex_stream_formatter("test".to_string(), rx);
+    /// Helper: run `format_codex_line` for each input line and return collected output.
+    fn run_codex_formatter(prefix: &str, lines: &[&str]) -> String {
+        let mut buf = Vec::new();
         for line in lines {
-            tx.send(line.to_string()).unwrap();
+            format_codex_line(prefix, line, &mut buf);
         }
-        drop(tx);
-        handle.await.unwrap();
-        // stderr is hard to capture in-process, so we test the parsing logic directly below.
-        vec![]
+        String::from_utf8(buf).unwrap()
     }
 
-    /// Verify the formatter processes agent_message events without panicking and
-    /// handles all JSON shapes gracefully.
-    #[tokio::test]
-    async fn test_codex_formatter_agent_message() {
-        let lines =
-            [r#"{"type":"item.completed","item":{"type":"agent_message","text":"hello world"}}"#];
-        run_codex_formatter(&lines).await;
+    #[test]
+    fn test_codex_formatter_agent_message() {
+        let out = run_codex_formatter(
+            "test",
+            &[r#"{"type":"item.completed","item":{"type":"agent_message","text":"hello world"}}"#],
+        );
+        assert_eq!(out, "[test] hello world\n");
     }
 
-    #[tokio::test]
-    async fn test_codex_formatter_command_execution_completed() {
-        let lines = [
-            r#"{"type":"item.completed","item":{"type":"command_execution","command":"cargo test","status":"completed"}}"#,
-        ];
-        run_codex_formatter(&lines).await;
+    #[test]
+    fn test_codex_formatter_command_execution_completed() {
+        let out = run_codex_formatter(
+            "test",
+            &[
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"cargo test","status":"completed"}}"#,
+            ],
+        );
+        assert_eq!(out, format!("[test] {ICON_CHECK} cargo test\n"));
     }
 
-    #[tokio::test]
-    async fn test_codex_formatter_command_execution_failed() {
-        let lines = [
-            r#"{"type":"item.completed","item":{"type":"command_execution","command":"cargo test","status":"failed"}}"#,
-        ];
-        run_codex_formatter(&lines).await;
+    #[test]
+    fn test_codex_formatter_command_execution_failed() {
+        let out = run_codex_formatter(
+            "test",
+            &[
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"cargo test","status":"failed"}}"#,
+            ],
+        );
+        assert_eq!(out, format!("[test] {ICON_CROSS} cargo test\n"));
     }
 
-    #[tokio::test]
-    async fn test_codex_formatter_item_started_command() {
-        let lines =
-            [r#"{"type":"item.started","item":{"type":"command_execution","command":"ls -la"}}"#];
-        run_codex_formatter(&lines).await;
+    #[test]
+    fn test_codex_formatter_item_started_command() {
+        let out = run_codex_formatter(
+            "test",
+            &[r#"{"type":"item.started","item":{"type":"command_execution","command":"ls -la"}}"#],
+        );
+        assert_eq!(out, format!("[test] {ICON_PLAY} ls -la\n"));
     }
 
-    #[tokio::test]
-    async fn test_codex_formatter_skips_unknown_event_types() {
-        let lines = [
-            r#"{"type":"thread.started","thread_id":"abc"}"#,
-            r#"{"type":"turn.started"}"#,
-            r#"{"type":"turn.completed","usage":{}}"#,
-        ];
-        run_codex_formatter(&lines).await;
+    #[test]
+    fn test_codex_formatter_skips_unknown_event_types() {
+        let out = run_codex_formatter(
+            "test",
+            &[
+                r#"{"type":"thread.started","thread_id":"abc"}"#,
+                r#"{"type":"turn.started"}"#,
+                r#"{"type":"turn.completed","usage":{}}"#,
+            ],
+        );
+        assert_eq!(out, "");
     }
 
-    #[tokio::test]
-    async fn test_codex_formatter_skips_invalid_json() {
-        let lines = ["not json at all", "{invalid", ""];
-        run_codex_formatter(&lines).await;
+    #[test]
+    fn test_codex_formatter_skips_invalid_json() {
+        let out = run_codex_formatter("test", &["not json at all", "{invalid", ""]);
+        assert_eq!(out, "");
     }
 
-    #[tokio::test]
-    async fn test_codex_formatter_skips_missing_item() {
-        let lines = [r#"{"type":"item.completed"}"#];
-        run_codex_formatter(&lines).await;
+    #[test]
+    fn test_codex_formatter_skips_missing_item() {
+        let out = run_codex_formatter("test", &[r#"{"type":"item.completed"}"#]);
+        assert_eq!(out, "");
     }
 
-    #[tokio::test]
-    async fn test_codex_formatter_skips_unknown_item_type() {
-        let lines = [r#"{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}"#];
-        run_codex_formatter(&lines).await;
+    #[test]
+    fn test_codex_formatter_skips_unknown_item_type() {
+        let out = run_codex_formatter(
+            "test",
+            &[r#"{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}"#],
+        );
+        assert_eq!(out, "");
     }
 
-    #[tokio::test]
-    async fn test_codex_formatter_multiline_command() {
-        let lines = [
-            r#"{"type":"item.started","item":{"type":"command_execution","command":"echo hello\necho world"}}"#,
-        ];
-        run_codex_formatter(&lines).await;
+    #[test]
+    fn test_codex_formatter_multiline_command() {
+        let out = run_codex_formatter(
+            "test",
+            &[
+                r#"{"type":"item.started","item":{"type":"command_execution","command":"echo hello\necho world"}}"#,
+            ],
+        );
+        assert_eq!(
+            out,
+            format!("[test] {ICON_PLAY} echo hello\n[test] {ICON_PLAY} echo world\n")
+        );
+    }
+
+    // --- Claude stream formatter tests ---
+
+    /// Helper: run `format_claude_line` for each input line and return collected output.
+    fn run_claude_formatter(prefix: &str, lines: &[&str]) -> String {
+        let mut buf = Vec::new();
+        for line in lines {
+            format_claude_line(prefix, line, &mut buf);
+        }
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn test_claude_formatter_text_block() {
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello world"}]}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl] hello world\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_tool_use_block() {
+        let out = run_claude_formatter(
+            "impl",
+            &[r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}"#],
+        );
+        assert_eq!(out, format!("[impl] {ICON_PLAY} Read\n"));
+    }
+
+    #[test]
+    fn test_claude_formatter_mixed_blocks() {
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"thinking"},{"type":"tool_use","name":"Edit"}]}}"#,
+            ],
+        );
+        assert_eq!(out, format!("[impl] thinking\n[impl] {ICON_PLAY} Edit\n"));
+    }
+
+    #[test]
+    fn test_claude_formatter_multiline_text() {
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"line1\nline2"}]}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl] line1\n[impl] line2\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_skips_non_assistant() {
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"user","message":{"content":[{"type":"text","text":"hi"}]}}"#,
+                r#"{"type":"result","message":{"content":[{"type":"text","text":"done"}]}}"#,
+            ],
+        );
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_claude_formatter_skips_invalid_json() {
+        let out = run_claude_formatter("impl", &["not json", "", "{bad"]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_claude_formatter_skips_missing_content() {
+        let out = run_claude_formatter("impl", &[r#"{"type":"assistant","message":{}}"#]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_claude_formatter_skips_unknown_block_type() {
+        let out = run_claude_formatter(
+            "impl",
+            &[r#"{"type":"assistant","message":{"content":[{"type":"thinking","text":"hmm"}]}}"#],
+        );
+        assert_eq!(out, "");
     }
 }
