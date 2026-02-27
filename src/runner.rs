@@ -567,10 +567,11 @@ pub enum AnyRunner {
 
 impl AnyRunner {
     /// Enable streaming of formatted agent messages to stderr with the given prefix.
-    /// Currently only supported for the Claude runner; other runners ignore this.
     pub fn with_stream_prefix(mut self, prefix: String) -> Self {
-        if let AnyRunner::Claude(ref mut r) = self {
-            r.stream_prefix = Some(prefix);
+        match self {
+            AnyRunner::Claude(ref mut r) => r.stream_prefix = Some(prefix),
+            AnyRunner::Codex(ref mut r) => r.stream_prefix = Some(prefix),
+            _ => {}
         }
         self
     }
@@ -857,6 +858,64 @@ fn extract_codex_result(stdout_lines: &[String]) -> Option<String> {
     last_text
 }
 
+/// Spawn a task that reads Codex JSON event lines from a channel and prints
+/// formatted agent messages to stderr, prefixed with `[prefix]`.
+///
+/// Extracts text from `item.completed` agent_message events and command names
+/// from `item.started` command_execution events.
+fn spawn_codex_stream_formatter(
+    prefix: String,
+    mut rx: mpsc::UnboundedReceiver<String>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(line) = rx.recv().await {
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            match event_type {
+                "item.completed" => {
+                    let Some(item) = val.get("item") else {
+                        continue;
+                    };
+                    let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    match item_type {
+                        "agent_message" => {
+                            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                                for text_line in text.lines() {
+                                    eprintln!("[{prefix}] {text_line}");
+                                }
+                            }
+                        }
+                        "command_execution" => {
+                            if let Some(cmd) = item.get("command").and_then(|v| v.as_str()) {
+                                let status =
+                                    item.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                                let icon = if status == "completed" { "\u{2714}" } else { "\u{2718}" };
+                                eprintln!("[{prefix}] {icon} {cmd}");
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                "item.started" => {
+                    let Some(item) = val.get("item") else {
+                        continue;
+                    };
+                    if item.get("type").and_then(|v| v.as_str()) == Some("command_execution")
+                        && let Some(cmd) = item.get("command").and_then(|v| v.as_str())
+                    {
+                        eprintln!("[{prefix}] \u{25b6} {cmd}");
+                    }
+                }
+                _ => {}
+            }
+        }
+    })
+}
+
 /// Codex runner — invokes the OpenAI Codex CLI.
 pub struct CodexRunner {
     agent_binary: String,
@@ -864,6 +923,7 @@ pub struct CodexRunner {
     effort: Option<String>,
     timeout: Option<Duration>,
     max_timeout_retries: u32,
+    pub stream_prefix: Option<String>,
 }
 
 impl CodexRunner {
@@ -880,6 +940,7 @@ impl CodexRunner {
             effort,
             timeout,
             max_timeout_retries,
+            stream_prefix: None,
         }
     }
 
@@ -908,6 +969,16 @@ impl AgentRunner for CodexRunner {
         let mut all_stdout: Vec<String> = Vec::new();
         let mut all_stderr: Vec<String> = Vec::new();
 
+        // Set up streaming channel if a stream prefix is configured.
+        let (stdout_tx, stream_handle) = if let Some(ref prefix) = self.stream_prefix {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let handle = spawn_codex_stream_formatter(prefix.clone(), rx);
+            (Some(tx), Some(handle))
+        } else {
+            (None, None)
+        };
+
+        let result = 'attempts: {
         for attempt in 0..max_attempts {
             let (command, args, stdin_data) = if attempt == 0 {
                 let (cmd, a) = self.build_command();
@@ -932,7 +1003,7 @@ impl AgentRunner for CodexRunner {
                 env: vec![],
                 stdin_data,
                 quiet: true,
-                stdout_tx: None,
+                stdout_tx: stdout_tx.clone(),
             };
 
             match spawn_and_stream(config).await {
@@ -945,11 +1016,13 @@ impl AgentRunner for CodexRunner {
                     let stderr = all_stderr.join("\n");
 
                     if let Some(sig) = output.signal {
-                        return Err(Error::AgentRunner(format!("agent killed by signal {sig}")));
+                        break 'attempts Err(Error::AgentRunner(format!(
+                            "agent killed by signal {sig}"
+                        )));
                     }
 
                     if output.exit_code != 0 {
-                        return Err(Error::AgentRunner(format!(
+                        break 'attempts Err(Error::AgentRunner(format!(
                             "agent exited with code {}",
                             output.exit_code
                         )));
@@ -957,7 +1030,7 @@ impl AgentRunner for CodexRunner {
 
                     let session_id = extract_thread_id(&all_stdout);
 
-                    return Ok(RunResult {
+                    break 'attempts Ok(RunResult {
                         exit_code: output.exit_code,
                         stdout,
                         stderr,
@@ -973,13 +1046,23 @@ impl AgentRunner for CodexRunner {
                     all_stderr.extend(stderr_lines);
                     warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
                 }
-                Err(e) => return Err(e),
+                Err(e) => break 'attempts Err(e),
             }
         }
 
         Err(Error::AgentRunner(format!(
             "agent timed out after {max_attempts} attempts"
         )))
+        };
+
+        // Drop the sender so the stream formatter sees channel closure,
+        // then await it to ensure all buffered messages are flushed to stderr.
+        drop(stdout_tx);
+        if let Some(handle) = stream_handle {
+            let _ = handle.await;
+        }
+
+        result
     }
 }
 
