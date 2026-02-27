@@ -111,9 +111,10 @@ main() {
     info "Extracting..."
     tar -xzf "${tmpdir}/${archive}" -C "$tmpdir"
 
-    # Install binary
+    # Install binary (archive contains a subdirectory)
+    extracted_dir="${tmpdir}/rlph-${tag}-${target}"
     mkdir -p "$INSTALL_DIR"
-    mv "${tmpdir}/rlph" "${INSTALL_DIR}/rlph"
+    mv "${extracted_dir}/rlph" "${INSTALL_DIR}/rlph"
     chmod +x "${INSTALL_DIR}/rlph"
 
     ok "Installed rlph ${tag} to ${INSTALL_DIR}/rlph"
