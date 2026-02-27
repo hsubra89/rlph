@@ -54,15 +54,24 @@ pub struct ReviewInvocation {
 /// Override in tests to inject mock runners.
 pub trait ReviewRunnerFactory: Send + Sync {
     fn create_phase_runner(&self, phase: &ReviewPhaseConfig, timeout_retries: u32) -> AnyRunner;
-    fn create_step_runner(&self, step: &ReviewStepConfig, timeout_retries: u32) -> AnyRunner;
+    fn create_step_runner(
+        &self,
+        step: &ReviewStepConfig,
+        timeout_retries: u32,
+        name: &str,
+    ) -> AnyRunner;
 }
 
 /// Default factory that creates real runners from config.
-pub struct DefaultReviewRunnerFactory;
+#[derive(Default)]
+pub struct DefaultReviewRunnerFactory {
+    /// When true, runners stream formatted agent messages to stderr.
+    pub stream: bool,
+}
 
 impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
     fn create_phase_runner(&self, phase: &ReviewPhaseConfig, timeout_retries: u32) -> AnyRunner {
-        build_runner(
+        let runner = build_runner(
             phase.runner,
             &phase.agent_binary,
             phase.agent_model.as_deref(),
@@ -70,11 +79,21 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
             phase.agent_variant.as_deref(),
             phase.agent_timeout.map(Duration::from_secs),
             timeout_retries,
-        )
+        );
+        if self.stream {
+            runner.with_stream_prefix(format!("review:{}", phase.name))
+        } else {
+            runner
+        }
     }
 
-    fn create_step_runner(&self, step: &ReviewStepConfig, timeout_retries: u32) -> AnyRunner {
-        build_runner(
+    fn create_step_runner(
+        &self,
+        step: &ReviewStepConfig,
+        timeout_retries: u32,
+        name: &str,
+    ) -> AnyRunner {
+        let runner = build_runner(
             step.runner,
             &step.agent_binary,
             step.agent_model.as_deref(),
@@ -82,7 +101,12 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
             step.agent_variant.as_deref(),
             step.agent_timeout.map(Duration::from_secs),
             timeout_retries,
-        )
+        );
+        if self.stream {
+            runner.with_stream_prefix(format!("review:{name}"))
+        } else {
+            runner
+        }
     }
 }
 
@@ -247,7 +271,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             prompt_engine,
             config,
             repo_root,
-            review_factory: DefaultReviewRunnerFactory,
+            review_factory: DefaultReviewRunnerFactory::default(),
             reporter: StderrReporter,
             correction_runner: DefaultCorrectionRunner,
         }
@@ -441,28 +465,35 @@ impl<
         info!(count = tasks.len(), "found eligible tasks");
         self.reporter.tasks_found(tasks.len());
 
-        // 2. Choose phase — agent selects a task
-        info!("running choose phase");
-        let mut choose_vars = HashMap::new();
-        choose_vars.insert(
-            "repo_path".to_string(),
-            self.repo_root.display().to_string(),
-        );
-        let issues_json = serde_json::to_string_pretty(&tasks)
-            .map_err(|e| Error::Orchestrator(format!("failed to serialize tasks: {e}")))?;
-        choose_vars.insert("issues_json".to_string(), issues_json);
-        let choose_prompt = self.prompt_engine.render_phase("choose", &choose_vars)?;
-        let choose_started = Instant::now();
-        self.runner
-            .run(Phase::Choose, &choose_prompt, &self.repo_root)
-            .await?;
-        info!(
-            elapsed_secs = choose_started.elapsed().as_secs(),
-            "choose phase complete"
-        );
+        // 2. Choose phase — agent selects a task (skip if only one)
+        let task_id = if tasks.len() == 1 {
+            let only = &tasks[0];
+            let id = format!("gh-{}", only.id);
+            info!(task_id = id, "auto-selected only eligible task");
+            id
+        } else {
+            info!("running choose phase");
+            let mut choose_vars = HashMap::new();
+            choose_vars.insert(
+                "repo_path".to_string(),
+                self.repo_root.display().to_string(),
+            );
+            let issues_json = serde_json::to_string_pretty(&tasks)
+                .map_err(|e| Error::Orchestrator(format!("failed to serialize tasks: {e}")))?;
+            choose_vars.insert("issues_json".to_string(), issues_json);
+            let choose_prompt = self.prompt_engine.render_phase("choose", &choose_vars)?;
+            let choose_started = Instant::now();
+            self.runner
+                .run(Phase::Choose, &choose_prompt, &self.repo_root)
+                .await?;
+            info!(
+                elapsed_secs = choose_started.elapsed().as_secs(),
+                "choose phase complete"
+            );
 
-        // 3. Parse task selection from .rlph/task.toml
-        let task_id = self.parse_task_selection()?;
+            // Parse task selection from .rlph/task.toml
+            self.parse_task_selection()?
+        };
         let issue_number = parse_issue_number(&task_id)?;
         info!(task_id, issue_number, "selected task");
         let existing_pr_number = if self.config.dry_run {
@@ -741,9 +772,11 @@ impl<
             let review_outputs_text = review_texts.join("\n\n---\n\n");
 
             let agg_config = &self.config.review_aggregate;
-            let agg_runner = self
-                .review_factory
-                .create_step_runner(agg_config, self.config.agent_timeout_retries);
+            let agg_runner = self.review_factory.create_step_runner(
+                agg_config,
+                self.config.agent_timeout_retries,
+                "aggregate",
+            );
 
             let mut agg_vars = vars.clone();
             agg_vars.insert("review_outputs".to_string(), review_outputs_text);
@@ -824,9 +857,11 @@ impl<
             info!(round, "review needs fix, running fix agent");
 
             let fix_config = &self.config.review_fix;
-            let fix_runner = self
-                .review_factory
-                .create_step_runner(fix_config, self.config.agent_timeout_retries);
+            let fix_runner = self.review_factory.create_step_runner(
+                fix_config,
+                self.config.agent_timeout_retries,
+                "fix",
+            );
 
             let mut fix_vars = vars.clone();
             fix_vars.insert("fix_instructions".to_string(), fix_instructions);

@@ -5,9 +5,9 @@ Rust binary crate (edition 2024). Autonomous AI dev-loop CLI: fetches tasks, spi
 ## Commands
 
 - **Lint:** `cargo clippy`
-- **Test:** `cargo test`
-- **Integration:** `RLPH_INTEGRATION=1 cargo test --test cli_binary`
-- **Single test:** `cargo test test_name`
+- **Test:** `cargo nextest run`
+- **Integration:** `RLPH_INTEGRATION=1 cargo nextest run --test cli_binary`
+- **Single test:** `cargo nextest run -E 'test(test_name)'`
 
 ## Workflow
 

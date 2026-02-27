@@ -425,7 +425,12 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
         })))
     }
 
-    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
             Box::pin(async move {
                 let stdout = match phase {
@@ -461,7 +466,12 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
         })))
     }
 
-    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
             Box::pin(async move {
                 let stdout = match phase {
@@ -492,7 +502,12 @@ impl ReviewRunnerFactory for FailReviewFactory {
         })))
     }
 
-    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
             Box::pin(async {
                 Ok(RunResult {
@@ -864,7 +879,8 @@ async fn test_no_eligible_tasks() {
 #[tokio::test]
 async fn test_error_at_choose_phase() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo();
-    let task = make_task(42, "Fix bug");
+    // Need 2+ tasks so choose phase actually runs (single task is auto-selected)
+    let tasks = vec![make_task(42, "Fix bug"), make_task(43, "Add feature")];
 
     let runner = FailAtPhaseRunner {
         fail_at: Phase::Choose,
@@ -875,7 +891,7 @@ async fn test_error_at_choose_phase() {
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
     let orchestrator = Orchestrator::new(
-        MockSource::new(vec![task], Arc::clone(&source_tracker)),
+        MockSource::new(tasks, Arc::clone(&source_tracker)),
         runner,
         MockSubmission::new(Arc::clone(&sub_tracker), None),
         WorktreeManager::new(
@@ -1172,7 +1188,8 @@ async fn test_continuous_mode_polls_with_empty_results() {
 
     orchestrator.run_loop(None).await.unwrap();
 
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 1);
+    // Single task → choose phase skipped (auto-selected)
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
 }
 
@@ -1207,7 +1224,8 @@ async fn test_max_iterations_stops_at_limit() {
 
     orchestrator.run_loop(None).await.unwrap();
 
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 3);
+    // Single task → choose phase skipped (auto-selected)
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 3);
 }
 
@@ -1246,7 +1264,8 @@ async fn test_continuous_shutdown_exits_between_iterations() {
 
     // Shutdown signal fires during implement, but the current iteration
     // completes fully. Shutdown is only checked between iterations.
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 1);
+    // Single task → choose phase skipped (auto-selected)
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
 }
 
@@ -1930,7 +1949,12 @@ impl ReviewRunnerFactory for MalformedPhaseFactory {
         )))
     }
 
-    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
             Box::pin(async move {
                 let stdout = match phase {
@@ -1969,7 +1993,12 @@ impl ReviewRunnerFactory for MalformedAggregatorFactory {
         })))
     }
 
-    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
         let agg_stdout = self.agg_stdout.clone();
         AnyRunner::Callback(CallbackRunner::new(Arc::new(
             move |phase, _prompt, _dir| {
@@ -2025,7 +2054,12 @@ impl ReviewRunnerFactory for MalformedFixFactory {
         })))
     }
 
-    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32) -> AnyRunner {
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
         let fix_stdout = self.fix_stdout.clone();
         let agg_calls = Arc::clone(&self.agg_calls);
         AnyRunner::Callback(CallbackRunner::new(Arc::new(
