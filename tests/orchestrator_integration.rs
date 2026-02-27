@@ -425,7 +425,12 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
         })))
     }
 
-    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32, _name: &str) -> AnyRunner {
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
             Box::pin(async move {
                 let stdout = match phase {
@@ -461,7 +466,12 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
         })))
     }
 
-    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32, _name: &str) -> AnyRunner {
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
             Box::pin(async move {
                 let stdout = match phase {
@@ -492,7 +502,12 @@ impl ReviewRunnerFactory for FailReviewFactory {
         })))
     }
 
-    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32, _name: &str) -> AnyRunner {
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
             Box::pin(async {
                 Ok(RunResult {
@@ -1934,7 +1949,12 @@ impl ReviewRunnerFactory for MalformedPhaseFactory {
         )))
     }
 
-    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32, _name: &str) -> AnyRunner {
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
             Box::pin(async move {
                 let stdout = match phase {
@@ -1973,7 +1993,12 @@ impl ReviewRunnerFactory for MalformedAggregatorFactory {
         })))
     }
 
-    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32, _name: &str) -> AnyRunner {
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
         let agg_stdout = self.agg_stdout.clone();
         AnyRunner::Callback(CallbackRunner::new(Arc::new(
             move |phase, _prompt, _dir| {
@@ -2029,7 +2054,12 @@ impl ReviewRunnerFactory for MalformedFixFactory {
         })))
     }
 
-    fn create_step_runner(&self, _step: &ReviewStepConfig, _timeout_retries: u32, _name: &str) -> AnyRunner {
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
         let fix_stdout = self.fix_stdout.clone();
         let agg_calls = Arc::clone(&self.agg_calls);
         AnyRunner::Callback(CallbackRunner::new(Arc::new(

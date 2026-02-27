@@ -772,9 +772,11 @@ impl<
             let review_outputs_text = review_texts.join("\n\n---\n\n");
 
             let agg_config = &self.config.review_aggregate;
-            let agg_runner = self
-                .review_factory
-                .create_step_runner(agg_config, self.config.agent_timeout_retries, "aggregate");
+            let agg_runner = self.review_factory.create_step_runner(
+                agg_config,
+                self.config.agent_timeout_retries,
+                "aggregate",
+            );
 
             let mut agg_vars = vars.clone();
             agg_vars.insert("review_outputs".to_string(), review_outputs_text);
@@ -855,9 +857,11 @@ impl<
             info!(round, "review needs fix, running fix agent");
 
             let fix_config = &self.config.review_fix;
-            let fix_runner = self
-                .review_factory
-                .create_step_runner(fix_config, self.config.agent_timeout_retries, "fix");
+            let fix_runner = self.review_factory.create_step_runner(
+                fix_config,
+                self.config.agent_timeout_retries,
+                "fix",
+            );
 
             let mut fix_vars = vars.clone();
             fix_vars.insert("fix_instructions".to_string(), fix_instructions);

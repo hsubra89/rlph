@@ -234,7 +234,10 @@ fn extract_claude_result(stdout_lines: &[String]) -> Option<String> {
 ///
 /// Extracts text content from `assistant` events and tool names from `tool_use`
 /// content blocks. All other event types are silently skipped.
-fn spawn_stream_formatter(prefix: String, mut rx: mpsc::UnboundedReceiver<String>) -> tokio::task::JoinHandle<()> {
+fn spawn_stream_formatter(
+    prefix: String,
+    mut rx: mpsc::UnboundedReceiver<String>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(line) = rx.recv().await {
             let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
