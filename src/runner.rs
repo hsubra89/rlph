@@ -931,7 +931,7 @@ pub struct CodexRunner {
     effort: Option<String>,
     timeout: Option<Duration>,
     max_timeout_retries: u32,
-    pub stream_prefix: Option<String>,
+    stream_prefix: Option<String>,
 }
 
 impl CodexRunner {
