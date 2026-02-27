@@ -1,0 +1,16 @@
+[profile.default]
+# Unit tests: 30s timeout
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+# Integration tests that spawn real binaries get more time
+[[profile.default.overrides]]
+filter = "binary(claude_binary) | binary(codex_binary) | binary(opencode_binary)"
+slow-timeout = { period = "120s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+filter = "binary(orchestrator_integration) | binary(prd_integration)"
+slow-timeout = { period = "180s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+filter = "binary(process_integration) | binary(worktree_integration)"
+slow-timeout = { period = "60s", terminate-after = 2 }

@@ -46,7 +46,7 @@ fn review_help() {
         .args(["review", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("PR_NUMBER"));
+        .stdout(predicate::str::contains("PR_REF"));
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn review_missing_pr_number() {
         .assert()
         .failure()
         .code(2)
-        .stderr(predicate::str::contains("PR_NUMBER"));
+        .stderr(predicate::str::contains("PR_REF"));
 }
 
 // --- Config validation ---
