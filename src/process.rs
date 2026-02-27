@@ -7,6 +7,8 @@ use tokio::process::Command;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
+use tokio::sync::mpsc::UnboundedSender;
+
 use crate::error::{Error, Result};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -33,6 +35,9 @@ pub struct ProcessConfig {
     pub stdin_data: Option<String>,
     /// Suppress heartbeat progress messages on stderr.
     pub quiet: bool,
+    /// Optional channel to forward stdout lines in real time (in addition to
+    /// collecting them in memory). Useful for streaming agent output.
+    pub stdout_tx: Option<UnboundedSender<String>>,
 }
 
 /// Output from a completed child process.
@@ -120,6 +125,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
     let prefix_out = log_prefix.clone();
     let prefix_err = log_prefix.clone();
     let stream_output = config.stream_output;
+    let stdout_tx = config.stdout_tx;
 
     let stdout_task = tokio::spawn(async move {
         let mut lines = Vec::new();
@@ -129,6 +135,9 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
                 Ok(Some(line)) => {
                     if stream_output {
                         println!("[{prefix_out}] {line}");
+                    }
+                    if let Some(ref tx) = stdout_tx {
+                        let _ = tx.send(line.clone());
                     }
                     lines.push(line);
                 }

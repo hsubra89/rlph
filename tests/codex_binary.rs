@@ -52,6 +52,7 @@ fn config_with_args(args: Vec<String>, stdin_data: Option<String>) -> ProcessCon
         env: vec![],
         stdin_data,
         quiet: true,
+        stdout_tx: None,
     }
 }
 
@@ -527,6 +528,7 @@ async fn test_codex_json_command_execution_schema() {
                 .to_string(),
         ),
         quiet: true,
+        stdout_tx: None,
     };
 
     let Some(output) = run_config_or_skip(config).await else {
@@ -675,6 +677,7 @@ async fn test_codex_json_failed_command_schema() {
                 .to_string(),
         ),
         quiet: true,
+        stdout_tx: None,
     };
 
     let Some(output) = run_config_or_skip(config).await else {

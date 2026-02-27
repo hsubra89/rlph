@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
+use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::error::{Error, Result};
@@ -152,6 +153,8 @@ pub struct ClaudeRunner {
     effort: Option<String>,
     timeout: Option<Duration>,
     max_timeout_retries: u32,
+    /// When set, stream formatted agent messages to stderr with this prefix.
+    stream_prefix: Option<String>,
 }
 
 impl ClaudeRunner {
@@ -168,6 +171,7 @@ impl ClaudeRunner {
             effort,
             timeout,
             max_timeout_retries,
+            stream_prefix: None,
         }
     }
 
@@ -225,12 +229,65 @@ fn extract_claude_result(stdout_lines: &[String]) -> Option<String> {
     last_result
 }
 
+/// Spawn a task that reads Claude stream-json lines from a channel and prints
+/// formatted agent messages to stderr, prefixed with `[prefix]`.
+///
+/// Extracts text content from `assistant` events and tool names from `tool_use`
+/// content blocks. All other event types are silently skipped.
+fn spawn_stream_formatter(prefix: String, mut rx: mpsc::UnboundedReceiver<String>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(line) = rx.recv().await {
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if event_type != "assistant" {
+                continue;
+            }
+            let Some(content) = val.pointer("/message/content").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for block in content {
+                let Some(block_type) = block.get("type").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                match block_type {
+                    "text" => {
+                        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                            for text_line in text.lines() {
+                                eprintln!("[{prefix}] {text_line}");
+                            }
+                        }
+                    }
+                    "tool_use" => {
+                        if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                            eprintln!("[{prefix}] \u{25b6} {name}");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    })
+}
+
 impl AgentRunner for ClaudeRunner {
     async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
         let log_prefix = format!("agent:{phase}");
         let max_attempts = 1 + self.max_timeout_retries;
         let mut all_stdout: Vec<String> = Vec::new();
         let mut all_stderr: Vec<String> = Vec::new();
+
+        // Set up streaming channel if a stream prefix is configured.
+        let (stdout_tx, _stream_handle) = if let Some(ref prefix) = self.stream_prefix {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let handle = spawn_stream_formatter(prefix.clone(), rx);
+            (Some(tx), Some(handle))
+        } else {
+            (None, None)
+        };
 
         for attempt in 0..max_attempts {
             let (command, args) = if attempt == 0 {
@@ -264,6 +321,7 @@ impl AgentRunner for ClaudeRunner {
                 env: vec![],
                 stdin_data: None,
                 quiet: true,
+                stdout_tx: stdout_tx.clone(),
             };
 
             match spawn_and_stream(config).await {
@@ -411,6 +469,7 @@ pub async fn resume_with_correction(
         env: vec![],
         stdin_data,
         quiet: true,
+        stdout_tx: None,
     };
 
     let output = spawn_and_stream(config).await?;
@@ -488,6 +547,17 @@ pub enum AnyRunner {
     Codex(CodexRunner),
     OpenCode(OpencodeRunner),
     Callback(CallbackRunner),
+}
+
+impl AnyRunner {
+    /// Enable streaming of formatted agent messages to stderr with the given prefix.
+    /// Currently only supported for the Claude runner; other runners ignore this.
+    pub fn with_stream_prefix(mut self, prefix: String) -> Self {
+        if let AnyRunner::Claude(ref mut r) = self {
+            r.stream_prefix = Some(prefix);
+        }
+        self
+    }
 }
 
 impl AgentRunner for AnyRunner {
@@ -604,6 +674,7 @@ impl AgentRunner for OpencodeRunner {
                 env: vec![],
                 stdin_data: None,
                 quiet: true,
+                stdout_tx: None,
             };
 
             match spawn_and_stream(config).await {
@@ -845,6 +916,7 @@ impl AgentRunner for CodexRunner {
                 env: vec![],
                 stdin_data,
                 quiet: true,
+                stdout_tx: None,
             };
 
             match spawn_and_stream(config).await {

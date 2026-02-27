@@ -150,6 +150,7 @@ async fn main() {
             let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
             let prompt_engine = PromptEngine::new(None);
             let timeout = config.agent_timeout.map(Duration::from_secs);
+            let factory = rlph::orchestrator::DefaultReviewRunnerFactory { stream: true };
             let orchestrator = Orchestrator::new(
                 source,
                 build_runner(
@@ -167,7 +168,8 @@ async fn main() {
                 prompt_engine,
                 config,
                 repo_root,
-            );
+            )
+            .with_review_factory(factory);
 
             let invocation = ReviewInvocation {
                 task_id_for_state,
