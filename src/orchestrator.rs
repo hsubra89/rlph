@@ -54,15 +54,24 @@ pub struct ReviewInvocation {
 /// Override in tests to inject mock runners.
 pub trait ReviewRunnerFactory: Send + Sync {
     fn create_phase_runner(&self, phase: &ReviewPhaseConfig, timeout_retries: u32) -> AnyRunner;
-    fn create_step_runner(&self, step: &ReviewStepConfig, timeout_retries: u32) -> AnyRunner;
+    fn create_step_runner(
+        &self,
+        step: &ReviewStepConfig,
+        timeout_retries: u32,
+        name: &str,
+    ) -> AnyRunner;
 }
 
 /// Default factory that creates real runners from config.
-pub struct DefaultReviewRunnerFactory;
+#[derive(Default)]
+pub struct DefaultReviewRunnerFactory {
+    /// When true, runners stream formatted agent messages to stderr.
+    pub stream: bool,
+}
 
 impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
     fn create_phase_runner(&self, phase: &ReviewPhaseConfig, timeout_retries: u32) -> AnyRunner {
-        build_runner(
+        let runner = build_runner(
             phase.runner,
             &phase.agent_binary,
             phase.agent_model.as_deref(),
@@ -70,11 +79,21 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
             phase.agent_variant.as_deref(),
             phase.agent_timeout.map(Duration::from_secs),
             timeout_retries,
-        )
+        );
+        if self.stream {
+            runner.with_stream_prefix(format!("review:{}", phase.name))
+        } else {
+            runner
+        }
     }
 
-    fn create_step_runner(&self, step: &ReviewStepConfig, timeout_retries: u32) -> AnyRunner {
-        build_runner(
+    fn create_step_runner(
+        &self,
+        step: &ReviewStepConfig,
+        timeout_retries: u32,
+        name: &str,
+    ) -> AnyRunner {
+        let runner = build_runner(
             step.runner,
             &step.agent_binary,
             step.agent_model.as_deref(),
@@ -82,7 +101,12 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
             step.agent_variant.as_deref(),
             step.agent_timeout.map(Duration::from_secs),
             timeout_retries,
-        )
+        );
+        if self.stream {
+            runner.with_stream_prefix(format!("review:{name}"))
+        } else {
+            runner
+        }
     }
 }
 
@@ -247,7 +271,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             prompt_engine,
             config,
             repo_root,
-            review_factory: DefaultReviewRunnerFactory,
+            review_factory: DefaultReviewRunnerFactory::default(),
             reporter: StderrReporter,
             correction_runner: DefaultCorrectionRunner,
         }
@@ -748,9 +772,11 @@ impl<
             let review_outputs_text = review_texts.join("\n\n---\n\n");
 
             let agg_config = &self.config.review_aggregate;
-            let agg_runner = self
-                .review_factory
-                .create_step_runner(agg_config, self.config.agent_timeout_retries);
+            let agg_runner = self.review_factory.create_step_runner(
+                agg_config,
+                self.config.agent_timeout_retries,
+                "aggregate",
+            );
 
             let mut agg_vars = vars.clone();
             agg_vars.insert("review_outputs".to_string(), review_outputs_text);
@@ -831,9 +857,11 @@ impl<
             info!(round, "review needs fix, running fix agent");
 
             let fix_config = &self.config.review_fix;
-            let fix_runner = self
-                .review_factory
-                .create_step_runner(fix_config, self.config.agent_timeout_retries);
+            let fix_runner = self.review_factory.create_step_runner(
+                fix_config,
+                self.config.agent_timeout_retries,
+                "fix",
+            );
 
             let mut fix_vars = vars.clone();
             fix_vars.insert("fix_instructions".to_string(), fix_instructions);

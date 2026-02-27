@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
+use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::error::{Error, Result};
@@ -152,6 +153,8 @@ pub struct ClaudeRunner {
     effort: Option<String>,
     timeout: Option<Duration>,
     max_timeout_retries: u32,
+    /// When set, stream formatted agent messages to stderr with this prefix.
+    stream_prefix: Option<String>,
 }
 
 impl ClaudeRunner {
@@ -168,6 +171,7 @@ impl ClaudeRunner {
             effort,
             timeout,
             max_timeout_retries,
+            stream_prefix: None,
         }
     }
 
@@ -225,6 +229,53 @@ fn extract_claude_result(stdout_lines: &[String]) -> Option<String> {
     last_result
 }
 
+/// Spawn a task that reads Claude stream-json lines from a channel and prints
+/// formatted agent messages to stderr, prefixed with `[prefix]`.
+///
+/// Extracts text content from `assistant` events and tool names from `tool_use`
+/// content blocks. All other event types are silently skipped.
+fn spawn_stream_formatter(
+    prefix: String,
+    mut rx: mpsc::UnboundedReceiver<String>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(line) = rx.recv().await {
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if event_type != "assistant" {
+                continue;
+            }
+            let Some(content) = val.pointer("/message/content").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for block in content {
+                let Some(block_type) = block.get("type").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                match block_type {
+                    "text" => {
+                        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                            for text_line in text.lines() {
+                                eprintln!("[{prefix}] {text_line}");
+                            }
+                        }
+                    }
+                    "tool_use" => {
+                        if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                            eprintln!("[{prefix}] \u{25b6} {name}");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    })
+}
+
 impl AgentRunner for ClaudeRunner {
     async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
         let log_prefix = format!("agent:{phase}");
@@ -232,87 +283,110 @@ impl AgentRunner for ClaudeRunner {
         let mut all_stdout: Vec<String> = Vec::new();
         let mut all_stderr: Vec<String> = Vec::new();
 
-        for attempt in 0..max_attempts {
-            let (command, args) = if attempt == 0 {
-                self.build_command(prompt)
-            } else {
-                // On retry, try to resume from session_id in previous output.
-                let session_id = match extract_session_id(&all_stdout) {
-                    Some(id) => id,
-                    None => {
-                        warn!(prefix = %log_prefix, attempt, "timeout retry: no session_id found, cannot resume");
-                        return Err(Error::AgentRunner(
-                            "agent timed out and no session_id found for resume".to_string(),
-                        ));
-                    }
+        // Set up streaming channel if a stream prefix is configured.
+        let (stdout_tx, stream_handle) = if let Some(ref prefix) = self.stream_prefix {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let handle = spawn_stream_formatter(prefix.clone(), rx);
+            (Some(tx), Some(handle))
+        } else {
+            (None, None)
+        };
+
+        let result = 'attempts: {
+            for attempt in 0..max_attempts {
+                let (command, args) = if attempt == 0 {
+                    self.build_command(prompt)
+                } else {
+                    // On retry, try to resume from session_id in previous output.
+                    let session_id = match extract_session_id(&all_stdout) {
+                        Some(id) => id,
+                        None => {
+                            warn!(prefix = %log_prefix, attempt, "timeout retry: no session_id found, cannot resume");
+                            break 'attempts Err(Error::AgentRunner(
+                                "agent timed out and no session_id found for resume".to_string(),
+                            ));
+                        }
+                    };
+                    eprintln!(
+                        "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{})",
+                        attempt + 1,
+                        max_attempts
+                    );
+                    self.build_resume_command(&session_id)
                 };
-                eprintln!(
-                    "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{})",
-                    attempt + 1,
-                    max_attempts
-                );
-                self.build_resume_command(&session_id)
-            };
 
-            let config = ProcessConfig {
-                command,
-                args,
-                working_dir: working_dir.to_path_buf(),
-                timeout: self.timeout,
-                log_prefix: log_prefix.clone(),
-                stream_output: false,
-                env: vec![],
-                stdin_data: None,
-                quiet: true,
-            };
+                let config = ProcessConfig {
+                    command,
+                    args,
+                    working_dir: working_dir.to_path_buf(),
+                    timeout: self.timeout,
+                    log_prefix: log_prefix.clone(),
+                    stream_output: false,
+                    env: vec![],
+                    stdin_data: None,
+                    quiet: true,
+                    stdout_tx: stdout_tx.clone(),
+                };
 
-            match spawn_and_stream(config).await {
-                Ok(output) => {
-                    all_stdout.extend(output.stdout_lines);
-                    all_stderr.extend(output.stderr_lines);
+                match spawn_and_stream(config).await {
+                    Ok(output) => {
+                        all_stdout.extend(output.stdout_lines);
+                        all_stderr.extend(output.stderr_lines);
 
-                    let stdout =
-                        extract_claude_result(&all_stdout).unwrap_or_else(|| all_stdout.join("\n"));
-                    let stderr = all_stderr.join("\n");
+                        let stdout = extract_claude_result(&all_stdout)
+                            .unwrap_or_else(|| all_stdout.join("\n"));
+                        let stderr = all_stderr.join("\n");
 
-                    if let Some(sig) = output.signal {
-                        return Err(Error::AgentRunner(format!("agent killed by signal {sig}")));
+                        if let Some(sig) = output.signal {
+                            break 'attempts Err(Error::AgentRunner(format!(
+                                "agent killed by signal {sig}"
+                            )));
+                        }
+
+                        if output.exit_code != 0 {
+                            break 'attempts Err(Error::AgentRunner(format!(
+                                "agent exited with code {}",
+                                output.exit_code
+                            )));
+                        }
+
+                        let session_id = extract_session_id(&all_stdout);
+
+                        break 'attempts Ok(RunResult {
+                            exit_code: output.exit_code,
+                            stdout,
+                            stderr,
+                            session_id,
+                        });
                     }
-
-                    if output.exit_code != 0 {
-                        return Err(Error::AgentRunner(format!(
-                            "agent exited with code {}",
-                            output.exit_code
-                        )));
+                    Err(Error::ProcessTimeout {
+                        timeout,
+                        stdout_lines,
+                        stderr_lines,
+                    }) => {
+                        all_stdout.extend(stdout_lines);
+                        all_stderr.extend(stderr_lines);
+                        warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
+                        // Continue to next attempt (or fall through if last).
                     }
-
-                    let session_id = extract_session_id(&all_stdout);
-
-                    return Ok(RunResult {
-                        exit_code: output.exit_code,
-                        stdout,
-                        stderr,
-                        session_id,
-                    });
+                    Err(e) => break 'attempts Err(e),
                 }
-                Err(Error::ProcessTimeout {
-                    timeout,
-                    stdout_lines,
-                    stderr_lines,
-                }) => {
-                    all_stdout.extend(stdout_lines);
-                    all_stderr.extend(stderr_lines);
-                    warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
-                    // Continue to next attempt (or fall through if last).
-                }
-                Err(e) => return Err(e),
             }
+
+            // All attempts exhausted.
+            Err(Error::AgentRunner(format!(
+                "agent timed out after {max_attempts} attempts"
+            )))
+        };
+
+        // Drop the sender so the stream formatter sees channel closure,
+        // then await it to ensure all buffered messages are flushed to stderr.
+        drop(stdout_tx);
+        if let Some(handle) = stream_handle {
+            let _ = handle.await;
         }
 
-        // All attempts exhausted.
-        Err(Error::AgentRunner(format!(
-            "agent timed out after {max_attempts} attempts"
-        )))
+        result
     }
 }
 
@@ -411,6 +485,7 @@ pub async fn resume_with_correction(
         env: vec![],
         stdin_data,
         quiet: true,
+        stdout_tx: None,
     };
 
     let output = spawn_and_stream(config).await?;
@@ -488,6 +563,17 @@ pub enum AnyRunner {
     Codex(CodexRunner),
     OpenCode(OpencodeRunner),
     Callback(CallbackRunner),
+}
+
+impl AnyRunner {
+    /// Enable streaming of formatted agent messages to stderr with the given prefix.
+    /// Currently only supported for the Claude runner; other runners ignore this.
+    pub fn with_stream_prefix(mut self, prefix: String) -> Self {
+        if let AnyRunner::Claude(ref mut r) = self {
+            r.stream_prefix = Some(prefix);
+        }
+        self
+    }
 }
 
 impl AgentRunner for AnyRunner {
@@ -604,6 +690,7 @@ impl AgentRunner for OpencodeRunner {
                 env: vec![],
                 stdin_data: None,
                 quiet: true,
+                stdout_tx: None,
             };
 
             match spawn_and_stream(config).await {
@@ -845,6 +932,7 @@ impl AgentRunner for CodexRunner {
                 env: vec![],
                 stdin_data,
                 quiet: true,
+                stdout_tx: None,
             };
 
             match spawn_and_stream(config).await {

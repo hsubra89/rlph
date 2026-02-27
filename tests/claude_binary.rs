@@ -39,6 +39,7 @@ fn config_with_args(args: Vec<String>, stdin_data: Option<String>) -> ProcessCon
         env: vec![],
         stdin_data,
         quiet: true,
+        stdout_tx: None,
     }
 }
 
@@ -578,6 +579,7 @@ async fn test_claude_stream_json_tool_use_schema() {
         env: vec![],
         stdin_data: None,
         quiet: true,
+        stdout_tx: None,
     };
 
     let output = match spawn_and_stream(config).await {
@@ -729,6 +731,7 @@ async fn test_claude_stream_json_subagent_schema() {
         env: vec![],
         stdin_data: None,
         quiet: true,
+        stdout_tx: None,
     };
 
     let output = match spawn_and_stream(config).await {
