@@ -523,7 +523,7 @@ async fn test_codex_json_command_execution_schema() {
         stream_output: false,
         env: vec![],
         stdin_data: Some(
-            "Read the file Cargo.toml and tell me the package name. Be very concise.".to_string(),
+            "Run `sha256sum Cargo.toml` and tell me the first 8 characters of the hash.".to_string(),
         ),
         quiet: true,
     };
