@@ -893,7 +893,11 @@ fn spawn_codex_stream_formatter(
                             if let Some(cmd) = item.get("command").and_then(|v| v.as_str()) {
                                 let status =
                                     item.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                                let icon = if status == "completed" { "\u{2714}" } else { "\u{2718}" };
+                                let icon = if status == "completed" {
+                                    "\u{2714}"
+                                } else {
+                                    "\u{2718}"
+                                };
                                 eprintln!("[{prefix}] {icon} {cmd}");
                             }
                         }
@@ -979,80 +983,80 @@ impl AgentRunner for CodexRunner {
         };
 
         let result = 'attempts: {
-        for attempt in 0..max_attempts {
-            let (command, args, stdin_data) = if attempt == 0 {
-                let (cmd, a) = self.build_command();
-                (cmd, a, Some(prompt.to_string()))
-            } else {
-                eprintln!(
-                    "[{log_prefix}] resuming timed-out session (attempt {}/{})",
-                    attempt + 1,
-                    max_attempts
-                );
-                let (cmd, a) = self.build_resume_command();
-                (cmd, a, None)
-            };
+            for attempt in 0..max_attempts {
+                let (command, args, stdin_data) = if attempt == 0 {
+                    let (cmd, a) = self.build_command();
+                    (cmd, a, Some(prompt.to_string()))
+                } else {
+                    eprintln!(
+                        "[{log_prefix}] resuming timed-out session (attempt {}/{})",
+                        attempt + 1,
+                        max_attempts
+                    );
+                    let (cmd, a) = self.build_resume_command();
+                    (cmd, a, None)
+                };
 
-            let config = ProcessConfig {
-                command,
-                args,
-                working_dir: working_dir.to_path_buf(),
-                timeout: self.timeout,
-                log_prefix: log_prefix.clone(),
-                stream_output: false,
-                env: vec![],
-                stdin_data,
-                quiet: true,
-                stdout_tx: stdout_tx.clone(),
-            };
+                let config = ProcessConfig {
+                    command,
+                    args,
+                    working_dir: working_dir.to_path_buf(),
+                    timeout: self.timeout,
+                    log_prefix: log_prefix.clone(),
+                    stream_output: false,
+                    env: vec![],
+                    stdin_data,
+                    quiet: true,
+                    stdout_tx: stdout_tx.clone(),
+                };
 
-            match spawn_and_stream(config).await {
-                Ok(output) => {
-                    all_stdout.extend(output.stdout_lines);
-                    all_stderr.extend(output.stderr_lines);
+                match spawn_and_stream(config).await {
+                    Ok(output) => {
+                        all_stdout.extend(output.stdout_lines);
+                        all_stderr.extend(output.stderr_lines);
 
-                    let stdout =
-                        extract_codex_result(&all_stdout).unwrap_or_else(|| all_stdout.join("\n"));
-                    let stderr = all_stderr.join("\n");
+                        let stdout = extract_codex_result(&all_stdout)
+                            .unwrap_or_else(|| all_stdout.join("\n"));
+                        let stderr = all_stderr.join("\n");
 
-                    if let Some(sig) = output.signal {
-                        break 'attempts Err(Error::AgentRunner(format!(
-                            "agent killed by signal {sig}"
-                        )));
+                        if let Some(sig) = output.signal {
+                            break 'attempts Err(Error::AgentRunner(format!(
+                                "agent killed by signal {sig}"
+                            )));
+                        }
+
+                        if output.exit_code != 0 {
+                            break 'attempts Err(Error::AgentRunner(format!(
+                                "agent exited with code {}",
+                                output.exit_code
+                            )));
+                        }
+
+                        let session_id = extract_thread_id(&all_stdout);
+
+                        break 'attempts Ok(RunResult {
+                            exit_code: output.exit_code,
+                            stdout,
+                            stderr,
+                            session_id,
+                        });
                     }
-
-                    if output.exit_code != 0 {
-                        break 'attempts Err(Error::AgentRunner(format!(
-                            "agent exited with code {}",
-                            output.exit_code
-                        )));
+                    Err(Error::ProcessTimeout {
+                        timeout,
+                        stdout_lines,
+                        stderr_lines,
+                    }) => {
+                        all_stdout.extend(stdout_lines);
+                        all_stderr.extend(stderr_lines);
+                        warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
                     }
-
-                    let session_id = extract_thread_id(&all_stdout);
-
-                    break 'attempts Ok(RunResult {
-                        exit_code: output.exit_code,
-                        stdout,
-                        stderr,
-                        session_id,
-                    });
+                    Err(e) => break 'attempts Err(e),
                 }
-                Err(Error::ProcessTimeout {
-                    timeout,
-                    stdout_lines,
-                    stderr_lines,
-                }) => {
-                    all_stdout.extend(stdout_lines);
-                    all_stderr.extend(stderr_lines);
-                    warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
-                }
-                Err(e) => break 'attempts Err(e),
             }
-        }
 
-        Err(Error::AgentRunner(format!(
-            "agent timed out after {max_attempts} attempts"
-        )))
+            Err(Error::AgentRunner(format!(
+                "agent timed out after {max_attempts} attempts"
+            )))
         };
 
         // Drop the sender so the stream formatter sees channel closure,
