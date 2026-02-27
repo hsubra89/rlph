@@ -898,7 +898,9 @@ fn spawn_codex_stream_formatter(
                                 } else {
                                     "\u{2718}"
                                 };
-                                eprintln!("[{prefix}] {icon} {cmd}");
+                                for cmd_line in cmd.lines() {
+                                    eprintln!("[{prefix}] {icon} {cmd_line}");
+                                }
                             }
                         }
                         _ => {}
@@ -911,7 +913,9 @@ fn spawn_codex_stream_formatter(
                     if item.get("type").and_then(|v| v.as_str()) == Some("command_execution")
                         && let Some(cmd) = item.get("command").and_then(|v| v.as_str())
                     {
-                        eprintln!("[{prefix}] \u{25b6} {cmd}");
+                        for cmd_line in cmd.lines() {
+                            eprintln!("[{prefix}] \u{25b6} {cmd_line}");
+                        }
                     }
                 }
                 _ => {}
