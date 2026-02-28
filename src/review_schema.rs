@@ -75,30 +75,32 @@ pub fn render_findings_for_prompt(
         return "No issues found.".to_string();
     }
 
-    findings
-        .iter()
-        .map(|f| {
-            let severity = match f.severity {
-                Severity::Critical => "CRITICAL",
-                Severity::Warning => "WARNING",
-                Severity::Info => "INFO",
-            };
-            let category = f
-                .category
-                .as_deref()
-                .or(default_category)
-                .unwrap_or("general");
-            let mut line = format!(
-                "- ({}) **{}** [{}] `{}` L{}: {}",
-                f.id, severity, category, f.file, f.line, f.description
-            );
-            if !f.depends_on.is_empty() {
-                line.push_str(&format!(" (depends on: {})", f.depends_on.join(", ")));
-            }
-            line
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut result = String::new();
+    for (i, f) in findings.iter().enumerate() {
+        if i > 0 {
+            result.push('\n');
+        }
+        let severity = match f.severity {
+            Severity::Critical => "CRITICAL",
+            Severity::Warning => "WARNING",
+            Severity::Info => "INFO",
+        };
+        let category = f
+            .category
+            .as_deref()
+            .or(default_category)
+            .unwrap_or("general");
+        use std::fmt::Write;
+        let _ = write!(
+            result,
+            "- ({}) **{}** [{}] `{}` L{}: {}",
+            f.id, severity, category, f.file, f.line, f.description
+        );
+        if !f.depends_on.is_empty() {
+            let _ = write!(result, " (depends on: {})", f.depends_on.join(", "));
+        }
+    }
+    result
 }
 
 /// Strip markdown code fences (` ```json ... ``` `) that Claude sometimes wraps output in,
