@@ -73,27 +73,7 @@ Combine all valid findings from all sub-agents into a single `findings` array. E
 
 ## Output
 
-Respond with a single JSON object (no markdown fences, no commentary outside the JSON). The schema:
-
-```json
-{
-  "findings": [
-    {
-      "id": "<short-slugified-id>",
-      "file": "<path>",
-      "line": <number>,
-      "severity": "warning" | "info",
-      "category": "<style|reuse|quality|efficiency>",
-      "description": "<what to improve>",
-      "depends_on": ["<other-finding-id>"] | null
-    }
-  ]
-}
-```
-
-- `id`: short slugified identifier (lowercase, hyphens, max 50 chars), e.g. `"redundant-clone-in-loop"`.
-- `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
-- Return an empty `findings` array when there are no issues.
+{{findings_schema}}
 - `severity` must be one of: `"warning"`, `"info"`.
 - `category` must be one of: `"style"`, `"reuse"`, `"quality"`, `"efficiency"`.
 

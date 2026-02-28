@@ -12,6 +12,7 @@ const DEFAULT_STYLE_REVIEW: &str = include_str!("default_prompts/style-review-is
 const DEFAULT_REVIEW_AGGREGATE: &str = include_str!("default_prompts/review-aggregate-issue.md");
 const DEFAULT_REVIEW_FIX: &str = include_str!("default_prompts/review-fix-issue.md");
 const DEFAULT_PRD: &str = include_str!("default_prompts/prd.md");
+const FINDINGS_SCHEMA: &str = include_str!("default_prompts/_findings-schema.md");
 
 /// Known template variable names for validation.
 const KNOWN_VARIABLES: &[&str] = &[
@@ -30,6 +31,7 @@ const KNOWN_VARIABLES: &[&str] = &[
     "pr_comments",
     "pr_number",
     "pr_branch",
+    "findings_schema",
 ];
 
 fn default_template(phase: &str) -> Option<&'static str> {
@@ -86,9 +88,17 @@ impl PromptEngine {
     }
 
     /// Load a template and render it with the given variables.
+    ///
+    /// Built-in variables like `findings_schema` are auto-injected when not
+    /// already present in `vars`, so templates can reference them without
+    /// callers having to supply them.
     pub fn render_phase(&self, phase: &str, vars: &HashMap<String, String>) -> Result<String> {
         let template = self.load_template(phase)?;
-        render_template(&template, vars)
+        let mut all_vars = vars.clone();
+        all_vars
+            .entry("findings_schema".to_string())
+            .or_insert_with(|| FINDINGS_SCHEMA.to_string());
+        render_template(&template, &all_vars)
     }
 }
 

@@ -1,6 +1,18 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::error::{Error, Result};
+
+/// Deserialize a `Vec<String>` that tolerates both absent keys and explicit `null`.
+///
+/// `#[serde(default)]` handles a missing key, but an explicit `"depends_on": null` from
+/// an LLM would fail deserialization. This function accepts `null` and returns an empty vec.
+fn deserialize_null_as_empty_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt: Option<Vec<String>> = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -26,7 +38,7 @@ pub struct ReviewFinding {
     pub severity: Severity,
     pub description: String,
     pub category: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub depends_on: Vec<String>,
 }
 
@@ -545,6 +557,24 @@ mod tests {
     }
 
     // ---- id and depends_on tests ----
+
+    #[test]
+    fn test_parse_depends_on_null_deserializes_as_empty() {
+        let json = r#"{
+            "findings": [
+                {
+                    "id": "null-depends",
+                    "file": "src/main.rs",
+                    "line": 1,
+                    "severity": "info",
+                    "description": "test",
+                    "depends_on": null
+                }
+            ]
+        }"#;
+        let output = parse_phase_output(json).unwrap();
+        assert!(output.findings[0].depends_on.is_empty());
+    }
 
     #[test]
     fn test_parse_phase_output_with_depends_on() {
