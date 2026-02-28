@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use serde::{Deserialize, Deserializer};
 
 use crate::error::{Error, Result};
@@ -92,7 +94,6 @@ pub fn render_findings_for_prompt(
             .as_deref()
             .or(default_category)
             .unwrap_or("general");
-        use std::fmt::Write;
         let _ = write!(
             result,
             "- ({}) **{}** [{}] `{}` L{}: {}",
