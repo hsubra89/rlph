@@ -83,14 +83,14 @@ pub fn render_findings_for_prompt(
                 Severity::Warning => "WARNING",
                 Severity::Info => "INFO",
             };
-            let cat = f
+            let category = f
                 .category
                 .as_deref()
                 .or(default_category)
                 .unwrap_or("general");
             format!(
                 "- ({}) **{}** [{}] `{}` L{}: {}",
-                f.id, severity, cat, f.file, f.line, f.description
+                f.id, severity, category, f.file, f.line, f.description
             )
         })
         .collect::<Vec<_>>()
