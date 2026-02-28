@@ -114,7 +114,10 @@ pub fn render_template(template: &str, vars: &HashMap<String, String>) -> Result
         .compile(template)
         .map_err(|e| Error::Prompt(format!("template compile error: {e}")))?;
     compiled
-        .render(&engine, upon::to_value(vars).map_err(|e| Error::Prompt(e.to_string()))?)
+        .render(
+            &engine,
+            upon::to_value(vars).map_err(|e| Error::Prompt(e.to_string()))?,
+        )
         .to_string()
         .map_err(|e| Error::Prompt(format!("template render error: {e}")))
 }
@@ -398,7 +401,10 @@ mod tests {
     #[test]
     fn test_validate_user_template_rejects_unknown_vars() {
         let err = validate_user_template("Hello {{bad_var}} world").unwrap_err();
-        assert!(err.to_string().contains("unknown template variable in override"));
+        assert!(
+            err.to_string()
+                .contains("unknown template variable in override")
+        );
     }
 
     #[test]
@@ -409,6 +415,9 @@ mod tests {
 
         let engine = PromptEngine::new(Some(dir.path().to_string_lossy().to_string()));
         let err = engine.load_template("choose").unwrap_err();
-        assert!(err.to_string().contains("unknown template variable in override"));
+        assert!(
+            err.to_string()
+                .contains("unknown template variable in override")
+        );
     }
 }
