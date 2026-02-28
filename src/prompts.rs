@@ -13,6 +13,7 @@ const DEFAULT_REVIEW_AGGREGATE: &str = include_str!("default_prompts/review-aggr
 const DEFAULT_REVIEW_FIX: &str = include_str!("default_prompts/review-fix-issue.md");
 const DEFAULT_PRD: &str = include_str!("default_prompts/prd.md");
 const FINDINGS_SCHEMA: &str = include_str!("default_prompts/_findings-schema.md");
+const PR_COMMENTS_FOOTER: &str = include_str!("default_prompts/_pr-comments-footer.md");
 
 /// Known template variable names for validation.
 const KNOWN_VARIABLES: &[&str] = &[
@@ -32,6 +33,7 @@ const KNOWN_VARIABLES: &[&str] = &[
     "pr_number",
     "pr_branch",
     "findings_schema",
+    "pr_comments_footer",
 ];
 
 fn default_template(phase: &str) -> Option<&'static str> {
@@ -98,6 +100,11 @@ impl PromptEngine {
         all_vars
             .entry("findings_schema".to_string())
             .or_insert_with(|| FINDINGS_SCHEMA.to_string());
+        if !all_vars.contains_key("pr_comments_footer") {
+            let rendered_footer =
+                render_template(PR_COMMENTS_FOOTER, &all_vars).unwrap_or_default();
+            all_vars.insert("pr_comments_footer".to_string(), rendered_footer);
+        }
         render_template(&template, &all_vars)
     }
 }
