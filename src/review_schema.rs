@@ -37,6 +37,7 @@ pub struct ReviewFinding {
     pub line: u32,
     pub severity: Severity,
     pub description: String,
+    #[serde(default)]
     pub category: Option<String>,
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub depends_on: Vec<String>,
