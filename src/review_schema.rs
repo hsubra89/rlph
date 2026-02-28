@@ -6,7 +6,9 @@ use crate::error::{Error, Result};
 ///
 /// `#[serde(default)]` handles a missing key, but an explicit `"depends_on": null` from
 /// an LLM would fail deserialization. This function accepts `null` and returns an empty vec.
-fn deserialize_null_as_empty_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+fn deserialize_null_as_empty_vec<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
