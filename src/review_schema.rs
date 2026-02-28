@@ -88,10 +88,14 @@ pub fn render_findings_for_prompt(
                 .as_deref()
                 .or(default_category)
                 .unwrap_or("general");
-            format!(
+            let mut line = format!(
                 "- ({}) **{}** [{}] `{}` L{}: {}",
                 f.id, severity, category, f.file, f.line, f.description
-            )
+            );
+            if !f.depends_on.is_empty() {
+                line.push_str(&format!(" (depends on: {})", f.depends_on.join(", ")));
+            }
+            line
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -620,6 +624,24 @@ mod tests {
         assert_eq!(
             rendered,
             "- (redundant-clone-in-loop) **WARNING** [efficiency] `src/lib.rs` L99: Redundant clone inside loop"
+        );
+    }
+
+    #[test]
+    fn test_render_findings_with_depends_on() {
+        let findings = vec![ReviewFinding {
+            id: "null-ptr-deref".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 15,
+            severity: Severity::Critical,
+            description: "Null pointer dereference".to_string(),
+            category: Some("correctness".to_string()),
+            depends_on: vec!["null-check-missing".to_string()],
+        }];
+        let rendered = render_findings_for_prompt(&findings, None);
+        assert_eq!(
+            rendered,
+            "- (null-ptr-deref) **CRITICAL** [correctness] `src/main.rs` L15: Null pointer dereference (depends on: null-check-missing)"
         );
     }
 
