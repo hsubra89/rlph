@@ -56,6 +56,7 @@ impl TaskGroup {
         }
     }
 
+    /// Returns IDs of all sub-issues, or the task's own ID for standalone tasks.
     pub fn all_sub_issue_ids(&self) -> Vec<String> {
         match self {
             TaskGroup::Standalone(task) => vec![task.id.clone()],
