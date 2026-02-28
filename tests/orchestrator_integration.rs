@@ -694,6 +694,7 @@ fn make_review_vars(
         ("issue_url".to_string(), task.url.clone()),
         ("repo_path".to_string(), repo_path.display().to_string()),
         ("branch_name".to_string(), branch.to_string()),
+        ("base_branch".to_string(), "main".to_string()),
         (
             "worktree_path".to_string(),
             worktree_path.display().to_string(),

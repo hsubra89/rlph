@@ -8,6 +8,7 @@ A previous engineer has completed work for the task below. Your job is to review
 - **Number:** #{{issue_number}}
 - **URL:** {{issue_url}}
 - **Branch:** {{branch_name}}
+- **Base Branch:** {{base_branch}}
 - **Worktree:** {{worktree_path}}
 - **Repository:** {{repo_path}}
 - **Review Phase:** {{review_phase_name}}
@@ -18,7 +19,7 @@ A previous engineer has completed work for the task below. Your job is to review
 
 ## Instructions
 
-1. Read all changed files on this branch vs the base branch.
+1. Run `git diff {{base_branch}}...HEAD` to identify changed files. Only review changed code.
 2. Check for logical bugs, off-by-one errors, incorrect conditions, and missing edge cases.
 3. Verify that error handling covers failure paths and does not silently swallow errors.
 4. Check that tests exist for the changed code and cover important branches.

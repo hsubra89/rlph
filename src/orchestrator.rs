@@ -1047,6 +1047,7 @@ impl<
             "worktree_path".to_string(),
             worktree.path.display().to_string(),
         );
+        vars.insert("base_branch".to_string(), self.config.base_branch.clone());
         vars.insert("pr_number".to_string(), String::new());
         vars.insert("pr_branch".to_string(), String::new());
         vars

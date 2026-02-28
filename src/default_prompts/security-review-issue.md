@@ -8,6 +8,7 @@ A previous engineer has completed work for the task below. Your job is to review
 - **Number:** #{{issue_number}}
 - **URL:** {{issue_url}}
 - **Branch:** {{branch_name}}
+- **Base Branch:** {{base_branch}}
 - **Worktree:** {{worktree_path}}
 - **Repository:** {{repo_path}}
 - **Review Phase:** {{review_phase_name}}
@@ -18,7 +19,7 @@ A previous engineer has completed work for the task below. Your job is to review
 
 ## Instructions
 
-1. Read all changed files on this branch vs the base branch.
+1. Run `git diff {{base_branch}}...HEAD` to identify changed files. Only review changed code.
 2. Check for injection vulnerabilities (command injection, SQL injection, XSS, etc.).
 3. Verify authentication and authorization are correctly enforced.
 4. Check for hardcoded secrets, credentials, or API keys.

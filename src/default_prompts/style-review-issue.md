@@ -8,6 +8,7 @@ A previous engineer has completed work for the task below. You are a **coordinat
 - **Number:** #{{issue_number}}
 - **URL:** {{issue_url}}
 - **Branch:** {{branch_name}}
+- **Base Branch:** {{base_branch}}
 - **Worktree:** {{worktree_path}}
 - **Repository:** {{repo_path}}
 - **Review Phase:** {{review_phase_name}}
@@ -20,7 +21,7 @@ A previous engineer has completed work for the task below. You are a **coordinat
 
 ### Step 1: Get changed files
 
-Diff the current branch against the base branch to identify all changed files. Only review changed code.
+Run `git diff {{base_branch}}...HEAD` to identify all changed files. Only review changed code — do not flag pre-existing issues in unchanged lines.
 
 ### Step 2: Spawn 4 sub-agent reviews
 

@@ -32,6 +32,7 @@ const KNOWN_VARIABLES: &[&str] = &[
     "pr_comments",
     "pr_number",
     "pr_branch",
+    "base_branch",
     "findings_schema",
     "pr_comments_footer",
 ];
@@ -187,6 +188,7 @@ mod tests {
         assert!(template.contains("Correctness Review Agent"));
         assert!(template.contains("{{issue_title}}"));
         assert!(template.contains("{{review_phase_name}}"));
+        assert!(template.contains("{{base_branch}}"));
     }
 
     #[test]
@@ -194,6 +196,7 @@ mod tests {
         let engine = PromptEngine::new(None);
         let template = engine.load_template("security-review").unwrap();
         assert!(template.contains("Security Review Agent"));
+        assert!(template.contains("{{base_branch}}"));
     }
 
     #[test]
@@ -201,6 +204,7 @@ mod tests {
         let engine = PromptEngine::new(None);
         let template = engine.load_template("style-review").unwrap();
         assert!(template.contains("Style Review Coordinator"));
+        assert!(template.contains("{{base_branch}}"));
     }
 
     #[test]
@@ -312,9 +316,14 @@ mod tests {
         vars.insert("branch_name".to_string(), "main".to_string());
         vars.insert("worktree_path".to_string(), "/wt".to_string());
 
-        let template = "{{issue_title}} {{issue_body}} {{issue_number}} {{issue_url}} {{repo_path}} {{branch_name}} {{worktree_path}}";
+        vars.insert("base_branch".to_string(), "main".to_string());
+
+        let template = "{{issue_title}} {{issue_body}} {{issue_number}} {{issue_url}} {{repo_path}} {{branch_name}} {{worktree_path}} {{base_branch}}";
         let result = render_template(template, &vars).unwrap();
-        assert_eq!(result, "title body 1 https://example.com /repo main /wt");
+        assert_eq!(
+            result,
+            "title body 1 https://example.com /repo main /wt main"
+        );
     }
 
     #[test]
