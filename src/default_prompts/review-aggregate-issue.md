@@ -29,23 +29,16 @@ Multiple review agents have independently analyzed an implementation. Your job i
 
 ## Output
 
-Respond with a single JSON object (no markdown fences, no commentary outside the JSON). The schema:
+The output extends the standard findings schema with aggregator-specific fields.
+
+{{findings_schema}}
+
+Additionally, the top-level object must include these fields:
 
 ```json
 {
   "verdict": "approved" | "needs_fix",
   "comment": "<markdown PR comment body — list issues as a task list (`- [ ] ...`)>",
-  "findings": [
-    {
-      "id": "<short-slugified-id>",
-      "file": "<path>",
-      "line": <number>,
-      "severity": "critical" | "warning" | "info",
-      "description": "<what is wrong>",
-      "category": "<optional category tag, e.g. correctness, security, style>",
-      "depends_on": ["<other-finding-id>"] | null
-    }
-  ],
   "fix_instructions": "<concise instructions for the fix agent, or null if approved>"
 }
 ```
