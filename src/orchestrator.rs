@@ -1033,21 +1033,13 @@ impl<
     }
 
     fn build_task_vars(&self, task: &Task, worktree: &WorktreeInfo) -> HashMap<String, String> {
-        let mut vars = HashMap::new();
-        vars.insert("issue_title".to_string(), task.title.clone());
-        vars.insert("issue_body".to_string(), task.body.clone());
-        vars.insert("issue_number".to_string(), task.id.clone());
-        vars.insert("issue_url".to_string(), task.url.clone());
-        vars.insert(
-            "repo_path".to_string(),
-            self.repo_root.display().to_string(),
+        let mut vars = build_task_vars(
+            task,
+            &self.repo_root,
+            &worktree.branch,
+            &worktree.path,
+            &self.config.base_branch,
         );
-        vars.insert("branch_name".to_string(), worktree.branch.clone());
-        vars.insert(
-            "worktree_path".to_string(),
-            worktree.path.display().to_string(),
-        );
-        vars.insert("base_branch".to_string(), self.config.base_branch.clone());
         vars.insert("pr_number".to_string(), String::new());
         vars.insert("pr_branch".to_string(), String::new());
         vars
@@ -1088,6 +1080,32 @@ impl<
         info!(branch = worktree.branch, remote_branch, "pushed branch");
         Ok(())
     }
+}
+
+/// Build the base set of template variables for a task.
+///
+/// Used by the orchestrator internally and available for tests to avoid
+/// duplicating the variable map.
+pub fn build_task_vars(
+    task: &Task,
+    repo_path: &Path,
+    branch: &str,
+    worktree_path: &Path,
+    base_branch: &str,
+) -> HashMap<String, String> {
+    HashMap::from([
+        ("issue_title".to_string(), task.title.clone()),
+        ("issue_body".to_string(), task.body.clone()),
+        ("issue_number".to_string(), task.id.clone()),
+        ("issue_url".to_string(), task.url.clone()),
+        ("repo_path".to_string(), repo_path.display().to_string()),
+        ("branch_name".to_string(), branch.to_string()),
+        (
+            "worktree_path".to_string(),
+            worktree_path.display().to_string(),
+        ),
+        ("base_branch".to_string(), base_branch.to_string()),
+    ])
 }
 
 /// Extract the issue number from a task ID like "gh-42".

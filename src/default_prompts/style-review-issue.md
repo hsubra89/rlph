@@ -34,7 +34,7 @@ Launch 4 sub-agents in parallel. Each sub-agent receives the list of changed fil
 | `quality` | Unnecessary complexity, dead code, commented-out code, readability issues, overly clever constructs |
 | `efficiency` | Unnecessary allocations, redundant operations, wasteful iterations, algorithmic issues in hot paths |
 
-Each sub-agent must output findings JSON:
+Each sub-agent must output findings JSON (same schema as coordinator output):
 
 {{findings_schema}}
 - `severity` must be `"warning"` or `"info"` only — no `"critical"`.
