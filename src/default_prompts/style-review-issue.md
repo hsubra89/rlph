@@ -69,7 +69,7 @@ Combine all valid findings from all sub-agents into a single `findings` array. E
 
 ### Step 5: Return result
 
-**Do NOT make any code changes.** This is a read-only review.
+Emit a single JSON object containing the aggregated `findings` array (see Output schema below). **Do NOT make any code changes.** This is a read-only review.
 
 ## Output
 
