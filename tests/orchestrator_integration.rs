@@ -20,6 +20,11 @@ use rlph::submission::{SubmissionBackend, SubmitResult};
 use rlph::worktree::WorktreeManager;
 use tokio::sync::watch;
 
+// --- Shared test JSON literals ---
+
+const APPROVED_AGGREGATOR_JSON: &str =
+    r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#;
+
 // --- Shared tracking state ---
 
 #[derive(Default)]
@@ -134,7 +139,7 @@ impl AgentRunner for MockRunner {
             }),
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
-                stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
+                stdout: APPROVED_AGGREGATOR_JSON.into(),
                 stderr: String::new(),
                 session_id: None,
             }),
@@ -272,7 +277,7 @@ impl AgentRunner for CountingRunner {
             }
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
-                stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
+                stdout: APPROVED_AGGREGATOR_JSON.into(),
                 stderr: String::new(),
                 session_id: None,
             }),
@@ -328,7 +333,7 @@ impl AgentRunner for FailAtPhaseRunner {
             }),
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
-                stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
+                stdout: APPROVED_AGGREGATOR_JSON.into(),
                 stderr: String::new(),
                 session_id: None,
             }),
