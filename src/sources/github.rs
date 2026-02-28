@@ -9,7 +9,8 @@ use tracing::{debug, warn};
 use crate::config::Config;
 use crate::error::{Error, Result};
 
-use super::{Priority, Task, TaskSource};
+use super::{Priority, Task, TaskGroup, TaskSource};
+use crate::deps;
 
 const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 500;
@@ -31,6 +32,22 @@ struct GhIssue {
 /// Abstraction over `gh` CLI execution for testability.
 pub trait GhClient {
     fn run(&self, args: &[&str]) -> Result<String>;
+
+    /// Run a GraphQL query via `gh api graphql`.
+    fn graphql(&self, query: &str, variables: &[(&str, &str)], headers: &[&str]) -> Result<String> {
+        let query_arg = format!("query={query}");
+        let mut owned: Vec<String> = vec!["api".into(), "graphql".into(), "-f".into(), query_arg];
+        for (key, value) in variables {
+            owned.push("-f".into());
+            owned.push(format!("{key}={value}"));
+        }
+        for header in headers {
+            owned.push("-H".into());
+            owned.push((*header).into());
+        }
+        let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        self.run(&refs)
+    }
 }
 
 /// Real `gh` CLI client with retry and exponential backoff.
@@ -96,9 +113,213 @@ impl GitHubSource {
                 || l.name.eq_ignore_ascii_case("done")
         })
     }
+
+    fn is_gql_eligible(issue: &GqlIssue) -> bool {
+        !issue.labels.nodes.iter().any(|l| {
+            l.name.eq_ignore_ascii_case("in-progress")
+                || l.name.eq_ignore_ascii_case("in-review")
+                || l.name.eq_ignore_ascii_case("done")
+        })
+    }
+
+    fn parse_gql_issue(issue: &GqlIssue) -> Task {
+        let labels: Vec<String> = issue.labels.nodes.iter().map(|l| l.name.clone()).collect();
+        let priority = labels.iter().find_map(|l| Priority::from_label(l));
+        Task {
+            id: issue.number.to_string(),
+            title: issue.title.clone(),
+            body: issue.body.clone().unwrap_or_default(),
+            labels,
+            url: issue.url.clone(),
+            priority,
+        }
+    }
+
+    fn fetch_repo_nwo(&self) -> Result<(String, String)> {
+        let json = self.client.run(&["repo", "view", "--json", "owner,name"])?;
+        let info: RepoInfo = serde_json::from_str(&json)
+            .map_err(|e| Error::TaskSource(format!("failed to parse repo info: {e}")))?;
+        Ok((info.owner.login, info.name))
+    }
+
+    pub fn fetch_eligible_task_groups_impl(&self) -> Result<Vec<TaskGroup>> {
+        let (owner, name) = self.fetch_repo_nwo()?;
+
+        let query = r#"
+            query($owner: String!, $name: String!, $label: String!) {
+              repository(owner: $owner, name: $name) {
+                issues(labels: [$label], states: [OPEN], first: 100) {
+                  nodes {
+                    number title body url
+                    labels(first: 20) { nodes { name } }
+                    subIssues(first: 50) {
+                      nodes {
+                        number title body url state
+                        labels(first: 20) { nodes { name } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        "#;
+
+        let response = self.client.graphql(
+            query,
+            &[("owner", &owner), ("name", &name), ("label", &self.label)],
+            &["GraphQL-Features: sub_issues"],
+        )?;
+
+        let parsed: GqlResponse = serde_json::from_str(&response)
+            .map_err(|e| Error::TaskSource(format!("failed to parse GraphQL response: {e}")))?;
+
+        let issues = parsed.data.repository.issues.nodes;
+
+        // Collect IDs of sub-issues that belong to a labeled parent
+        let mut child_ids: HashSet<u64> = HashSet::new();
+        for issue in &issues {
+            let labeled_children: Vec<u64> = issue
+                .sub_issues
+                .nodes
+                .iter()
+                .filter(|si| si.state == "OPEN")
+                .filter(|si| si.labels.nodes.iter().any(|l| l.name == self.label))
+                .map(|si| si.number)
+                .collect();
+            if !labeled_children.is_empty() {
+                child_ids.extend(labeled_children);
+            }
+        }
+
+        let mut groups: Vec<TaskGroup> = Vec::new();
+
+        for issue in &issues {
+            // Skip children — they appear inside their parent's group
+            if child_ids.contains(&issue.number) {
+                continue;
+            }
+            if !Self::is_gql_eligible(issue) {
+                continue;
+            }
+
+            let labeled_sub: Vec<&GqlSubIssue> = issue
+                .sub_issues
+                .nodes
+                .iter()
+                .filter(|si| si.state == "OPEN")
+                .filter(|si| si.labels.nodes.iter().any(|l| l.name == self.label))
+                .collect();
+
+            if labeled_sub.is_empty() {
+                groups.push(TaskGroup::Standalone(Self::parse_gql_issue(issue)));
+            } else {
+                let parent = Self::parse_gql_issue(issue);
+                let sub_tasks: Vec<Task> = labeled_sub
+                    .iter()
+                    .map(|si| Self::parse_gql_sub(si))
+                    .collect();
+                let sorted = deps::topological_sort_within_group(sub_tasks);
+                groups.push(TaskGroup::Group {
+                    parent,
+                    sub_issues: sorted,
+                });
+            }
+        }
+
+        debug!(count = groups.len(), "fetched eligible task groups");
+        Ok(groups)
+    }
+
+    fn parse_gql_sub(si: &GqlSubIssue) -> Task {
+        let labels: Vec<String> = si.labels.nodes.iter().map(|l| l.name.clone()).collect();
+        let priority = labels.iter().find_map(|l| Priority::from_label(l));
+        Task {
+            id: si.number.to_string(),
+            title: si.title.clone(),
+            body: si.body.clone().unwrap_or_default(),
+            labels,
+            url: si.url.clone(),
+            priority,
+        }
+    }
+}
+
+// --- GraphQL response types ---
+
+#[derive(Debug, Deserialize)]
+struct RepoInfo {
+    name: String,
+    owner: RepoOwner,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoOwner {
+    login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlResponse {
+    data: GqlData,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlData {
+    repository: GqlRepository,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlRepository {
+    issues: GqlIssueConnection,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlIssueConnection {
+    nodes: Vec<GqlIssue>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlIssue {
+    number: u64,
+    title: String,
+    body: Option<String>,
+    url: String,
+    labels: GqlLabelConnection,
+    #[serde(rename = "subIssues", default)]
+    sub_issues: GqlSubIssueConnection,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlSubIssue {
+    number: u64,
+    title: String,
+    body: Option<String>,
+    url: String,
+    state: String,
+    labels: GqlLabelConnection,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct GqlSubIssueConnection {
+    #[serde(default)]
+    nodes: Vec<GqlSubIssue>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct GqlLabelConnection {
+    #[serde(default)]
+    nodes: Vec<GqlLabel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlLabel {
+    name: String,
 }
 
 impl TaskSource for GitHubSource {
+    fn fetch_eligible_task_groups(&self) -> Result<Vec<TaskGroup>> {
+        self.fetch_eligible_task_groups_impl()
+    }
+
     fn fetch_eligible_tasks(&self) -> Result<Vec<Task>> {
         let json = self.client.run(&[
             "issue",
@@ -378,6 +599,248 @@ mod tests {
         let tasks = source.fetch_eligible_tasks().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].body, "");
+    }
+
+    // --- GraphQL task group tests ---
+
+    fn repo_nwo_json() -> String {
+        serde_json::json!({"name": "repo", "owner": {"login": "owner"}}).to_string()
+    }
+
+    fn gql_response(issues: Vec<serde_json::Value>) -> String {
+        serde_json::json!({
+            "data": {
+                "repository": {
+                    "issues": {
+                        "nodes": issues
+                    }
+                }
+            }
+        })
+        .to_string()
+    }
+
+    fn gql_issue(
+        number: u64,
+        title: &str,
+        labels: &[&str],
+        body: &str,
+        sub_issues: Vec<serde_json::Value>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "number": number,
+            "title": title,
+            "body": body,
+            "url": format!("https://github.com/owner/repo/issues/{number}"),
+            "labels": { "nodes": labels.iter().map(|l| serde_json::json!({"name": l})).collect::<Vec<_>>() },
+            "subIssues": { "nodes": sub_issues }
+        })
+    }
+
+    fn gql_sub(number: u64, title: &str, labels: &[&str], body: &str) -> serde_json::Value {
+        gql_sub_with_state(number, title, labels, body, "OPEN")
+    }
+
+    fn gql_sub_with_state(
+        number: u64,
+        title: &str,
+        labels: &[&str],
+        body: &str,
+        state: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "number": number,
+            "title": title,
+            "body": body,
+            "state": state,
+            "url": format!("https://github.com/owner/repo/issues/{number}"),
+            "labels": { "nodes": labels.iter().map(|l| serde_json::json!({"name": l})).collect::<Vec<_>>() }
+        })
+    }
+
+    #[test]
+    fn test_graphql_standalone_no_sub_issues() {
+        let resp = gql_response(vec![gql_issue(1, "Solo", &["rlph"], "body", vec![])]);
+        let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert!(matches!(&groups[0], TaskGroup::Standalone(t) if t.id == "1"));
+    }
+
+    #[test]
+    fn test_graphql_parent_with_labeled_sub_issues() {
+        let resp = gql_response(vec![gql_issue(
+            10,
+            "Parent",
+            &["rlph"],
+            "",
+            vec![
+                gql_sub(11, "Child A", &["rlph"], ""),
+                gql_sub(12, "Child B", &["rlph"], ""),
+            ],
+        )]);
+        let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        assert_eq!(groups.len(), 1);
+        match &groups[0] {
+            TaskGroup::Group { parent, sub_issues } => {
+                assert_eq!(parent.id, "10");
+                assert_eq!(sub_issues.len(), 2);
+                let ids: Vec<&str> = sub_issues.iter().map(|t| t.id.as_str()).collect();
+                assert!(ids.contains(&"11"));
+                assert!(ids.contains(&"12"));
+            }
+            _ => panic!("expected Group variant"),
+        }
+    }
+
+    #[test]
+    fn test_graphql_ignores_unlabeled_sub_issues() {
+        let resp = gql_response(vec![gql_issue(
+            10,
+            "Parent",
+            &["rlph"],
+            "",
+            vec![
+                gql_sub(11, "Labeled", &["rlph"], ""),
+                gql_sub(12, "Unlabeled", &["bug"], ""),
+            ],
+        )]);
+        let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        assert_eq!(groups.len(), 1);
+        match &groups[0] {
+            TaskGroup::Group { sub_issues, .. } => {
+                assert_eq!(sub_issues.len(), 1);
+                assert_eq!(sub_issues[0].id, "11");
+            }
+            _ => panic!("expected Group variant"),
+        }
+    }
+
+    #[test]
+    fn test_graphql_all_sub_issues_unlabeled_becomes_standalone() {
+        let resp = gql_response(vec![gql_issue(
+            10,
+            "Parent",
+            &["rlph"],
+            "",
+            vec![gql_sub(11, "Unlabeled", &["bug"], "")],
+        )]);
+        let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert!(matches!(&groups[0], TaskGroup::Standalone(t) if t.id == "10"));
+    }
+
+    #[test]
+    fn test_graphql_child_not_duplicated_as_standalone() {
+        // Issue 11 is a sub-issue of 10 AND appears at top level (has rlph label).
+        // It should only appear inside the group, not also as standalone.
+        let resp = gql_response(vec![
+            gql_issue(
+                10,
+                "Parent",
+                &["rlph"],
+                "",
+                vec![gql_sub(11, "Child", &["rlph"], "")],
+            ),
+            gql_issue(11, "Child top-level", &["rlph"], "", vec![]),
+        ]);
+        let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert!(matches!(&groups[0], TaskGroup::Group { parent, .. } if parent.id == "10"));
+    }
+
+    #[test]
+    fn test_graphql_sub_issues_sorted_by_deps() {
+        // 12 depends on 11
+        let resp = gql_response(vec![gql_issue(
+            10,
+            "Parent",
+            &["rlph"],
+            "",
+            vec![
+                gql_sub(12, "Second", &["rlph"], "Blocked by #11"),
+                gql_sub(11, "First", &["rlph"], ""),
+            ],
+        )]);
+        let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        match &groups[0] {
+            TaskGroup::Group { sub_issues, .. } => {
+                assert_eq!(sub_issues[0].id, "11");
+                assert_eq!(sub_issues[1].id, "12");
+            }
+            _ => panic!("expected Group variant"),
+        }
+    }
+
+    #[test]
+    fn test_graphql_filters_closed_sub_issues() {
+        let resp = gql_response(vec![gql_issue(
+            10,
+            "Parent",
+            &["rlph"],
+            "",
+            vec![
+                gql_sub(11, "Open child", &["rlph"], ""),
+                gql_sub_with_state(12, "Closed child", &["rlph"], "", "CLOSED"),
+            ],
+        )]);
+        let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        assert_eq!(groups.len(), 1);
+        match &groups[0] {
+            TaskGroup::Group { sub_issues, .. } => {
+                assert_eq!(sub_issues.len(), 1);
+                assert_eq!(sub_issues[0].id, "11");
+            }
+            _ => panic!("expected Group variant"),
+        }
+    }
+
+    #[test]
+    fn test_graphql_all_sub_issues_closed_becomes_standalone() {
+        let resp = gql_response(vec![gql_issue(
+            10,
+            "Parent",
+            &["rlph"],
+            "",
+            vec![gql_sub_with_state(
+                11,
+                "Closed child",
+                &["rlph"],
+                "",
+                "CLOSED",
+            )],
+        )]);
+        let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert!(matches!(&groups[0], TaskGroup::Standalone(t) if t.id == "10"));
+    }
+
+    #[test]
+    fn test_graphql_skips_in_progress_parent() {
+        let resp = gql_response(vec![
+            gql_issue(1, "Active", &["rlph", "in-progress"], "", vec![]),
+            gql_issue(2, "Ready", &["rlph"], "", vec![]),
+        ]);
+        let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].parent().id, "2");
     }
 
     #[test]
