@@ -72,6 +72,14 @@ impl GhClient for DefaultGhClient {
     }
 }
 
+fn has_exclusion_label<'a>(labels: impl Iterator<Item = &'a str>) -> bool {
+    labels.into_iter().any(|l| {
+        l.eq_ignore_ascii_case("in-progress")
+            || l.eq_ignore_ascii_case("in-review")
+            || l.eq_ignore_ascii_case("done")
+    })
+}
+
 pub struct GitHubSource {
     label: String,
     client: Box<dyn GhClient>,
@@ -107,30 +115,28 @@ impl GitHubSource {
     }
 
     fn is_eligible(issue: &GhIssue) -> bool {
-        !issue.labels.iter().any(|l| {
-            l.name.eq_ignore_ascii_case("in-progress")
-                || l.name.eq_ignore_ascii_case("in-review")
-                || l.name.eq_ignore_ascii_case("done")
-        })
+        !has_exclusion_label(issue.labels.iter().map(|l| l.name.as_str()))
     }
 
     fn is_gql_eligible(issue: &GqlIssue) -> bool {
-        !issue.labels.nodes.iter().any(|l| {
-            l.name.eq_ignore_ascii_case("in-progress")
-                || l.name.eq_ignore_ascii_case("in-review")
-                || l.name.eq_ignore_ascii_case("done")
-        })
+        !has_exclusion_label(issue.labels.nodes.iter().map(|l| l.name.as_str()))
     }
 
-    fn parse_gql_issue(issue: &GqlIssue) -> Task {
-        let labels: Vec<String> = issue.labels.nodes.iter().map(|l| l.name.clone()).collect();
+    fn parse_gql(
+        number: u64,
+        title: &str,
+        body: Option<&str>,
+        url: &str,
+        labels: &GqlLabelConnection,
+    ) -> Task {
+        let labels: Vec<String> = labels.nodes.iter().map(|l| l.name.clone()).collect();
         let priority = labels.iter().find_map(|l| Priority::from_label(l));
         Task {
-            id: issue.number.to_string(),
-            title: issue.title.clone(),
-            body: issue.body.clone().unwrap_or_default(),
+            id: number.to_string(),
+            title: title.to_string(),
+            body: body.unwrap_or_default().to_string(),
             labels,
-            url: issue.url.clone(),
+            url: url.to_string(),
             priority,
         }
     }
@@ -142,7 +148,7 @@ impl GitHubSource {
         Ok((info.owner.login, info.name))
     }
 
-    pub fn fetch_eligible_task_groups_impl(&self) -> Result<Vec<TaskGroup>> {
+    fn fetch_task_groups(&self) -> Result<Vec<TaskGroup>> {
         let (owner, name) = self.fetch_repo_nwo()?;
 
         let query = r#"
@@ -211,12 +217,32 @@ impl GitHubSource {
                 .collect();
 
             if labeled_sub.is_empty() {
-                groups.push(TaskGroup::Standalone(Self::parse_gql_issue(issue)));
+                groups.push(TaskGroup::Standalone(Self::parse_gql(
+                    issue.number,
+                    &issue.title,
+                    issue.body.as_deref(),
+                    &issue.url,
+                    &issue.labels,
+                )));
             } else {
-                let parent = Self::parse_gql_issue(issue);
+                let parent = Self::parse_gql(
+                    issue.number,
+                    &issue.title,
+                    issue.body.as_deref(),
+                    &issue.url,
+                    &issue.labels,
+                );
                 let sub_tasks: Vec<Task> = labeled_sub
                     .iter()
-                    .map(|si| Self::parse_gql_sub(si))
+                    .map(|si| {
+                        Self::parse_gql(
+                            si.number,
+                            &si.title,
+                            si.body.as_deref(),
+                            &si.url,
+                            &si.labels,
+                        )
+                    })
                     .collect();
                 let sorted = deps::topological_sort_within_group(sub_tasks);
                 groups.push(TaskGroup::Group {
@@ -228,19 +254,6 @@ impl GitHubSource {
 
         debug!(count = groups.len(), "fetched eligible task groups");
         Ok(groups)
-    }
-
-    fn parse_gql_sub(si: &GqlSubIssue) -> Task {
-        let labels: Vec<String> = si.labels.nodes.iter().map(|l| l.name.clone()).collect();
-        let priority = labels.iter().find_map(|l| Priority::from_label(l));
-        Task {
-            id: si.number.to_string(),
-            title: si.title.clone(),
-            body: si.body.clone().unwrap_or_default(),
-            labels,
-            url: si.url.clone(),
-            priority,
-        }
     }
 }
 
@@ -307,17 +320,12 @@ struct GqlSubIssueConnection {
 #[derive(Debug, Deserialize, Default)]
 struct GqlLabelConnection {
     #[serde(default)]
-    nodes: Vec<GqlLabel>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GqlLabel {
-    name: String,
+    nodes: Vec<GhLabel>,
 }
 
 impl TaskSource for GitHubSource {
     fn fetch_eligible_task_groups(&self) -> Result<Vec<TaskGroup>> {
-        self.fetch_eligible_task_groups_impl()
+        self.fetch_task_groups()
     }
 
     fn fetch_eligible_tasks(&self) -> Result<Vec<Task>> {
@@ -663,7 +671,7 @@ mod tests {
         let resp = gql_response(vec![gql_issue(1, "Solo", &["rlph"], "body", vec![])]);
         let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
-        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        let groups = source.fetch_task_groups().unwrap();
         assert_eq!(groups.len(), 1);
         assert!(matches!(&groups[0], TaskGroup::Standalone(t) if t.id == "1"));
     }
@@ -682,7 +690,7 @@ mod tests {
         )]);
         let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
-        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        let groups = source.fetch_task_groups().unwrap();
         assert_eq!(groups.len(), 1);
         match &groups[0] {
             TaskGroup::Group { parent, sub_issues } => {
@@ -710,7 +718,7 @@ mod tests {
         )]);
         let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
-        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        let groups = source.fetch_task_groups().unwrap();
         assert_eq!(groups.len(), 1);
         match &groups[0] {
             TaskGroup::Group { sub_issues, .. } => {
@@ -732,7 +740,7 @@ mod tests {
         )]);
         let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
-        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        let groups = source.fetch_task_groups().unwrap();
         assert_eq!(groups.len(), 1);
         assert!(matches!(&groups[0], TaskGroup::Standalone(t) if t.id == "10"));
     }
@@ -753,7 +761,7 @@ mod tests {
         ]);
         let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
-        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        let groups = source.fetch_task_groups().unwrap();
         assert_eq!(groups.len(), 1);
         assert!(matches!(&groups[0], TaskGroup::Group { parent, .. } if parent.id == "10"));
     }
@@ -773,7 +781,7 @@ mod tests {
         )]);
         let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
-        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        let groups = source.fetch_task_groups().unwrap();
         match &groups[0] {
             TaskGroup::Group { sub_issues, .. } => {
                 assert_eq!(sub_issues[0].id, "11");
@@ -797,7 +805,7 @@ mod tests {
         )]);
         let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
-        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        let groups = source.fetch_task_groups().unwrap();
         assert_eq!(groups.len(), 1);
         match &groups[0] {
             TaskGroup::Group { sub_issues, .. } => {
@@ -825,7 +833,7 @@ mod tests {
         )]);
         let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
-        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        let groups = source.fetch_task_groups().unwrap();
         assert_eq!(groups.len(), 1);
         assert!(matches!(&groups[0], TaskGroup::Standalone(t) if t.id == "10"));
     }
@@ -838,7 +846,7 @@ mod tests {
         ]);
         let client = MockGhClient::new(vec![Ok(repo_nwo_json()), Ok(resp)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
-        let groups = source.fetch_eligible_task_groups_impl().unwrap();
+        let groups = source.fetch_task_groups().unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].parent().id, "2");
     }

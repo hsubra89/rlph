@@ -1,9 +1,16 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::LazyLock;
 
 use regex::Regex;
 use tracing::warn;
 
 use crate::sources::Task;
+
+static INLINE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:blocked\s+by|depends\s+on)\s+#(\d+)").unwrap());
+
+static LIST_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)blockedBy:\s*\[([^\]]+)\]").unwrap());
 
 /// Parse dependency issue numbers from an issue body.
 ///
@@ -14,17 +21,13 @@ use crate::sources::Task;
 pub fn parse_dependencies(body: &str) -> Vec<u64> {
     let mut deps = Vec::new();
 
-    // "blocked by #N" or "depends on #N"
-    let inline_re = Regex::new(r"(?i)(?:blocked\s+by|depends\s+on)\s+#(\d+)").unwrap();
-    for cap in inline_re.captures_iter(body) {
+    for cap in INLINE_RE.captures_iter(body) {
         if let Ok(n) = cap[1].parse::<u64>() {
             deps.push(n);
         }
     }
 
-    // "blockedBy: [N, M, ...]"
-    let list_re = Regex::new(r"(?i)blockedBy:\s*\[([^\]]+)\]").unwrap();
-    for cap in list_re.captures_iter(body) {
+    for cap in LIST_RE.captures_iter(body) {
         for num_str in cap[1].split(',') {
             if let Ok(n) = num_str.trim().parse::<u64>() {
                 deps.push(n);
