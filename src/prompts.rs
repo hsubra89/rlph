@@ -32,6 +32,7 @@ const KNOWN_VARIABLES: &[&str] = &[
     "pr_number",
     "pr_branch",
     "base_branch",
+    "has_pr_comments",
     "findings_schema",
 ];
 

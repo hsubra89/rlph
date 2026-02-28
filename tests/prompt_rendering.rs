@@ -33,6 +33,7 @@ fn review_phase_vars() -> HashMap<String, String> {
     vars.insert("base_branch".into(), "main".into());
     vars.insert("pr_comments".into(), "No comments yet.".into());
     vars.insert("pr_number".into(), "94".into());
+    vars.insert("has_pr_comments".into(), "true".into());
     vars
 }
 

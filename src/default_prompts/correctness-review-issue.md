@@ -36,7 +36,7 @@ A previous engineer has completed work for the task below. Your job is to review
 
 {{pr_comments}}
 
-{% if pr_number -%}
+{% if has_pr_comments -%}
 If any comment above is **factually inaccurate** or **missing important context** related to your review domain, reply concisely by running:
 `gh pr comment {{ pr_number }} --body "your reply"`
 
