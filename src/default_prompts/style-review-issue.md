@@ -34,28 +34,11 @@ Launch 4 sub-agents in parallel. Each sub-agent receives the list of changed fil
 | `quality` | Unnecessary complexity, dead code, commented-out code, readability issues, overly clever constructs |
 | `efficiency` | Unnecessary allocations, redundant operations, wasteful iterations, algorithmic issues in hot paths |
 
-Each sub-agent must output JSON matching this schema:
+Each sub-agent must output findings JSON:
 
-```json
-{
-  "findings": [
-    {
-      "id": "<short-slugified-id>",
-      "file": "<path>",
-      "line": <number>,
-      "severity": "warning" | "info",
-      "category": "<style|reuse|quality|efficiency>",
-      "description": "<what to improve>",
-      "depends_on": ["<other-finding-id>"] | null
-    }
-  ]
-}
-```
-
-- `id`: short slugified identifier (lowercase, hyphens, max 50 chars), e.g. `"redundant-clone-in-loop"`.
-- `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
-
-Sub-agent severity must be `"warning"` or `"info"` only — no `"critical"`.
+{{findings_schema}}
+- `severity` must be `"warning"` or `"info"` only — no `"critical"`.
+- `category` must be one of: `"style"`, `"reuse"`, `"quality"`, `"efficiency"`.
 
 ### Step 3: Validate sub-agent outputs
 
