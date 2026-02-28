@@ -94,13 +94,14 @@ pub fn render_findings_for_prompt(
             .as_deref()
             .or(default_category)
             .unwrap_or("general");
-        let _ = write!(
+        write!(
             result,
             "- ({}) **{}** [{}] `{}` L{}: {}",
             f.id, severity, category, f.file, f.line, f.description
-        );
+        )
+        .unwrap();
         if !f.depends_on.is_empty() {
-            let _ = write!(result, " (depends on: {})", f.depends_on.join(", "));
+            write!(result, " (depends on: {})", f.depends_on.join(", ")).unwrap();
         }
     }
     result

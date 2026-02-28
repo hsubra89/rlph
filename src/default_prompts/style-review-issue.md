@@ -44,7 +44,7 @@ Each sub-agent must output findings JSON:
 
 For each sub-agent's output:
 - Parse the JSON. If it fails to parse, discard that sub-agent's results entirely.
-- Verify each finding has all required fields (`file`, `line`, `severity`, `category`, `description`).
+- Verify each finding has all required fields (`id`, `file`, `line`, `severity`, `category`, `description`).
 - Discard any individual finding missing required fields.
 
 ### Step 4: Aggregate
