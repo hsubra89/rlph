@@ -37,11 +37,13 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
   "comment": "<markdown PR comment body — list issues as a task list (`- [ ] ...`)>",
   "findings": [
     {
+      "id": "<short-slugified-id>",
       "file": "<path>",
       "line": <number>,
       "severity": "critical" | "warning" | "info",
       "description": "<what is wrong>",
-      "category": "<optional category tag, e.g. correctness, security, style>"
+      "category": "<optional category tag, e.g. correctness, security, style>",
+      "depends_on": ["<other-finding-id>"] | null
     }
   ],
   "fix_instructions": "<concise instructions for the fix agent, or null if approved>"

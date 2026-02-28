@@ -36,16 +36,20 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 {
   "findings": [
     {
+      "id": "<short-slugified-id>",
       "file": "<path>",
       "line": <number>,
       "severity": "critical" | "warning" | "info",
       "description": "<what is wrong and recommended fix>",
-      "category": "<optional, e.g. security>"
+      "category": "<optional, e.g. security>",
+      "depends_on": ["<other-finding-id>"] | null
     }
   ]
 }
 ```
 
+- `id`: short slugified identifier (lowercase, hyphens, max 50 chars), e.g. `"sql-injection-in-query"`.
+- `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
 - Return an empty `findings` array when there are no issues.
 - `severity` must be one of: `"critical"`, `"warning"`, `"info"`.
 

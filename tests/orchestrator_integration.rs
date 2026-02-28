@@ -458,7 +458,7 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
             Box::pin(async {
                 Ok(RunResult {
                     exit_code: 0,
-                    stdout: r#"{"findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"issues found"}]}"#.into(),
+                    stdout: r#"{"findings":[{"id":"issues-found","file":"src/main.rs","line":1,"severity":"warning","description":"issues found"}]}"#.into(),
                     stderr: String::new(),
                     session_id: None,
                 })
@@ -476,7 +476,7 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
             Box::pin(async move {
                 let stdout = match phase {
                     Phase::ReviewAggregate => {
-                        r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"issue"}],"fix_instructions":"fix everything"}"#.to_string()
+                        r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"id":"issue-found","file":"src/main.rs","line":1,"severity":"warning","description":"issue"}],"fix_instructions":"fix everything"}"#.to_string()
                     }
                     Phase::ReviewFix => r#"{"status":"fixed","summary":"attempted fixes","files_changed":["src/main.rs"]}"#.to_string(),
                     _ => String::new(),
@@ -2160,7 +2160,7 @@ async fn test_phase_malformed_json_correction_succeeds() {
     let valid_phase = || {
         Ok(RunResult {
         exit_code: 0,
-        stdout: r#"{"findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"corrected finding"}]}"#.into(),
+        stdout: r#"{"findings":[{"id":"corrected-finding","file":"src/main.rs","line":1,"severity":"warning","description":"corrected finding"}]}"#.into(),
         stderr: String::new(),
         session_id: Some("sess-phase-123".into()),
     })

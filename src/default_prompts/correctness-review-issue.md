@@ -34,16 +34,20 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 {
   "findings": [
     {
+      "id": "<short-slugified-id>",
       "file": "<path>",
       "line": <number>,
       "severity": "critical" | "warning" | "info",
       "description": "<what is wrong>",
-      "category": "<optional, e.g. correctness>"
+      "category": "<optional, e.g. correctness>",
+      "depends_on": ["<other-finding-id>"] | null
     }
   ]
 }
 ```
 
+- `id`: short slugified identifier (lowercase, hyphens, max 50 chars), e.g. `"off-by-one-in-loop"`.
+- `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
 - Return an empty `findings` array when there are no issues.
 - `severity` must be one of: `"critical"`, `"warning"`, `"info"`.
 

@@ -1135,7 +1135,7 @@ mod tests {
     fn test_parse_aggregator_needs_fix_json() {
         use crate::review_schema::{Verdict, parse_aggregator_output};
 
-        let json = r#"{"verdict":"needs_fix","comment":"Issues found.","findings":[{"file":"src/main.rs","line":42,"severity":"critical","description":"bug"}],"fix_instructions":"Fix the bug."}"#;
+        let json = r#"{"verdict":"needs_fix","comment":"Issues found.","findings":[{"id":"bug-main","file":"src/main.rs","line":42,"severity":"critical","description":"bug"}],"fix_instructions":"Fix the bug."}"#;
         let output = parse_aggregator_output(json).unwrap();
         assert_eq!(output.verdict, Verdict::NeedsFix);
         assert_eq!(output.fix_instructions.as_deref(), Some("Fix the bug."));
