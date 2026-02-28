@@ -13,9 +13,8 @@ const DEFAULT_REVIEW_AGGREGATE: &str = include_str!("default_prompts/review-aggr
 const DEFAULT_REVIEW_FIX: &str = include_str!("default_prompts/review-fix-issue.md");
 const DEFAULT_PRD: &str = include_str!("default_prompts/prd.md");
 const FINDINGS_SCHEMA: &str = include_str!("default_prompts/_findings-schema.md");
-const PR_COMMENTS_FOOTER: &str = include_str!("default_prompts/_pr-comments-footer.md");
 
-/// Known template variable names for validation.
+/// Known template variable names for validation of user overrides.
 const KNOWN_VARIABLES: &[&str] = &[
     "issue_title",
     "issue_body",
@@ -34,7 +33,6 @@ const KNOWN_VARIABLES: &[&str] = &[
     "pr_branch",
     "base_branch",
     "findings_schema",
-    "pr_comments_footer",
 ];
 
 fn default_template(phase: &str) -> Option<&'static str> {
@@ -75,12 +73,14 @@ impl PromptEngine {
         if let Some(ref dir) = self.override_dir {
             let path = Path::new(dir).join(template_filename(phase));
             if path.exists() {
-                return std::fs::read_to_string(&path).map_err(|e| {
+                let content = std::fs::read_to_string(&path).map_err(|e| {
                     Error::Prompt(format!(
                         "failed to read override template {}: {e}",
                         path.display()
                     ))
-                });
+                })?;
+                validate_user_template(&content)?;
+                return Ok(content);
             }
         }
 
@@ -101,62 +101,35 @@ impl PromptEngine {
         all_vars
             .entry("findings_schema".to_string())
             .or_insert_with(|| FINDINGS_SCHEMA.to_string());
-        if !all_vars.contains_key("pr_comments_footer") && all_vars.contains_key("pr_number") {
-            let rendered_footer = render_template(PR_COMMENTS_FOOTER, &all_vars)?;
-            all_vars.insert("pr_comments_footer".to_string(), rendered_footer);
-        }
         render_template(&template, &all_vars)
     }
 }
 
-/// Render a template string by substituting `{{variable}}` placeholders.
-/// Errors on unknown variables (strict mode).
+/// Render a template string using the `upon` template engine.
+/// Supports `{{ var }}`, `{% if %}`, and `{% for %}` syntax.
 pub fn render_template(template: &str, vars: &HashMap<String, String>) -> Result<String> {
-    let mut result = String::with_capacity(template.len());
-    let mut chars = template.chars().peekable();
+    let engine = upon::Engine::new();
+    let compiled = engine
+        .compile(template)
+        .map_err(|e| Error::Prompt(format!("template compile error: {e}")))?;
+    compiled
+        .render(&engine, upon::to_value(vars).map_err(|e| Error::Prompt(e.to_string()))?)
+        .to_string()
+        .map_err(|e| Error::Prompt(format!("template render error: {e}")))
+}
 
-    while let Some(c) = chars.next() {
-        if c == '{' && chars.peek() == Some(&'{') {
-            chars.next(); // consume second {
-            let mut var_name = String::new();
-            let mut found_close = false;
-
-            while let Some(c2) = chars.next() {
-                if c2 == '}' && chars.peek() == Some(&'}') {
-                    chars.next(); // consume second }
-                    found_close = true;
-                    break;
-                }
-                var_name.push(c2);
-            }
-
-            if !found_close {
-                return Err(Error::Prompt(format!(
-                    "unclosed template variable: {{{{{var_name}"
-                )));
-            }
-
-            let var_name = var_name.trim();
-            if !KNOWN_VARIABLES.contains(&var_name) {
-                return Err(Error::Prompt(format!(
-                    "unknown template variable: {var_name}"
-                )));
-            }
-
-            match vars.get(var_name) {
-                Some(value) => result.push_str(value),
-                None => {
-                    return Err(Error::Prompt(format!(
-                        "missing value for template variable: {var_name}"
-                    )));
-                }
-            }
-        } else {
-            result.push(c);
+/// Validate that a user-override template only references known variables.
+fn validate_user_template(template: &str) -> Result<()> {
+    let re = regex::Regex::new(r"\{\{[\s]*([a-z_]+)[\s]*\}\}").expect("valid regex");
+    for cap in re.captures_iter(template) {
+        let var_name = &cap[1];
+        if !KNOWN_VARIABLES.contains(&var_name) {
+            return Err(Error::Prompt(format!(
+                "unknown template variable in override: {var_name}"
+            )));
         }
     }
-
-    Ok(result)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -274,21 +247,65 @@ mod tests {
     fn test_render_unknown_variable_errors() {
         let vars = HashMap::new();
         let err = render_template("{{unknown_var}}", &vars).unwrap_err();
-        assert!(err.to_string().contains("unknown template variable"));
+        assert!(
+            err.to_string().contains("render error"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
     fn test_render_missing_value_errors() {
         let vars = HashMap::new();
         let err = render_template("{{issue_title}}", &vars).unwrap_err();
-        assert!(err.to_string().contains("missing value"));
+        assert!(
+            err.to_string().contains("render error"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
     fn test_render_unclosed_variable() {
         let vars = HashMap::new();
         let err = render_template("{{issue_title", &vars).unwrap_err();
-        assert!(err.to_string().contains("unclosed template variable"));
+        assert!(
+            err.to_string().contains("compile error"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_render_if_conditional() {
+        let mut vars = HashMap::new();
+        vars.insert("pr_number".to_string(), "42".to_string());
+        let template = "{% if pr_number %}PR #{{ pr_number }}{% endif %}";
+        let result = render_template(template, &vars).unwrap();
+        assert_eq!(result, "PR #42");
+    }
+
+    #[test]
+    fn test_render_if_conditional_falsy_empty_string() {
+        let mut vars = HashMap::new();
+        vars.insert("pr_number".to_string(), String::new());
+        let template = "{% if pr_number %}PR #{{ pr_number }}{% endif %}";
+        let result = render_template(template, &vars).unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_render_for_loop() {
+        let mut vars = HashMap::new();
+        vars.insert("items".to_string(), "unused".to_string());
+        // upon for loops work on iterables; with HashMap<String,String> we can
+        // only test that the engine compiles and renders for syntax correctly.
+        // A simple for-in-value list isn't possible with flat string maps, so
+        // we just verify the engine doesn't choke on the syntax.
+        let engine = upon::Engine::new();
+        let compiled = engine
+            .compile("{% for x in items %}{{ x }}{% endfor %}")
+            .unwrap();
+        let val = upon::value! { items: ["a", "b", "c"] };
+        let result = compiled.render(&engine, val).to_string().unwrap();
+        assert_eq!(result, "abc");
     }
 
     #[test]
@@ -370,5 +387,27 @@ mod tests {
         let result = engine.render_phase("prd", &vars).unwrap();
         assert!(result.contains("Create a GitHub issue using `gh issue create`"));
         assert!(!result.contains("{{submission_instructions}}"));
+    }
+
+    #[test]
+    fn test_validate_user_template_accepts_known_vars() {
+        assert!(validate_user_template("Hello {{issue_title}} world").is_ok());
+    }
+
+    #[test]
+    fn test_validate_user_template_rejects_unknown_vars() {
+        let err = validate_user_template("Hello {{bad_var}} world").unwrap_err();
+        assert!(err.to_string().contains("unknown template variable in override"));
+    }
+
+    #[test]
+    fn test_override_with_unknown_var_rejected() {
+        let dir = TempDir::new().unwrap();
+        let override_path = dir.path().join("choose-issue.md");
+        fs::write(&override_path, "Custom: {{bad_var}}").unwrap();
+
+        let engine = PromptEngine::new(Some(dir.path().to_string_lossy().to_string()));
+        let err = engine.load_template("choose").unwrap_err();
+        assert!(err.to_string().contains("unknown template variable in override"));
     }
 }
