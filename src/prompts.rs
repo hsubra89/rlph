@@ -100,9 +100,8 @@ impl PromptEngine {
         all_vars
             .entry("findings_schema".to_string())
             .or_insert_with(|| FINDINGS_SCHEMA.to_string());
-        if !all_vars.contains_key("pr_comments_footer") {
-            let rendered_footer =
-                render_template(PR_COMMENTS_FOOTER, &all_vars).unwrap_or_default();
+        if !all_vars.contains_key("pr_comments_footer") && all_vars.contains_key("pr_number") {
+            let rendered_footer = render_template(PR_COMMENTS_FOOTER, &all_vars)?;
             all_vars.insert("pr_comments_footer".to_string(), rendered_footer);
         }
         render_template(&template, &all_vars)
