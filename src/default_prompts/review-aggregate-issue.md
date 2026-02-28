@@ -40,7 +40,8 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
       "file": "<path>",
       "line": <number>,
       "severity": "critical" | "warning" | "info",
-      "description": "<what is wrong>"
+      "description": "<what is wrong>",
+      "category": "<optional category tag, e.g. correctness, security, style>"
     }
   ],
   "fix_instructions": "<concise instructions for the fix agent, or null if approved>"

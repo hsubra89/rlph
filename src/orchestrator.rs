@@ -729,7 +729,7 @@ impl<
             let mut phase_parse_failed = false;
             for o in &review_outputs {
                 let rendered = match parse_phase_output(&o.stdout) {
-                    Ok(phase) => render_findings_for_prompt(&phase.findings),
+                    Ok(phase) => render_findings_for_prompt(&phase.findings, Some(&o.name)),
                     Err(e) => {
                         // Try correction via session resume
                         let phase_config =
@@ -753,7 +753,9 @@ impl<
                             None
                         };
                         match recovered {
-                            Some(phase) => render_findings_for_prompt(&phase.findings),
+                            Some(phase) => {
+                                render_findings_for_prompt(&phase.findings, Some(&o.name))
+                            }
                             None => {
                                 warn!(phase = %o.name, error = %e, "phase JSON correction exhausted — retrying round");
                                 last_json_failure =

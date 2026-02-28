@@ -1,6 +1,6 @@
-# Style Review Agent
+# Style Review Coordinator
 
-A previous engineer has completed work for the task below. Your job is to review the implementation for **code style and idioms** only.
+A previous engineer has completed work for the task below. You are a **coordinator** that runs 4 parallel sub-agent reviews covering different quality domains, then validates and aggregates their outputs.
 
 ## Issue
 
@@ -18,10 +18,51 @@ A previous engineer has completed work for the task below. Your job is to review
 
 ## Instructions
 
-1. Read all changed files on this branch vs the base branch.
-2. Check naming conventions (functions, variables, types, modules).
-3. Verify idiomatic patterns for the language are used.
-4. Check for unnecessary complexity, dead code, duplicated code or commented-out code.
+### Step 1: Get changed files
+
+Diff the current branch against the base branch to identify all changed files. Only review changed code.
+
+### Step 2: Spawn 4 sub-agent reviews
+
+Launch 4 sub-agents in parallel. Each sub-agent receives the list of changed files and reviews them through a specific lens. Each sub-agent must return a JSON object with a `findings` array.
+
+| Category | Focus |
+|----------|-------|
+| `style` | Naming conventions (functions, variables, types, modules), idiomatic patterns for the language, consistency with existing codebase style |
+| `reuse` | Duplicated logic across changed files, missed opportunities to use shared utilities or existing helpers, copy-paste code |
+| `quality` | Unnecessary complexity, dead code, commented-out code, readability issues, overly clever constructs |
+| `efficiency` | Unnecessary allocations, redundant operations, wasteful iterations, algorithmic issues in hot paths |
+
+Each sub-agent must output JSON matching this schema:
+
+```json
+{
+  "findings": [
+    {
+      "file": "<path>",
+      "line": <number>,
+      "severity": "warning" | "info",
+      "category": "<style|reuse|quality|efficiency>",
+      "description": "<what to improve>"
+    }
+  ]
+}
+```
+
+Sub-agent severity must be `"warning"` or `"info"` only — no `"critical"`.
+
+### Step 3: Validate sub-agent outputs
+
+For each sub-agent's output:
+- Parse the JSON. If it fails to parse, discard that sub-agent's results entirely.
+- Verify each finding has all required fields (`file`, `line`, `severity`, `category`, `description`).
+- Discard any individual finding missing required fields.
+
+### Step 4: Aggregate
+
+Combine all valid findings from all sub-agents into a single `findings` array. Ensure each finding's `category` is set to the sub-agent's domain if not already present.
+
+### Step 5: Return result
 
 **Do NOT make any code changes.** This is a read-only review.
 
@@ -36,6 +77,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
       "file": "<path>",
       "line": <number>,
       "severity": "warning" | "info",
+      "category": "<style|reuse|quality|efficiency>",
       "description": "<what to improve>"
     }
   ]
@@ -44,6 +86,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 
 - Return an empty `findings` array when there are no issues.
 - `severity` must be one of: `"warning"`, `"info"`.
+- `category` must be one of: `"style"`, `"reuse"`, `"quality"`, `"efficiency"`.
 
 ## Existing PR Comments
 

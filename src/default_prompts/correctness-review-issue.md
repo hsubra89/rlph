@@ -37,7 +37,8 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
       "file": "<path>",
       "line": <number>,
       "severity": "critical" | "warning" | "info",
-      "description": "<what is wrong>"
+      "description": "<what is wrong>",
+      "category": "<optional, e.g. correctness>"
     }
   ]
 }

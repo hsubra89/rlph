@@ -184,7 +184,7 @@ mod tests {
     fn test_load_default_style_review() {
         let engine = PromptEngine::new(None);
         let template = engine.load_template("style-review").unwrap();
-        assert!(template.contains("Style Review Agent"));
+        assert!(template.contains("Style Review Coordinator"));
     }
 
     #[test]

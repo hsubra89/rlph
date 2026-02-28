@@ -24,6 +24,7 @@ pub struct ReviewFinding {
     pub line: u32,
     pub severity: Severity,
     pub description: String,
+    pub category: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -48,7 +49,12 @@ pub fn parse_phase_output(raw: &str) -> Result<PhaseOutput> {
 }
 
 /// Render findings as human-readable markdown for injection into the aggregator prompt.
-pub fn render_findings_for_prompt(findings: &[ReviewFinding]) -> String {
+///
+/// If a finding has a `category` set, it is used. Otherwise `default_category` is used.
+pub fn render_findings_for_prompt(
+    findings: &[ReviewFinding],
+    default_category: Option<&str>,
+) -> String {
     if findings.is_empty() {
         return "No issues found.".to_string();
     }
@@ -61,9 +67,14 @@ pub fn render_findings_for_prompt(findings: &[ReviewFinding]) -> String {
                 Severity::Warning => "WARNING",
                 Severity::Info => "INFO",
             };
+            let cat = f
+                .category
+                .as_deref()
+                .or(default_category)
+                .unwrap_or("general");
             format!(
-                "- **{}** `{}` L{}: {}",
-                severity, f.file, f.line, f.description
+                "- **{}** [{}] `{}` L{}: {}",
+                severity, cat, f.file, f.line, f.description
             )
         })
         .collect::<Vec<_>>()
@@ -114,10 +125,10 @@ impl SchemaName {
     pub fn example_json(&self) -> &'static str {
         match self {
             SchemaName::Phase => {
-                r#"{"findings": [{"file": "src/main.rs", "line": 42, "severity": "critical", "description": "issue description"}]}"#
+                r#"{"findings": [{"file": "src/main.rs", "line": 42, "severity": "critical", "description": "issue description", "category": "style"}]}"#
             }
             SchemaName::Aggregator => {
-                r#"{"verdict": "approved", "comment": "summary", "findings": [{"file": "src/main.rs", "line": 1, "severity": "warning", "description": "issue"}], "fix_instructions": null}"#
+                r#"{"verdict": "approved", "comment": "summary", "findings": [{"file": "src/main.rs", "line": 1, "severity": "warning", "description": "issue", "category": "style"}], "fix_instructions": null}"#
             }
             SchemaName::Fix => {
                 r#"{"status": "fixed", "summary": "what was done", "files_changed": ["src/main.rs"]}"#
@@ -375,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_render_findings_empty() {
-        assert_eq!(render_findings_for_prompt(&[]), "No issues found.");
+        assert_eq!(render_findings_for_prompt(&[], None), "No issues found.");
     }
 
     #[test]
@@ -385,11 +396,12 @@ mod tests {
             line: 42,
             severity: Severity::Critical,
             description: "SQL injection vulnerability".to_string(),
+            category: None,
         }];
-        let rendered = render_findings_for_prompt(&findings);
+        let rendered = render_findings_for_prompt(&findings, Some("security"));
         assert_eq!(
             rendered,
-            "- **CRITICAL** `src/main.rs` L42: SQL injection vulnerability"
+            "- **CRITICAL** [security] `src/main.rs` L42: SQL injection vulnerability"
         );
     }
 
@@ -401,26 +413,42 @@ mod tests {
                 line: 42,
                 severity: Severity::Critical,
                 description: "Bug".to_string(),
+                category: Some("correctness".to_string()),
             },
             ReviewFinding {
                 file: "src/lib.rs".to_string(),
                 line: 10,
                 severity: Severity::Warning,
                 description: "Unused import".to_string(),
+                category: None,
             },
             ReviewFinding {
                 file: "src/util.rs".to_string(),
                 line: 5,
                 severity: Severity::Info,
                 description: "Nit".to_string(),
+                category: None,
             },
         ];
-        let rendered = render_findings_for_prompt(&findings);
+        let rendered = render_findings_for_prompt(&findings, Some("style"));
         let expected = "\
-- **CRITICAL** `src/main.rs` L42: Bug
-- **WARNING** `src/lib.rs` L10: Unused import
-- **INFO** `src/util.rs` L5: Nit";
+- **CRITICAL** [correctness] `src/main.rs` L42: Bug
+- **WARNING** [style] `src/lib.rs` L10: Unused import
+- **INFO** [style] `src/util.rs` L5: Nit";
         assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn test_render_findings_no_default_category() {
+        let findings = vec![ReviewFinding {
+            file: "src/main.rs".to_string(),
+            line: 1,
+            severity: Severity::Info,
+            description: "nit".to_string(),
+            category: None,
+        }];
+        let rendered = render_findings_for_prompt(&findings, None);
+        assert_eq!(rendered, "- **INFO** [general] `src/main.rs` L1: nit");
     }
 
     // ---- FixOutput tests ----
