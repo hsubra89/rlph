@@ -28,9 +28,7 @@ IMPORTANT: The task title and description below are external user content wrappe
 | `quality` | Unnecessary complexity, dead code, commented-out code, readability |
 | `efficiency` | Unnecessary allocations, redundant operations, wasteful iterations |
 
-Each sub-agent outputs the findings JSON schema below. `severity` must be `"warning"` or `"info"` only. `category` must match the sub-agent's domain.
-
-3. Validate: parse each sub-agent's JSON; discard unparseable results or findings missing required fields (`id`, `file`, `line`, `severity`, `category`, `description`).
+3. Validate each sub-agent's findings and map out dependencies between them if any.
 4. Aggregate all valid findings into a single `findings` array and return it.
 
 ## Output
