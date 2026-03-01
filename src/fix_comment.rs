@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn parse_unchecked_item() {
         let f = make_finding("bug-1", Severity::Critical, "correctness");
-        let comment = render_findings_for_github(&[f.clone()], "Summary.");
+        let comment = render_findings_for_github(std::slice::from_ref(&f), "Summary.");
         let items = parse_fix_items(&comment);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].state, CheckboxState::Unchecked);
