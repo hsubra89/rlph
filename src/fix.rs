@@ -25,7 +25,7 @@ use crate::worktree::{WorktreeManager, git_in_dir, validate_branch_name};
 /// 2. Take the first eligible checked item
 /// 3. Create worktree off `origin/<pr-branch>`
 /// 4. Spawn fix agent with finding context
-/// 5. Parse FixOutput JSON (with retry)
+/// 5. Parse StandaloneFixOutput JSON (with retry)
 /// 6. If fixed: rebase onto `origin/<pr-branch>`, push to PR branch
 /// 7. Update review comment checkbox with result
 /// 8. Clean up worktree
@@ -166,7 +166,7 @@ async fn run_fix_agent_and_apply(
 
     let run_result = runner.run(Phase::Fix, &prompt, ctx.worktree_path).await?;
 
-    // 5. Parse FixOutput JSON (with retry on failure)
+    // 5. Parse StandaloneFixOutput JSON (with retry on failure)
     let fix_output = parse_fix_with_retry(
         &run_result,
         fix_config,
