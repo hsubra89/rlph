@@ -438,7 +438,10 @@ fn push_to_pr_branch_with_retry(
                 return Ok(());
             }
             Err(stderr) => {
-                if attempt < MAX_PUSH_ATTEMPTS {
+                let is_conflict = stderr.contains("non-fast-forward")
+                    || stderr.contains("fetch first")
+                    || stderr.contains("[rejected]");
+                if is_conflict && attempt < MAX_PUSH_ATTEMPTS {
                     warn!(
                         attempt,
                         max = MAX_PUSH_ATTEMPTS,
