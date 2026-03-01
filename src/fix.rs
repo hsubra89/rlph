@@ -364,7 +364,7 @@ fn fetch_and_parse_items(
 fn dep_eligible<'a>(
     items: impl Iterator<Item = &'a FixItem>,
     deps: &FindingDeps,
-    resolved: &HashSet<String>,
+    resolved: &HashSet<&str>,
 ) -> (Vec<&'a FixItem>, usize) {
     let mut eligible = Vec::new();
     let mut dep_blocked: usize = 0;

@@ -62,11 +62,11 @@ impl FindingDeps {
     ///
     /// A dependency is resolved if its ID is in the `resolved` set.
     /// Findings with no dependencies always return `true`.
-    pub fn deps_met(&self, finding_id: &str, resolved: &HashSet<String>) -> bool {
+    pub fn deps_met(&self, finding_id: &str, resolved: &HashSet<&str>) -> bool {
         let Some(deps) = self.edges.get(finding_id) else {
             return true;
         };
-        deps.iter().all(|dep| resolved.contains(dep))
+        deps.iter().all(|dep| resolved.contains(dep.as_str()))
     }
 
     /// Returns `true` if any finding has dependencies.
@@ -77,11 +77,11 @@ impl FindingDeps {
 }
 
 /// Collect finding IDs whose state is Fixed or WontFix (i.e. resolved).
-pub fn resolved_finding_ids(items: &[FixItem]) -> HashSet<String> {
+pub fn resolved_finding_ids(items: &[FixItem]) -> HashSet<&str> {
     items
         .iter()
         .filter(|i| matches!(i.state, CheckboxState::Fixed | CheckboxState::WontFix))
-        .map(|i| i.finding.id.clone())
+        .map(|i| i.finding.id.as_str())
         .collect()
 }
 
