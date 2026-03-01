@@ -15,6 +15,9 @@ const MAX_PUSH_ATTEMPTS: u32 = 3;
 /// Maximum number of fetch retry attempts (git lock contention under concurrency).
 const MAX_FETCH_ATTEMPTS: u32 = 3;
 
+/// Maximum number of fix agents running concurrently.
+const MAX_CONCURRENT_FIXES: usize = 8;
+
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
 use crate::fix_comment::{CheckboxState, FixItem, FixResultKind, parse_fix_items, update_comment};
@@ -83,6 +86,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let pr_branch_owned = pr_branch.to_string();
 
     let mut join_set = tokio::task::JoinSet::new();
+    let concurrency = Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES));
 
     for item in &eligible {
         let item = (*item).clone();
@@ -117,7 +121,12 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
             "spawning parallel fix agent"
         );
 
+        let concurrency = Arc::clone(&concurrency);
         join_set.spawn(async move {
+            let _permit = concurrency
+                .acquire()
+                .await
+                .expect("concurrency semaphore closed unexpectedly");
             run_single_fix(
                 item,
                 pr_number,
