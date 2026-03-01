@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 use tokio::sync::Semaphore;
@@ -17,7 +16,7 @@ use crate::prompts::PromptEngine;
 use crate::review_schema::{SchemaName, StandaloneFixOutput, parse_standalone_fix_output};
 use crate::runner::{AgentRunner, Phase, RunResult, build_runner};
 use crate::submission::{REVIEW_MARKER, SubmissionBackend};
-use crate::worktree::{WorktreeManager, validate_branch_name};
+use crate::worktree::{WorktreeManager, git_in_dir, validate_branch_name};
 
 /// Run the standalone fix flow for a single checked finding on a PR.
 ///
@@ -269,19 +268,9 @@ async fn parse_fix_with_retry(
 fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
     let remote_ref = format!("origin/{pr_branch}");
 
-    let output = Command::new("git")
-        .args(["rebase", &remote_ref])
-        .current_dir(worktree_path)
-        .output()
-        .map_err(|e| Error::Orchestrator(format!("failed to run git rebase: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if let Err(stderr) = git_in_dir(worktree_path, &["rebase", &remote_ref]) {
         // Abort the rebase on failure
-        let _ = Command::new("git")
-            .args(["rebase", "--abort"])
-            .current_dir(worktree_path)
-            .output();
+        let _ = git_in_dir(worktree_path, &["rebase", "--abort"]);
         return Err(Error::Orchestrator(format!(
             "git rebase onto {remote_ref} failed: {stderr}"
         )));
@@ -294,18 +283,10 @@ fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
 /// Push fix branch to PR branch: `git push origin <fix-branch>:<pr-branch>`.
 fn push_to_pr_branch(worktree_path: &Path, fix_branch: &str, pr_branch: &str) -> Result<()> {
     let refspec = format!("{fix_branch}:{pr_branch}");
-    let output = Command::new("git")
-        .args(["push", "origin", &refspec])
-        .current_dir(worktree_path)
-        .output()
-        .map_err(|e| Error::Orchestrator(format!("failed to run git push: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(Error::Orchestrator(format!(
-            "git push origin {refspec} failed: {stderr}"
-        )));
-    }
+    git_in_dir(worktree_path, &["push", "origin", &refspec]).map_err(|stderr| {
+        Error::Orchestrator(format!("git push origin {refspec} failed: {stderr}"))
+    })?;
 
     info!(refspec, "pushed fix to PR branch");
     Ok(())

@@ -26,6 +26,21 @@ pub fn validate_branch_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Run a git command in the given directory, returning stdout on success or stderr on failure.
+pub(crate) fn git_in_dir(cwd: &Path, args: &[&str]) -> std::result::Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
     pub path: PathBuf,
@@ -487,17 +502,7 @@ impl WorktreeManager {
 
     /// Run a git command in the repo root.
     fn git(&self, args: &[&str]) -> std::result::Result<String, String> {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(&self.repo_root)
-            .output()
-            .map_err(|e| format!("failed to run git: {e}"))?;
-
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).to_string())
-        }
+        git_in_dir(&self.repo_root, args)
     }
 }
 
