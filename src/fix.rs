@@ -555,7 +555,7 @@ fn prepare_fix_item(
         file = %item.finding.file,
         line = item.finding.line,
         severity = %item.finding.severity.label(),
-        "spawning fix agent"
+        "prepared fix item"
     );
 
     Some(PreparedFixItem {
