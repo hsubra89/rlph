@@ -62,7 +62,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let finding_deps = FindingDeps::build(&items);
     let resolved = resolved_finding_ids(&items);
 
-    let (eligible, dep_blocked) = dep_eligible(
+    let (eligible_refs, dep_blocked) = dep_eligible(
         items.iter().filter(|i| i.state == CheckboxState::Checked),
         &finding_deps,
         &resolved,
@@ -75,13 +75,13 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
         );
     }
 
-    if eligible.is_empty() {
+    if eligible_refs.is_empty() {
         info!("no eligible items found — nothing to fix");
         return Ok(());
     }
 
     info!(
-        count = eligible.len(),
+        count = eligible_refs.len(),
         "found eligible items for parallel fix"
     );
 
@@ -100,7 +100,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let mut join_set = tokio::task::JoinSet::new();
 
     let mut skipped: usize = 0;
-    for item in &eligible {
+    for item in &eligible_refs {
         let item = (*item).clone();
 
         let Some(prepared) = prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine)
@@ -114,14 +114,14 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
         join_set.spawn(async move { acquire_and_run_fix(&shared, prepared, pr_number).await });
     }
 
-    if skipped == eligible.len() {
+    if skipped == eligible_refs.len() {
         return Err(Error::Orchestrator(format!(
             "all {skipped} eligible fix item(s) were skipped due to validation errors"
         )));
     } else if skipped > 0 {
         warn!(
             skipped,
-            total = eligible.len(),
+            total = eligible_refs.len(),
             "some fix items were skipped due to validation errors"
         );
     }
