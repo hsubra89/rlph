@@ -702,7 +702,7 @@ impl<
                 phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());
                 phase_vars.insert("pr_comments".to_string(), pr_comments_text.clone());
                 phase_vars.insert("pr_number".to_string(), pr_number_str.clone());
-                // upon templates treat empty strings as falsy in {{#has_pr_comments}}
+                // upon templates treat empty strings as falsy in {% if has_pr_comments %}
                 phase_vars.insert(
                     "has_pr_comments".to_string(),
                     if has_pr_comments {
