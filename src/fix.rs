@@ -421,10 +421,7 @@ fn push_to_pr_branch_with_retry(
         // Rebase onto latest remote state before each push attempt
         rebase_onto(worktree_path, pr_branch)?;
 
-        match git_in_dir(
-            worktree_path,
-            &["push", "origin", &refspec],
-        ) {
+        match git_in_dir(worktree_path, &["push", "origin", &refspec]) {
             Ok(_) => {
                 info!(refspec, attempt, "pushed fix to PR branch");
                 return Ok(());
