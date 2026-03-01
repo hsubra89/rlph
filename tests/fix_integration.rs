@@ -69,7 +69,7 @@ fn make_review_comment(findings: &[ReviewFinding], checked_ids: &[&str]) -> Stri
 }
 
 /// Create a PrComment from a body string for testing.
-fn pr_comment_from_body(body: &str) -> PrComment {
+fn make_pr_comment(body: &str) -> PrComment {
     let json = serde_json::json!({
         "id": 1,
         "body": body,
@@ -148,7 +148,7 @@ impl SubmissionBackend for MockFixSubmission {
 
     fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
         let body = self.comment_body.lock().unwrap().clone();
-        Ok(vec![pr_comment_from_body(&body)])
+        Ok(vec![make_pr_comment(&body)])
     }
 }
 
