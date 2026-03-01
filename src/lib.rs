@@ -11,6 +11,7 @@ pub mod process;
 pub mod prompts;
 pub mod review_schema;
 pub mod runner;
+pub(crate) mod scc;
 pub mod sources;
 pub mod state;
 pub mod submission;
