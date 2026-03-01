@@ -80,9 +80,9 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 
     // 3. Pre-compute per-item data and spawn into JoinSet
     let fix_config = config.fix.clone();
-    let worktree_dir = config.worktree_dir.clone();
+    let worktree_dir: Arc<str> = Arc::from(config.worktree_dir.as_str());
     let agent_timeout_retries = config.agent_timeout_retries;
-    let repo_root = repo_root.to_path_buf();
+    let repo_root: Arc<Path> = Arc::from(repo_root);
     let pr_branch = pr_branch.to_string();
 
     let mut join_set = tokio::task::JoinSet::new();
@@ -91,8 +91,8 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     for item in &eligible {
         let item = (*item).clone();
         let fix_config = fix_config.clone();
-        let worktree_dir = worktree_dir.clone();
-        let repo_root = repo_root.clone();
+        let worktree_dir = Arc::clone(&worktree_dir);
+        let repo_root = Arc::clone(&repo_root);
         let pr_branch = pr_branch.clone();
         let submission = Arc::clone(&submission);
         let correction_runner = Arc::clone(&correction_runner);
