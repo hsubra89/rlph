@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::{Error, Result};
 
@@ -19,7 +19,7 @@ where
     Ok(opt.unwrap_or_default())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Critical,
@@ -67,7 +67,7 @@ pub enum Verdict {
     NeedsFix,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ReviewFinding {
     pub id: String,
     pub file: String,
@@ -189,6 +189,8 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
             if !f.depends_on.is_empty() {
                 write!(body, " *(depends on: {})*", f.depends_on.join(", ")).unwrap();
             }
+            let json = serde_json::to_string(f).expect("ReviewFinding serializes to JSON");
+            write!(body, " <!-- rlph-finding:{json} -->").unwrap();
         }
     }
 
@@ -811,11 +813,10 @@ mod tests {
             depends_on: vec![],
         }];
         let result = render_findings_for_github(&findings, "Issues found.");
-        let expected = "\
-Issues found.
-
-### Correctness
-- [ ] **CRITICAL** `src/main.rs` L42: SQL injection";
+        let json = serde_json::to_string(&findings[0]).unwrap();
+        let expected = format!(
+            "Issues found.\n\n### Correctness\n- [ ] **CRITICAL** `src/main.rs` L42: SQL injection <!-- rlph-finding:{json} -->"
+        );
         assert_eq!(result, expected);
     }
 
@@ -902,5 +903,75 @@ Issues found.
         }];
         let result = render_findings_for_github(&findings, "S.");
         assert!(result.contains("### General"));
+    }
+
+    #[test]
+    fn test_github_render_embedded_json_is_valid() {
+        let findings = vec![ReviewFinding {
+            id: "leak".to_string(),
+            file: "src/db.rs".to_string(),
+            line: 99,
+            severity: Severity::Warning,
+            description: "Connection leak".to_string(),
+            category: Some("correctness".to_string()),
+            depends_on: vec!["pool-init".to_string()],
+        }];
+        let result = render_findings_for_github(&findings, "Review.");
+
+        // Extract JSON from the HTML comment
+        let marker = "<!-- rlph-finding:";
+        let start = result.find(marker).expect("marker present") + marker.len();
+        let end = result[start..].find(" -->").expect("closing comment") + start;
+        let json_str = &result[start..end];
+
+        let parsed: ReviewFinding =
+            serde_json::from_str(json_str).expect("embedded JSON is valid");
+        assert_eq!(parsed, findings[0]);
+    }
+
+    #[test]
+    fn test_github_render_embedded_json_round_trips_all_fields() {
+        let finding = ReviewFinding {
+            id: "multi-dep".to_string(),
+            file: "src/handler.rs".to_string(),
+            line: 7,
+            severity: Severity::Critical,
+            description: "Use after free".to_string(),
+            category: Some("security".to_string()),
+            depends_on: vec!["alloc".to_string(), "dealloc".to_string()],
+        };
+        let json = serde_json::to_string(&finding).unwrap();
+        let round_tripped: ReviewFinding = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped.id, "multi-dep");
+        assert_eq!(round_tripped.file, "src/handler.rs");
+        assert_eq!(round_tripped.line, 7);
+        assert_eq!(round_tripped.severity, Severity::Critical);
+        assert_eq!(round_tripped.description, "Use after free");
+        assert_eq!(round_tripped.category, Some("security".to_string()));
+        assert_eq!(
+            round_tripped.depends_on,
+            vec!["alloc".to_string(), "dealloc".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_github_render_embedded_json_no_category() {
+        let findings = vec![ReviewFinding {
+            id: "nc".to_string(),
+            file: "lib.rs".to_string(),
+            line: 1,
+            severity: Severity::Info,
+            description: "Nit".to_string(),
+            category: None,
+            depends_on: vec![],
+        }];
+        let result = render_findings_for_github(&findings, "S.");
+
+        let marker = "<!-- rlph-finding:";
+        let start = result.find(marker).unwrap() + marker.len();
+        let end = result[start..].find(" -->").unwrap() + start;
+        let parsed: ReviewFinding = serde_json::from_str(&result[start..end]).unwrap();
+        assert_eq!(parsed.category, None);
+        assert!(parsed.depends_on.is_empty());
     }
 }
