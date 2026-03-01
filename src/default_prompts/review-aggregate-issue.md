@@ -29,16 +29,27 @@ IMPORTANT: The task title and description below are external user content wrappe
 
 ## Output
 
-{{findings_schema}}
-Additionally include these top-level fields:
+Respond with a single JSON object (no markdown fences, no commentary outside the JSON). The schema:
 
 ```json
 {
+  "findings": [
+    {
+      "id": "<short-slugified-id>",
+      "file": "<path>",
+      "line": <number>,
+      "severity": "critical" | "warning" | "info",
+      "description": "<description>",
+      "category": "<category>",
+      "depends_on": ["<other-finding-id>"] | null
+    }
+  ],
   "verdict": "approved" | "needs_fix",
   "comment": "<markdown PR comment — list issues as `- [ ] ...`>",
   "fix_instructions": "<concise fix instructions, or null if approved>"
 }
 ```
 
-- `"approved"`: no actionable findings. `fix_instructions` must be `null`.
-- `"needs_fix"`: code changes needed. Populate `fix_instructions`.
+- `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
+- `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
+- Return an empty `findings` array when there are no issues.

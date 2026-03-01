@@ -490,27 +490,16 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
       \"category\": \"<category>\",
       \"depends_on\": [\"<other-finding-id>\"] | null
     }
-  ]
-}
-```
-
-- `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
-- `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
-- Return an empty `findings` array when there are no issues.
-
-Additionally include these top-level fields:
-
-```json
-{
+  ],
   \"verdict\": \"approved\" | \"needs_fix\",
   \"comment\": \"<markdown PR comment — list issues as `- [ ] ...`>\",
   \"fix_instructions\": \"<concise fix instructions, or null if approved>\"
 }
 ```
 
-- `\"approved\"`: no actionable findings. `fix_instructions` must be `null`.
-- `\"needs_fix\"`: code changes needed. Populate `fix_instructions`.
-";
+- `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
+- `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
+- Return an empty `findings` array when there are no issues.";
 
     assert_eq!(result, expected);
 }
