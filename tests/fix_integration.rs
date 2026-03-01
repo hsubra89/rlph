@@ -12,27 +12,7 @@ use rlph::test_helpers::make_finding;
 use rlph::runner::{RunResult, RunnerKind};
 use rlph::submission::{PrComment, REVIEW_MARKER, SubmissionBackend, SubmitResult};
 
-use common::run_git;
-
-/// Create a bare remote + working repo + push main.
-fn setup_git_repo() -> (tempfile::TempDir, tempfile::TempDir) {
-    let bare_dir = tempfile::TempDir::new().unwrap();
-    run_git(bare_dir.path(), &["init", "--bare"]);
-
-    let repo_dir = tempfile::TempDir::new().unwrap();
-    run_git(repo_dir.path(), &["init"]);
-    run_git(repo_dir.path(), &["config", "user.email", "test@test.com"]);
-    run_git(repo_dir.path(), &["config", "user.name", "Test"]);
-    run_git(repo_dir.path(), &["commit", "--allow-empty", "-m", "init"]);
-    run_git(repo_dir.path(), &["branch", "-M", "main"]);
-    run_git(
-        repo_dir.path(),
-        &["remote", "add", "origin", bare_dir.path().to_str().unwrap()],
-    );
-    run_git(repo_dir.path(), &["push", "-u", "origin", "main"]);
-
-    (bare_dir, repo_dir)
-}
+use common::{run_git, setup_git_repo};
 
 /// Create a remote PR branch with a commit.
 fn create_pr_branch(repo: &Path, branch: &str) {
