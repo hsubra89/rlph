@@ -925,8 +925,7 @@ mod tests {
         let end = result[start..].find(" -->").expect("closing comment") + start;
         let json_str = &result[start..end];
 
-        let parsed: ReviewFinding =
-            serde_json::from_str(json_str).expect("embedded JSON is valid");
+        let parsed: ReviewFinding = serde_json::from_str(json_str).expect("embedded JSON is valid");
         assert_eq!(parsed, findings[0]);
     }
 
