@@ -5,6 +5,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::{Error, Result};
 
+/// HTML comment marker used to embed finding JSON in PR comments.
+pub const FINDING_MARKER: &str = "<!-- rlph-finding:";
+
 /// Deserialize a `Vec<String>` that tolerates both absent keys and explicit `null`.
 ///
 /// `#[serde(default)]` handles a missing key, but an explicit `"depends_on": null` from
@@ -139,7 +142,7 @@ pub fn render_findings_for_prompt(
     result
 }
 
-fn capitalize_first(s: &str) -> String {
+pub fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
         None => String::new(),
@@ -160,11 +163,7 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
     }
 
     // Group by lowercase category, alphabetically via BTreeMap.
-    let mut groups: BTreeMap<String, Vec<&ReviewFinding>> = BTreeMap::new();
-    for f in findings {
-        let key = f.category.as_deref().unwrap_or("general").to_lowercase();
-        groups.entry(key).or_default().push(f);
-    }
+    let mut groups = group_by_category(findings, |f| f.category.as_deref());
 
     for (category, group) in &mut groups {
         let mut sorted: Vec<&ReviewFinding> = group.clone();
@@ -191,7 +190,7 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
             }
             let json = serde_json::to_string(f).expect("ReviewFinding serializes to JSON");
             let json = json.replace("--", r"\u002d\u002d");
-            write!(body, " <!-- rlph-finding:{json} -->").unwrap();
+            write!(body, " {FINDING_MARKER}{json} -->").unwrap();
         }
     }
 
@@ -265,6 +264,30 @@ pub fn correction_prompt(schema: SchemaName, parse_error: &str) -> String {
          {example}",
         example = schema.example_json(),
     )
+}
+
+/// Group items by their lowercase category, returning a `BTreeMap` for alphabetical ordering.
+///
+/// `category_fn` extracts the category `Option<&str>` from each item; `None` maps to `"general"`.
+pub fn group_by_category<'a, T>(
+    items: &'a [T],
+    category_fn: impl Fn(&'a T) -> Option<&'a str>,
+) -> BTreeMap<String, Vec<&'a T>> {
+    let mut groups: BTreeMap<String, Vec<&'a T>> = BTreeMap::new();
+    for item in items {
+        let key = category_fn(item).unwrap_or("general").to_lowercase();
+        groups.entry(key).or_default().push(item);
+    }
+    groups
+}
+
+/// Extract the raw JSON payload from a `<!-- rlph-finding:{json} -->` marker in a line.
+///
+/// Returns the JSON slice between the marker and ` -->`, or `None` if not found.
+pub fn extract_finding_json(line: &str) -> Option<&str> {
+    let start = line.find(FINDING_MARKER)? + FINDING_MARKER.len();
+    let end = line[start..].find(" -->")? + start;
+    Some(&line[start..end])
 }
 
 /// Remove markdown code fences from a string, returning the inner content.
@@ -910,10 +933,7 @@ mod tests {
 
     /// Extract the first `<!-- rlph-finding:{json} -->` payload from rendered output.
     fn extract_embedded_json(rendered: &str) -> &str {
-        let marker = "<!-- rlph-finding:";
-        let start = rendered.find(marker).expect("marker present") + marker.len();
-        let end = rendered[start..].find(" -->").expect("closing comment") + start;
-        &rendered[start..end]
+        extract_finding_json(rendered).expect("marker present")
     }
 
     #[test]

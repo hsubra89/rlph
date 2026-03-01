@@ -33,6 +33,14 @@ fn parse_pr_ref(s: &str) -> Result<u64, String> {
     })
 }
 
+/// Parse a PR ref or print an error and exit.
+fn parse_pr_ref_or_exit(s: &str) -> u64 {
+    parse_pr_ref(s).unwrap_or_else(|msg| {
+        eprintln!("error: {msg}");
+        std::process::exit(1);
+    })
+}
+
 fn init_logging() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -70,10 +78,7 @@ async fn main() {
             return;
         }
         Some(CliCommand::Review { ref pr_ref }) => {
-            let pr_number: u64 = parse_pr_ref(pr_ref).unwrap_or_else(|msg| {
-                eprintln!("error: {msg}");
-                std::process::exit(1);
-            });
+            let pr_number = parse_pr_ref_or_exit(pr_ref);
             let config = match Config::load(&cli) {
                 Ok(c) => c,
                 Err(e) => {
@@ -194,10 +199,7 @@ async fn main() {
             ref pr_ref,
             dry_run,
         }) => {
-            let pr_number: u64 = parse_pr_ref(pr_ref).unwrap_or_else(|msg| {
-                eprintln!("error: {msg}");
-                std::process::exit(1);
-            });
+            let pr_number = parse_pr_ref_or_exit(pr_ref);
 
             if !dry_run {
                 eprintln!("error: only --dry-run is supported currently");

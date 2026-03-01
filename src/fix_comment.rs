@@ -1,9 +1,8 @@
-use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::review_schema::ReviewFinding;
-
-const FINDING_MARKER: &str = "<!-- rlph-finding:";
+use crate::review_schema::{
+    FINDING_MARKER, ReviewFinding, capitalize_first, extract_finding_json, group_by_category,
+};
 
 /// State of a finding's checkbox in the review comment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,16 +111,7 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
     }
 
     // Group by category
-    let mut groups: BTreeMap<String, Vec<&FixItem>> = BTreeMap::new();
-    for item in items {
-        let cat = item
-            .finding
-            .category
-            .as_deref()
-            .unwrap_or("general")
-            .to_lowercase();
-        groups.entry(cat).or_default().push(item);
-    }
+    let groups = group_by_category(items, |item| item.finding.category.as_deref());
 
     let mut out = String::new();
     for (category, group) in &groups {
@@ -147,14 +137,6 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
     out
 }
 
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
-    }
-}
-
 /// Detect the checkbox state from a trimmed line prefix.
 fn detect_checkbox_state(trimmed: &str) -> Option<CheckboxState> {
     if trimmed.starts_with("- [ ] ") {
@@ -172,9 +154,7 @@ fn detect_checkbox_state(trimmed: &str) -> Option<CheckboxState> {
 
 /// Extract a `ReviewFinding` from the embedded JSON in a line.
 fn extract_finding_from_line(line: &str) -> Option<ReviewFinding> {
-    let start = line.find(FINDING_MARKER)? + FINDING_MARKER.len();
-    let end = line[start..].find(" -->")? + start;
-    let json = &line[start..end];
+    let json = extract_finding_json(line)?;
     serde_json::from_str(json).ok()
 }
 
