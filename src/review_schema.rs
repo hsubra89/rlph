@@ -213,6 +213,17 @@ pub enum FixStatus {
     Error,
 }
 
+/// Structured output from the standalone `rlph fix` agent.
+///
+/// Uses a tagged union so `"status": "fixed"` includes `commit_message`
+/// while `"status": "wont_fix"` includes `reason`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum StandaloneFixOutput {
+    Fixed { commit_message: String },
+    WontFix { reason: String },
+}
+
 /// Structured output from the review-fix agent.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FixOutput {
@@ -228,12 +239,20 @@ pub fn parse_fix_output(raw: &str) -> Result<FixOutput> {
         .map_err(|e| Error::Orchestrator(format!("failed to parse fix JSON: {e}")))
 }
 
+/// Parse the standalone fix agent's JSON output into `StandaloneFixOutput`.
+pub fn parse_standalone_fix_output(raw: &str) -> Result<StandaloneFixOutput> {
+    let json = strip_markdown_fences(raw);
+    serde_json::from_str(&json)
+        .map_err(|e| Error::Orchestrator(format!("failed to parse standalone fix JSON: {e}")))
+}
+
 /// Schema names for the correction prompt generator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemaName {
     Phase,
     Aggregator,
     Fix,
+    StandaloneFix,
 }
 
 impl SchemaName {
@@ -248,6 +267,9 @@ impl SchemaName {
             }
             SchemaName::Fix => {
                 r#"{"status": "fixed", "summary": "what was done", "files_changed": ["src/main.rs"]}"#
+            }
+            SchemaName::StandaloneFix => {
+                r#"{"status": "fixed", "commit_message": "finding-id: description of fix"}"#
             }
         }
     }
@@ -1024,5 +1046,71 @@ mod tests {
             "Outputs --> and --!> unescaped -- dangerous"
         );
         assert_eq!(parsed.depends_on, vec!["html--parse"]);
+    }
+
+    // ---- StandaloneFixOutput tests ----
+
+    #[test]
+    fn test_parse_standalone_fix_output_fixed() {
+        let json = r#"{"status": "fixed", "commit_message": "sql-injection: parameterize query"}"#;
+        let output = parse_standalone_fix_output(json).unwrap();
+        assert_eq!(
+            output,
+            StandaloneFixOutput::Fixed {
+                commit_message: "sql-injection: parameterize query".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_standalone_fix_output_wont_fix() {
+        let json = r#"{"status": "wont_fix", "reason": "False positive — the input is already sanitized"}"#;
+        let output = parse_standalone_fix_output(json).unwrap();
+        assert_eq!(
+            output,
+            StandaloneFixOutput::WontFix {
+                reason: "False positive — the input is already sanitized".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_standalone_fix_output_fenced() {
+        let input = "```json\n{\"status\": \"fixed\", \"commit_message\": \"fix: done\"}\n```";
+        let output = parse_standalone_fix_output(input).unwrap();
+        assert_eq!(
+            output,
+            StandaloneFixOutput::Fixed {
+                commit_message: "fix: done".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_standalone_fix_output_invalid_status() {
+        let json = r#"{"status": "maybe", "commit_message": "x"}"#;
+        assert!(parse_standalone_fix_output(json).is_err());
+    }
+
+    #[test]
+    fn test_parse_standalone_fix_output_missing_commit_message() {
+        let json = r#"{"status": "fixed"}"#;
+        assert!(parse_standalone_fix_output(json).is_err());
+    }
+
+    #[test]
+    fn test_parse_standalone_fix_output_missing_reason() {
+        let json = r#"{"status": "wont_fix"}"#;
+        assert!(parse_standalone_fix_output(json).is_err());
+    }
+
+    #[test]
+    fn test_correction_prompt_standalone_fix() {
+        let prompt = correction_prompt(SchemaName::StandaloneFix, "unexpected EOF");
+        assert!(prompt.contains("could not be parsed"));
+        assert!(prompt.contains("unexpected EOF"));
+        assert!(prompt.contains("commit_message"));
+        let example = SchemaName::StandaloneFix.example_json();
+        assert!(serde_json::from_str::<StandaloneFixOutput>(example).is_ok());
     }
 }

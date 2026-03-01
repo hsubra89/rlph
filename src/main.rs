@@ -8,8 +8,11 @@ use tracing_subscriber::EnvFilter;
 
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
+use rlph::fix;
 use rlph::fix_comment::{format_fix_items_for_display, parse_fix_items};
-use rlph::orchestrator::{Orchestrator, ReviewInvocation, build_task_vars};
+use rlph::orchestrator::{
+    DefaultCorrectionRunner, Orchestrator, ReviewInvocation, build_task_vars,
+};
 use rlph::prd;
 use rlph::prompts::PromptEngine;
 use rlph::runner::build_runner;
@@ -200,14 +203,30 @@ async fn main() {
             dry_run,
         }) => {
             let pr_number = parse_pr_ref_or_exit(pr_ref);
+            let submission = GitHubSubmission::new();
 
-            if !dry_run {
-                eprintln!("error: only --dry-run is supported currently");
-                std::process::exit(1);
+            if dry_run {
+                let comments = match submission.fetch_pr_comments(pr_number) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    }
+                };
+
+                let review_comment = comments.iter().find(|c| c.body.contains(REVIEW_MARKER));
+                let Some(review_comment) = review_comment else {
+                    eprintln!("No rlph review comment found on PR #{pr_number}.");
+                    std::process::exit(1);
+                };
+
+                let items = parse_fix_items(&review_comment.body);
+                print!("{}", format_fix_items_for_display(&items));
+                return;
             }
 
-            let submission = GitHubSubmission::new();
-            let comments = match submission.fetch_pr_comments(pr_number) {
+            // Non-dry-run: run the fix agent
+            let config = match Config::load(&cli) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -215,14 +234,32 @@ async fn main() {
                 }
             };
 
-            let review_comment = comments.iter().find(|c| c.body.contains(REVIEW_MARKER));
-            let Some(review_comment) = review_comment else {
-                eprintln!("No rlph review comment found on PR #{pr_number}.");
-                std::process::exit(1);
+            // Get PR context to determine the head branch
+            let pr_context = match submission.get_pr_context(pr_number) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
             };
 
-            let items = parse_fix_items(&review_comment.body);
-            print!("{}", format_fix_items_for_display(&items));
+            let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let prompt_engine = PromptEngine::new(None);
+
+            if let Err(e) = fix::run_fix(
+                pr_number,
+                &pr_context.head_branch,
+                &config,
+                &submission,
+                &prompt_engine,
+                &repo_root,
+                &DefaultCorrectionRunner,
+            )
+            .await
+            {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
             return;
         }
         Some(CliCommand::Prd {

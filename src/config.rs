@@ -99,6 +99,7 @@ pub struct ConfigFile {
     pub review_phases: Option<Vec<ReviewPhaseConfigFile>>,
     pub review_aggregate: Option<ReviewStepConfigFile>,
     pub review_fix: Option<ReviewStepConfigFile>,
+    pub fix: Option<ReviewStepConfigFile>,
     pub linear: Option<LinearConfigFile>,
 }
 
@@ -126,6 +127,7 @@ pub struct Config {
     pub review_phases: Vec<ReviewPhaseConfig>,
     pub review_aggregate: ReviewStepConfig,
     pub review_fix: ReviewStepConfig,
+    pub fix: ReviewStepConfig,
     pub linear: Option<LinearConfig>,
 }
 
@@ -408,6 +410,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
 
     let review_aggregate = resolve_step(file.review_aggregate, "review-aggregate")?;
     let review_fix = resolve_step(file.review_fix, "review-fix")?;
+    let fix = resolve_step(file.fix, "fix")?;
 
     let config = Config {
         source: cli
@@ -458,6 +461,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         review_phases,
         review_aggregate,
         review_fix,
+        fix,
         linear,
     };
     validate(&config)?;
@@ -525,6 +529,12 @@ fn validate(config: &Config) -> Result<()> {
         config.review_fix.runner,
         &config.review_fix.agent_effort,
         &config.review_fix.agent_variant,
+    )?;
+    validate_runner_flags(
+        "fix",
+        config.fix.runner,
+        &config.fix.agent_effort,
+        &config.fix.agent_variant,
     )?;
     if config.poll_seconds == 0 {
         return Err(Error::ConfigValidation(

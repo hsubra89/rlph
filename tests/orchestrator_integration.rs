@@ -150,6 +150,12 @@ impl AgentRunner for MockRunner {
                 stderr: String::new(),
                 session_id: None,
             }),
+            Phase::Fix => Ok(RunResult {
+                exit_code: 0,
+                stdout: r#"{"status":"fixed","commit_message":"fix: done"}"#.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
         }
     }
 }
@@ -288,6 +294,12 @@ impl AgentRunner for CountingRunner {
                 stderr: String::new(),
                 session_id: None,
             }),
+            Phase::Fix => Ok(RunResult {
+                exit_code: 0,
+                stdout: r#"{"status":"fixed","commit_message":"fix: done"}"#.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
         }
     }
 }
@@ -341,6 +353,12 @@ impl AgentRunner for FailAtPhaseRunner {
             Phase::ReviewFix => Ok(RunResult {
                 exit_code: 0,
                 stdout: r#"{"status":"fixed","summary":"done","files_changed":[]}"#.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+            Phase::Fix => Ok(RunResult {
+                exit_code: 0,
+                stdout: r#"{"status":"fixed","commit_message":"fix: done"}"#.into(),
                 stderr: String::new(),
                 session_id: None,
             }),
@@ -679,6 +697,7 @@ fn make_config(dry_run: bool) -> Config {
         review_phases: default_review_phases(),
         review_aggregate: default_review_step("review-aggregate"),
         review_fix: default_review_step("review-fix"),
+        fix: default_review_step("fix"),
         linear: None,
     }
 }
