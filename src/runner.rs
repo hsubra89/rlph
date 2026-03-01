@@ -253,7 +253,8 @@ fn extract_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f
         .unwrap_or(0);
     let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
     let total = input + cache_create + cache_read + output;
-    Some(total as f64 / context_window as f64 * 100.0)
+    let pct = total as f64 / context_window as f64 * 100.0;
+    Some(pct.min(100.0))
 }
 
 /// Default context window size for Claude models.
