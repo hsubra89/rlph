@@ -747,7 +747,8 @@ impl<
                         let phase_config =
                             self.config.review_phases.iter().find(|p| p.name == o.name);
                         let recovered = if let Some(pc) = phase_config {
-                            self.retry_with_correction(
+                            retry_with_correction(
+                                &self.correction_runner,
                                 o.session_id.as_deref(),
                                 pc.runner,
                                 &pc.agent_binary,
@@ -808,21 +809,21 @@ impl<
                 Ok(output) => output,
                 Err(e) => {
                     // Attempt session resume with correction prompt
-                    let recovered = self
-                        .retry_with_correction(
-                            agg_result.session_id.as_deref(),
-                            agg_config.runner,
-                            &agg_config.agent_binary,
-                            agg_config.agent_model.as_deref(),
-                            agg_config.agent_effort.as_deref(),
-                            agg_config.agent_variant.as_deref(),
-                            agg_config.agent_timeout,
-                            SchemaName::Aggregator,
-                            &e.to_string(),
-                            &worktree_info.path,
-                            parse_aggregator_output,
-                        )
-                        .await;
+                    let recovered = retry_with_correction(
+                        &self.correction_runner,
+                        agg_result.session_id.as_deref(),
+                        agg_config.runner,
+                        &agg_config.agent_binary,
+                        agg_config.agent_model.as_deref(),
+                        agg_config.agent_effort.as_deref(),
+                        agg_config.agent_variant.as_deref(),
+                        agg_config.agent_timeout,
+                        SchemaName::Aggregator,
+                        &e.to_string(),
+                        &worktree_info.path,
+                        parse_aggregator_output,
+                    )
+                    .await;
                     match recovered {
                         Some(output) => output,
                         None => {
@@ -901,21 +902,21 @@ impl<
                 }
                 Err(e) => {
                     // Attempt session resume with correction prompt for fix output
-                    let recovered = self
-                        .retry_with_correction(
-                            fix_result.session_id.as_deref(),
-                            fix_config.runner,
-                            &fix_config.agent_binary,
-                            fix_config.agent_model.as_deref(),
-                            fix_config.agent_effort.as_deref(),
-                            fix_config.agent_variant.as_deref(),
-                            fix_config.agent_timeout,
-                            SchemaName::Fix,
-                            &e.to_string(),
-                            &worktree_info.path,
-                            parse_fix_output,
-                        )
-                        .await;
+                    let recovered = retry_with_correction(
+                        &self.correction_runner,
+                        fix_result.session_id.as_deref(),
+                        fix_config.runner,
+                        &fix_config.agent_binary,
+                        fix_config.agent_model.as_deref(),
+                        fix_config.agent_effort.as_deref(),
+                        fix_config.agent_variant.as_deref(),
+                        fix_config.agent_timeout,
+                        SchemaName::Fix,
+                        &e.to_string(),
+                        &worktree_info.path,
+                        parse_fix_output,
+                    )
+                    .await;
                     match recovered {
                         Some(fix_output) => {
                             info!(
@@ -963,70 +964,6 @@ impl<
         }
 
         Ok(())
-    }
-
-    /// Attempt to resume a session with a correction prompt when JSON parsing fails.
-    ///
-    /// Re-parses the output inside the retry loop so that each subsequent attempt
-    /// uses the *actual* parse error from the previous correction (not the original).
-    /// Returns `Some(T)` on success, or `None` if no session_id is available or
-    /// all retry attempts fail.
-    #[allow(clippy::too_many_arguments)]
-    async fn retry_with_correction<T>(
-        &self,
-        session_id: Option<&str>,
-        runner_type: RunnerKind,
-        agent_binary: &str,
-        agent_model: Option<&str>,
-        agent_effort: Option<&str>,
-        agent_variant: Option<&str>,
-        agent_timeout: Option<u64>,
-        schema: SchemaName,
-        initial_error: &str,
-        working_dir: &Path,
-        parser: impl Fn(&str) -> Result<T>,
-    ) -> Option<T> {
-        const MAX_RETRIES: u32 = 2;
-        let session_id = session_id?;
-        let mut last_error = initial_error.to_string();
-
-        for attempt in 1..=MAX_RETRIES {
-            let prompt = correction_prompt(schema, &last_error);
-            info!(
-                session_id,
-                attempt, MAX_RETRIES, "resuming session with correction prompt"
-            );
-
-            match self
-                .correction_runner
-                .resume(
-                    runner_type,
-                    agent_binary,
-                    agent_model,
-                    agent_effort,
-                    agent_variant,
-                    session_id,
-                    &prompt,
-                    working_dir,
-                    agent_timeout.map(Duration::from_secs),
-                )
-                .await
-            {
-                Ok(corrected) => match parser(&corrected.stdout) {
-                    Ok(parsed) => return Some(parsed),
-                    Err(e) => {
-                        last_error = e.to_string();
-                        warn!(attempt, error = %last_error, "correction output still invalid");
-                    }
-                },
-                Err(e) => {
-                    warn!(attempt, error = %e, "correction resume failed");
-                    return None;
-                }
-            }
-        }
-
-        None
     }
 
     /// Parse the task selection from `.rlph/task.toml` written by the choose agent.
@@ -1095,6 +1032,69 @@ impl<
         info!(branch = worktree.branch, remote_branch, "pushed branch");
         Ok(())
     }
+}
+
+/// Attempt to resume a session with a correction prompt when JSON parsing fails.
+///
+/// Re-parses the output inside the retry loop so that each subsequent attempt
+/// uses the *actual* parse error from the previous correction (not the original).
+/// Returns `Some(T)` on success, or `None` if no session_id is available or
+/// all retry attempts fail.
+#[allow(clippy::too_many_arguments)]
+pub async fn retry_with_correction<T>(
+    correction_runner: &(impl CorrectionRunner + ?Sized),
+    session_id: Option<&str>,
+    runner_type: RunnerKind,
+    agent_binary: &str,
+    agent_model: Option<&str>,
+    agent_effort: Option<&str>,
+    agent_variant: Option<&str>,
+    agent_timeout: Option<u64>,
+    schema: SchemaName,
+    initial_error: &str,
+    working_dir: &Path,
+    parser: impl Fn(&str) -> Result<T>,
+) -> Option<T> {
+    const MAX_RETRIES: u32 = 2;
+    let session_id = session_id?;
+    let mut last_error = initial_error.to_string();
+
+    for attempt in 1..=MAX_RETRIES {
+        let prompt = correction_prompt(schema, &last_error);
+        info!(
+            session_id,
+            attempt, MAX_RETRIES, "resuming session with correction prompt"
+        );
+
+        match correction_runner
+            .resume(
+                runner_type,
+                agent_binary,
+                agent_model,
+                agent_effort,
+                agent_variant,
+                session_id,
+                &prompt,
+                working_dir,
+                agent_timeout.map(Duration::from_secs),
+            )
+            .await
+        {
+            Ok(corrected) => match parser(&corrected.stdout) {
+                Ok(parsed) => return Some(parsed),
+                Err(e) => {
+                    last_error = e.to_string();
+                    warn!(attempt, error = %last_error, "correction output still invalid");
+                }
+            },
+            Err(e) => {
+                warn!(attempt, error = %e, "correction resume failed");
+                return None;
+            }
+        }
+    }
+
+    None
 }
 
 /// Build the base set of template variables for a task.

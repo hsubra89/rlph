@@ -8,11 +8,10 @@ use tracing::{debug, info, warn};
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
 use crate::fix_comment::{CheckboxState, FixItem, FixResultKind, parse_fix_items, update_comment};
+use crate::orchestrator::{DefaultCorrectionRunner, retry_with_correction};
 use crate::prompts::PromptEngine;
-use crate::review_schema::{
-    SchemaName, StandaloneFixOutput, correction_prompt, parse_standalone_fix_output,
-};
-use crate::runner::{AgentRunner, Phase, RunResult, build_runner, resume_with_correction};
+use crate::review_schema::{SchemaName, StandaloneFixOutput, parse_standalone_fix_output};
+use crate::runner::{AgentRunner, Phase, RunResult, build_runner};
 use crate::submission::{REVIEW_MARKER, SubmissionBackend};
 use crate::worktree::validate_branch_name;
 
@@ -198,53 +197,27 @@ async fn parse_with_retry(
     match parse_standalone_fix_output(&run_result.stdout) {
         Ok(output) => Ok(output),
         Err(initial_err) => {
-            let session_id = run_result.session_id.as_deref().ok_or_else(|| {
+            let err_str = initial_err.to_string();
+            retry_with_correction(
+                &DefaultCorrectionRunner,
+                run_result.session_id.as_deref(),
+                fix_config.runner,
+                &fix_config.agent_binary,
+                fix_config.agent_model.as_deref(),
+                fix_config.agent_effort.as_deref(),
+                fix_config.agent_variant.as_deref(),
+                fix_config.agent_timeout,
+                SchemaName::StandaloneFix,
+                &err_str,
+                working_dir,
+                parse_standalone_fix_output,
+            )
+            .await
+            .ok_or_else(|| {
                 Error::Orchestrator(format!(
-                    "fix agent JSON parse failed and no session_id for retry: {initial_err}"
+                    "fix agent JSON parse failed and correction exhausted: {initial_err}"
                 ))
-            })?;
-
-            let mut last_error = initial_err.to_string();
-            const MAX_RETRIES: u32 = 2;
-
-            for attempt in 1..=MAX_RETRIES {
-                let prompt = correction_prompt(SchemaName::StandaloneFix, &last_error);
-                info!(
-                    session_id,
-                    attempt, MAX_RETRIES, "resuming session with correction prompt"
-                );
-
-                match resume_with_correction(
-                    fix_config.runner,
-                    &fix_config.agent_binary,
-                    fix_config.agent_model.as_deref(),
-                    fix_config.agent_effort.as_deref(),
-                    fix_config.agent_variant.as_deref(),
-                    session_id,
-                    &prompt,
-                    working_dir,
-                    fix_config.agent_timeout.map(Duration::from_secs),
-                )
-                .await
-                {
-                    Ok(corrected) => match parse_standalone_fix_output(&corrected.stdout) {
-                        Ok(output) => return Ok(output),
-                        Err(e) => {
-                            last_error = e.to_string();
-                            warn!(attempt, error = %last_error, "correction output still invalid");
-                        }
-                    },
-                    Err(e) => {
-                        return Err(Error::Orchestrator(format!(
-                            "fix agent correction resume failed: {e}"
-                        )));
-                    }
-                }
-            }
-
-            Err(Error::Orchestrator(format!(
-                "fix agent JSON correction exhausted after {MAX_RETRIES} retries: {last_error}"
-            )))
+            })
         }
     }
 }
