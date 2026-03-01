@@ -98,14 +98,12 @@ fn strong_connect<T: Eq + Hash + Clone + Ord>(
             if !state.indices.contains_key(dep) {
                 strong_connect(dep, edges, state);
                 let dep_low = state.lowlink[dep];
-                if let Some(node_low) = state.lowlink.get_mut(node) {
-                    *node_low = (*node_low).min(dep_low);
-                }
+                let node_low = state.lowlink.get_mut(node).expect("node lowlink set on entry");
+                *node_low = (*node_low).min(dep_low);
             } else if state.on_stack.contains(dep) {
                 let dep_index = state.indices[dep];
-                if let Some(node_low) = state.lowlink.get_mut(node) {
-                    *node_low = (*node_low).min(dep_index);
-                }
+                let node_low = state.lowlink.get_mut(node).expect("node lowlink set on entry");
+                *node_low = (*node_low).min(dep_index);
             }
         }
     }
