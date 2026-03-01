@@ -280,7 +280,8 @@ async fn main() {
         config.agent_variant.as_deref(),
         timeout,
         config.agent_timeout_retries,
-    );
+    )
+    .with_stream_prefix("implement".to_string());
     let submission = GitHubSubmission::new();
     let worktree_base = PathBuf::from(&config.worktree_dir);
     let worktree_mgr =
