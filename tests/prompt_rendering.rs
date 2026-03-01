@@ -1,6 +1,9 @@
 use std::collections::HashMap;
+use std::path::Path;
 
+use rlph::orchestrator::build_task_vars;
 use rlph::prompts::PromptEngine;
+use rlph::sources::Task;
 
 /// Real PR body from PR #94.
 const PR_BODY: &str = "\
@@ -52,24 +55,22 @@ Security and correctness reviews found no issues. Style review produced several 
 
 /// Variables shared by all phases (the "issue" block).
 fn base_vars() -> HashMap<String, String> {
-    HashMap::from([
-        (
-            "issue_title".into(),
-            "Add category to ReviewFinding, rewrite style review as sub-agent coordinator".into(),
-        ),
-        ("issue_number".into(), "94".into()),
-        (
-            "issue_url".into(),
-            "https://github.com/hsubra89/rlph/pull/94".into(),
-        ),
-        (
-            "branch_name".into(),
-            "style-review-subagents-and-category".into(),
-        ),
-        ("worktree_path".into(), "/tmp/wt-94".into()),
-        ("repo_path".into(), "/home/user/rlph".into()),
-        ("issue_body".into(), PR_BODY.into()),
-    ])
+    let task = Task {
+        id: "94".into(),
+        title: "Add category to ReviewFinding, rewrite style review as sub-agent coordinator"
+            .into(),
+        body: PR_BODY.into(),
+        url: "https://github.com/hsubra89/rlph/pull/94".into(),
+        labels: vec![],
+        priority: None,
+    };
+    build_task_vars(
+        &task,
+        Path::new("/home/user/rlph"),
+        "style-review-subagents-and-category",
+        Path::new("/tmp/wt-94"),
+        "main",
+    )
 }
 
 /// Extends `base_vars` with fields common to correctness/security/style reviews.

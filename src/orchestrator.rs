@@ -598,7 +598,7 @@ impl<
         worktree_info: &WorktreeInfo,
         existing_pr_number: Option<u64>,
     ) -> Result<()> {
-        let mut vars = self.build_task_vars(task, worktree_info);
+        let mut vars = self.initial_task_vars(task, worktree_info);
 
         // 7. Implement phase
         self.reporter.implement_started();
@@ -1044,7 +1044,7 @@ impl<
         Ok(selection.id)
     }
 
-    fn build_task_vars(&self, task: &Task, worktree: &WorktreeInfo) -> HashMap<String, String> {
+    fn initial_task_vars(&self, task: &Task, worktree: &WorktreeInfo) -> HashMap<String, String> {
         let mut vars = build_task_vars(
             task,
             &self.repo_root,
