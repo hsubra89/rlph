@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
@@ -250,10 +251,10 @@ async fn main() {
                 pr_number,
                 &pr_context.head_branch,
                 &config,
-                &submission,
+                Arc::new(submission),
                 &prompt_engine,
                 &repo_root,
-                &DefaultCorrectionRunner,
+                Arc::new(DefaultCorrectionRunner),
             )
             .await
             {
