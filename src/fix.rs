@@ -91,6 +91,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let mut join_set = tokio::task::JoinSet::new();
     let concurrency = Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES));
 
+    let mut skipped = 0usize;
     for item in &eligible {
         let item = (*item).clone();
         let fix_config = fix_config.clone();
@@ -103,6 +104,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
         let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
         if let Err(e) = validate_branch_name(&fix_branch) {
             warn!(finding_id = %item.finding.id, error = %e, "invalid fix branch name, skipping");
+            skipped += 1;
             continue;
         }
 
@@ -112,6 +114,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
             Ok(p) => p,
             Err(e) => {
                 warn!(finding_id = %item.finding.id, error = %e, "failed to render prompt, skipping");
+                skipped += 1;
                 continue;
             }
         };
@@ -145,6 +148,14 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
             )
             .await
         });
+    }
+
+    if skipped == eligible.len() {
+        return Err(Error::Orchestrator(format!(
+            "all {skipped} eligible fix item(s) were skipped due to validation errors"
+        )));
+    } else if skipped > 0 {
+        warn!(skipped, total = eligible.len(), "some fix items were skipped due to validation errors");
     }
 
     // 4. Collect results as each fix completes
