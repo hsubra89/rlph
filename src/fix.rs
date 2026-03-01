@@ -142,8 +142,14 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
                 agent_timeout_retries,
                 prompt: &prompt,
             };
-            run_single_fix(ctx, &worktree_dir, &repo_root, &*submission, &*correction_runner)
-                .await
+            run_single_fix(
+                ctx,
+                &worktree_dir,
+                &repo_root,
+                &*submission,
+                &*correction_runner,
+            )
+            .await
         });
     }
 
@@ -152,7 +158,11 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
             "all {skipped} eligible fix item(s) were skipped due to validation errors"
         )));
     } else if skipped > 0 {
-        warn!(skipped, total = eligible.len(), "some fix items were skipped due to validation errors");
+        warn!(
+            skipped,
+            total = eligible.len(),
+            "some fix items were skipped due to validation errors"
+        );
     }
 
     // 4. Collect results as each fix completes
@@ -206,8 +216,7 @@ async fn run_single_fix(
     );
 
     // Run the fix agent and handle results, ensuring worktree cleanup
-    let result =
-        run_fix_agent_and_apply(&ctx, &worktree_path, submission, correction_runner).await;
+    let result = run_fix_agent_and_apply(&ctx, &worktree_path, submission, correction_runner).await;
 
     // Clean up worktree (always, even on error)
     info!(
@@ -277,9 +286,13 @@ async fn run_fix_agent_and_apply(
     let run_result = runner.run(Phase::Fix, ctx.prompt, worktree_path).await?;
 
     // Parse StandaloneFixOutput JSON (with retry on failure)
-    let fix_output =
-        parse_fix_with_retry(&run_result, ctx.fix_config, worktree_path, correction_runner)
-            .await?;
+    let fix_output = parse_fix_with_retry(
+        &run_result,
+        ctx.fix_config,
+        worktree_path,
+        correction_runner,
+    )
+    .await?;
 
     info!(finding_id = %ctx.item.finding.id, ?fix_output, "fix agent completed");
 

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::{default_test_config, run_git, setup_git_repo};
+use common::{default_test_config, setup_git_repo};
 use rlph::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
 use rlph::error::{Error, Result};
 use rlph::orchestrator::{

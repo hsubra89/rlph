@@ -8,9 +8,9 @@ use rlph::error::{Error, Result};
 use rlph::fix::run_fix;
 use rlph::orchestrator::CorrectionRunner;
 use rlph::review_schema::{ReviewFinding, render_findings_for_github};
-use rlph::test_helpers::make_finding;
 use rlph::runner::{RunResult, RunnerKind};
 use rlph::submission::{PrComment, REVIEW_MARKER, SubmissionBackend, SubmitResult};
+use rlph::test_helpers::make_finding;
 
 use common::{default_test_config, run_git, setup_git_repo};
 
