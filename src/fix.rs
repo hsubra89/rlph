@@ -156,7 +156,7 @@ async fn run_fix_agent_and_apply(
     let run_result = runner.run(Phase::Fix, &prompt, ctx.worktree_path).await?;
 
     // 5. Parse FixOutput JSON (with retry on failure)
-    let fix_output = parse_with_retry(&run_result, fix_config, ctx.worktree_path).await?;
+    let fix_output = parse_fix_with_retry(&run_result, fix_config, ctx.worktree_path).await?;
 
     info!(finding_id = %item.finding.id, ?fix_output, "fix agent completed");
 
@@ -209,7 +209,7 @@ async fn run_fix_agent_and_apply(
 }
 
 /// Parse fix output with up to 2 retries via session resume.
-async fn parse_with_retry(
+async fn parse_fix_with_retry(
     run_result: &RunResult,
     fix_config: &ReviewStepConfig,
     working_dir: &Path,
