@@ -4,6 +4,7 @@ pub mod deps;
 pub mod error;
 pub mod fix;
 pub mod fix_comment;
+pub mod fix_deps;
 pub mod orchestrator;
 pub mod prd;
 pub mod process;
