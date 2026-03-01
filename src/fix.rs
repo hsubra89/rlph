@@ -42,7 +42,7 @@ pub async fn run_fix(
     validate_branch_name(pr_branch)?;
 
     // 1. Fetch review comment and parse checked items
-    info!(pr_number, "fetching PR comments");
+    info!(pr_number, "polling GitHub for PR comments");
     let comments = submission.fetch_pr_comments(pr_number)?;
     let review_comment = comments
         .iter()
@@ -210,6 +210,7 @@ async fn apply_fix_and_update_comment(
         .await
         .expect("comment update semaphore closed unexpectedly");
 
+    info!(ctx.pr_number, finding_id = %ctx.item.finding.id, "polling GitHub to re-fetch review comment");
     let comments = submission.fetch_pr_comments(ctx.pr_number)?;
     let fresh_body = comments
         .iter()
