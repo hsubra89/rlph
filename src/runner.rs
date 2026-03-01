@@ -236,21 +236,62 @@ const ICON_CHECK: &str = "✔";
 const ICON_CROSS: &str = "✘";
 const ICON_PLAY: &str = "▶";
 
+/// Default context window size for Claude models.
+const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
+
+/// Extract context usage percentage from an assistant event's `message.usage`.
+///
+/// Computes (input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+/// + output_tokens) / context_window * 100.
+fn extract_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f64> {
+    let usage = val.pointer("/message/usage")?;
+    let input = usage
+        .get("input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cache_create = usage
+        .get("cache_creation_input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cache_read = usage
+        .get("cache_read_input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let total = input + cache_create + cache_read + output;
+    let pct = total as f64 / context_window as f64 * 100.0;
+    Some(pct.min(100.0))
+}
+
 /// Format a single Claude stream-json event line and write the result to `sink`.
 ///
-/// Returns `true` if any output was written, `false` if the event was skipped.
-fn format_claude_line(prefix: &str, line: &str, sink: &mut impl std::io::Write) -> bool {
+/// `context_pct` is the latest known context usage percentage.
+///
+/// Returns `(wrote, updated_pct)` — whether any output was written, and the
+/// (possibly refreshed) context usage percentage for the caller to store.
+fn format_claude_line(
+    prefix: &str,
+    line: &str,
+    context_pct: Option<f64>,
+    sink: &mut impl std::io::Write,
+) -> (bool, Option<f64>) {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
-        return false;
+        return (false, context_pct);
     };
     let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
-        return false;
+        return (false, context_pct);
     };
     if event_type != "assistant" {
-        return false;
+        return (false, context_pct);
     }
+    // Compute possibly-updated context usage percentage from this event.
+    let context_pct = extract_context_pct(&val, DEFAULT_CONTEXT_WINDOW).or(context_pct);
+    let pct_tag = context_pct.map(|p| format!(" {p:.0}%")).unwrap_or_default();
     let Some(content) = val.pointer("/message/content").and_then(|v| v.as_array()) else {
-        return false;
+        return (false, context_pct);
     };
     let mut wrote = false;
     for block in content {
@@ -261,21 +302,21 @@ fn format_claude_line(prefix: &str, line: &str, sink: &mut impl std::io::Write) 
             "text" => {
                 if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
                     for text_line in text.lines() {
-                        let _ = writeln!(sink, "[{prefix}] {text_line}");
+                        let _ = writeln!(sink, "[{prefix}{pct_tag}] {text_line}");
                     }
                     wrote = true;
                 }
             }
             "tool_use" => {
                 if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                    let _ = writeln!(sink, "[{prefix}] {ICON_PLAY} {name}");
+                    let _ = writeln!(sink, "[{prefix}{pct_tag}] {ICON_PLAY} {name}");
                     wrote = true;
                 }
             }
             _ => {}
         }
     }
-    wrote
+    (wrote, context_pct)
 }
 
 /// Spawn a task that reads Claude stream-json lines from a channel and prints
@@ -289,8 +330,11 @@ fn spawn_claude_stream_formatter(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut stderr = std::io::stderr();
+        let mut context_pct: Option<f64> = None;
         while let Some(line) = rx.recv().await {
-            format_claude_line(&prefix, &line, &mut stderr);
+            let (_wrote, updated_pct) =
+                format_claude_line(&prefix, &line, context_pct, &mut stderr);
+            context_pct = updated_pct;
         }
     })
 }
@@ -1885,8 +1929,10 @@ mod tests {
     /// Helper: run `format_claude_line` for each input line and return collected output.
     fn run_claude_formatter(prefix: &str, lines: &[&str]) -> String {
         let mut buf = Vec::new();
+        let mut context_pct: Option<f64> = None;
         for line in lines {
-            format_claude_line(prefix, line, &mut buf);
+            let (_wrote, updated_pct) = format_claude_line(prefix, line, context_pct, &mut buf);
+            context_pct = updated_pct;
         }
         String::from_utf8(buf).unwrap()
     }
@@ -1964,5 +2010,43 @@ mod tests {
             &[r#"{"type":"assistant","message":{"content":[{"type":"thinking","text":"hmm"}]}}"#],
         );
         assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_claude_formatter_context_pct() {
+        // 100k input + 80k cache_read + 20k output = 200k total → 100% of 200k window
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100000,"cache_creation_input_tokens":0,"cache_read_input_tokens":80000,"output_tokens":20000}}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 100%] hi\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_context_pct_persists() {
+        // Context % from first event persists to second event (which has no usage).
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":20000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"b"}]}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 10%] a\n[impl 10%] b\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_context_pct_updates() {
+        // Context % updates when a newer event has usage data.
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":20000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"b"}],"usage":{"input_tokens":100000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 10%] a\n[impl 50%] b\n");
     }
 }
