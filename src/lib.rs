@@ -2,6 +2,7 @@ pub mod cli;
 pub mod config;
 pub mod deps;
 pub mod error;
+pub mod fix_comment;
 pub mod orchestrator;
 pub mod prd;
 pub mod process;

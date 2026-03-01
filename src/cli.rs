@@ -95,6 +95,16 @@ pub enum CliCommand {
         pr_ref: String,
     },
 
+    /// Fix review findings for an existing GitHub PR
+    Fix {
+        /// GitHub pull request number or URL
+        pr_ref: String,
+
+        /// Show parsed findings without applying fixes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Launch an interactive PRD-writing session
     Prd {
         /// Seed description for the PRD (optional)
@@ -265,6 +275,41 @@ mod tests {
                 assert_eq!(source.as_deref(), Some("linear"));
             }
             _ => panic!("expected Prd subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_fix_dry_run() {
+        let cli = Cli::parse_from(["rlph", "fix", "123", "--dry-run"]);
+        match cli.command {
+            Some(CliCommand::Fix { pr_ref, dry_run }) => {
+                assert_eq!(pr_ref, "123");
+                assert!(dry_run);
+            }
+            _ => panic!("expected Fix subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_fix_without_dry_run() {
+        let cli = Cli::parse_from(["rlph", "fix", "456"]);
+        match cli.command {
+            Some(CliCommand::Fix { pr_ref, dry_run }) => {
+                assert_eq!(pr_ref, "456");
+                assert!(!dry_run);
+            }
+            _ => panic!("expected Fix subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_fix_url() {
+        let cli = Cli::parse_from(["rlph", "fix", "https://github.com/owner/repo/pull/789"]);
+        match cli.command {
+            Some(CliCommand::Fix { pr_ref, .. }) => {
+                assert_eq!(pr_ref, "https://github.com/owner/repo/pull/789");
+            }
+            _ => panic!("expected Fix subcommand"),
         }
     }
 
