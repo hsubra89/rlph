@@ -356,28 +356,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
     if !join_set.is_empty() {
         info!(count = in_flight.len(), "graceful shutdown: waiting for in-flight fix agents");
         while let Some(result) = join_set.join_next().await {
-            match result {
-                Ok((finding_id, Ok(()))) => {
-                    info!(%finding_id, "fix completed during shutdown");
-                    in_flight.remove(&finding_id);
-                    completed.insert(finding_id);
-                }
-                Ok((finding_id, Err(e))) => {
-                    warn!(%finding_id, error = %e, "fix failed during shutdown");
-                    in_flight.remove(&finding_id);
-                    failed.insert(finding_id);
-                }
-                Err(e) => {
-                    let finding_id = task_finding_ids.remove(&e.id());
-                    if let Some(ref id) = finding_id {
-                        warn!(finding_id = id, error = %e, "fix task panicked during shutdown");
-                        in_flight.remove(id);
-                        failed.insert(id.clone());
-                    } else {
-                        warn!(error = %e, "fix task panicked during shutdown (unknown finding_id)");
-                    }
-                }
-            }
+            handle_join_result(result, &mut task_finding_ids, &mut in_flight, &mut completed, &mut failed);
         }
     }
 
@@ -425,26 +404,37 @@ fn drain_completed(
     failed: &mut HashSet<String>,
 ) {
     while let Some(result) = join_set.try_join_next() {
-        match result {
-            Ok((finding_id, Ok(()))) => {
-                info!(%finding_id, "fix completed successfully");
-                in_flight.remove(&finding_id);
-                completed.insert(finding_id);
-            }
-            Ok((finding_id, Err(e))) => {
-                warn!(%finding_id, error = %e, "fix agent failed");
-                in_flight.remove(&finding_id);
-                failed.insert(finding_id);
-            }
-            Err(e) => {
-                let finding_id = task_finding_ids.remove(&e.id());
-                if let Some(ref id) = finding_id {
-                    warn!(finding_id = id, error = %e, "fix task panicked");
-                    in_flight.remove(id);
-                    failed.insert(id.clone());
-                } else {
-                    warn!(error = %e, "fix task panicked (unknown finding_id)");
-                }
+        handle_join_result(result, task_finding_ids, in_flight, completed, failed);
+    }
+}
+
+/// Process one completed task result, updating tracking sets.
+fn handle_join_result(
+    result: std::result::Result<(String, Result<()>), tokio::task::JoinError>,
+    task_finding_ids: &mut HashMap<tokio::task::Id, String>,
+    in_flight: &mut HashSet<String>,
+    completed: &mut HashSet<String>,
+    failed: &mut HashSet<String>,
+) {
+    match result {
+        Ok((finding_id, Ok(()))) => {
+            info!(%finding_id, "fix completed");
+            in_flight.remove(&finding_id);
+            completed.insert(finding_id);
+        }
+        Ok((finding_id, Err(e))) => {
+            warn!(%finding_id, error = %e, "fix failed");
+            in_flight.remove(&finding_id);
+            failed.insert(finding_id);
+        }
+        Err(e) => {
+            let finding_id = task_finding_ids.remove(&e.id());
+            if let Some(ref id) = finding_id {
+                warn!(finding_id = id, error = %e, "fix task panicked");
+                in_flight.remove(id);
+                failed.insert(id.clone());
+            } else {
+                warn!(error = %e, "fix task panicked (unknown finding_id)");
             }
         }
     }
