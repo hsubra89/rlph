@@ -11,6 +11,7 @@ const DEFAULT_SECURITY_REVIEW: &str = include_str!("default_prompts/security-rev
 const DEFAULT_HYGIENE_REVIEW: &str = include_str!("default_prompts/hygiene-review-issue.md");
 const DEFAULT_REVIEW_AGGREGATE: &str = include_str!("default_prompts/review-aggregate-issue.md");
 const DEFAULT_REVIEW_FIX: &str = include_str!("default_prompts/review-fix-issue.md");
+const DEFAULT_FIX: &str = include_str!("default_prompts/fix-issue.md");
 const DEFAULT_PRD: &str = include_str!("default_prompts/prd.md");
 const FINDINGS_SCHEMA: &str = include_str!("default_prompts/_findings-schema.md");
 
@@ -23,6 +24,7 @@ fn default_template(phase: &str) -> Option<&'static str> {
         "hygiene-review" => Some(DEFAULT_HYGIENE_REVIEW),
         "review-aggregate" => Some(DEFAULT_REVIEW_AGGREGATE),
         "review-fix" => Some(DEFAULT_REVIEW_FIX),
+        "fix" => Some(DEFAULT_FIX),
         "prd" => Some(DEFAULT_PRD),
         _ => None,
     }
