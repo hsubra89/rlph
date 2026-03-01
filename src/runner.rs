@@ -236,6 +236,9 @@ const ICON_CHECK: &str = "✔";
 const ICON_CROSS: &str = "✘";
 const ICON_PLAY: &str = "▶";
 
+/// Default context window size for Claude models.
+const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
+
 /// Extract context usage percentage from an assistant event's `message.usage`.
 ///
 /// Computes (input_tokens + cache_creation_input_tokens + cache_read_input_tokens
@@ -256,9 +259,6 @@ fn extract_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f
     let pct = total as f64 / context_window as f64 * 100.0;
     Some(pct.min(100.0))
 }
-
-/// Default context window size for Claude models.
-const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 
 /// Format a single Claude stream-json event line and write the result to `sink`.
 ///
