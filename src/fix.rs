@@ -415,6 +415,7 @@ async fn push_to_pr_branch_with_retry(
     pr_branch: &str,
 ) -> Result<()> {
     let refspec = format!("{fix_branch}:{pr_branch}");
+    let mut last_err = String::new();
     for attempt in 1..=MAX_PUSH_ATTEMPTS {
         // Skip rebase on first attempt: worktree was just created from origin/<pr-branch>
         if attempt > 1 {
@@ -437,15 +438,14 @@ async fn push_to_pr_branch_with_retry(
                         error = %stderr.trim(),
                         "push conflict — retrying with fetch+rebase"
                     );
-                } else {
-                    return Err(Error::Orchestrator(format!(
-                        "git push origin {refspec} failed after {attempt} attempts: {stderr}"
-                    )));
                 }
+                last_err = stderr;
             }
         }
     }
-    unreachable!()
+    Err(Error::Orchestrator(format!(
+        "git push origin {refspec} failed after {MAX_PUSH_ATTEMPTS} attempts: {last_err}"
+    )))
 }
 
 #[cfg(test)]
