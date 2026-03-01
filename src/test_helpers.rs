@@ -12,3 +12,11 @@ pub fn make_finding(id: &str) -> ReviewFinding {
         depends_on: vec![],
     }
 }
+
+/// Create a `ReviewFinding` with `depends_on` set.
+pub fn make_finding_with_deps(id: &str, deps: &[&str]) -> ReviewFinding {
+    ReviewFinding {
+        depends_on: deps.iter().map(|s| s.to_string()).collect(),
+        ..make_finding(id)
+    }
+}

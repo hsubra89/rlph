@@ -21,6 +21,7 @@ const MAX_CONCURRENT_FIXES: usize = 2;
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
 use crate::fix_comment::{CheckboxState, FixItem, FixResultKind, parse_fix_items, update_comment};
+use crate::fix_deps::{FindingDeps, resolved_finding_ids};
 use crate::orchestrator::{CorrectionRunner, retry_with_correction};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{SchemaName, StandaloneFixOutput, parse_standalone_fix_output};
@@ -57,20 +58,24 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let (items, _comment_id) = fetch_and_parse_items(pr_number, &*submission, None)?;
     info!(total = items.len(), "parsed fix items from review comment");
 
-    // 2. Collect ALL eligible checked items
-    let eligible: Vec<&FixItem> = items
-        .iter()
-        .filter(|item| item.state == CheckboxState::Checked)
-        .collect();
+    // 2. Collect eligible checked items (respecting dependency ordering)
+    let finding_deps = FindingDeps::build(&items);
+    let resolved = resolved_finding_ids(&items);
 
-    if eligible.is_empty() {
-        info!("no checked items found — nothing to fix");
+    let (eligible_refs, _dep_blocked) = dep_eligible(
+        items.iter().filter(|i| i.state == CheckboxState::Checked),
+        &finding_deps,
+        &resolved,
+    );
+
+    if eligible_refs.is_empty() {
+        info!("no eligible items found — nothing to fix");
         return Ok(());
     }
 
     info!(
-        count = eligible.len(),
-        "found checked items for parallel fix"
+        count = eligible_refs.len(),
+        "found eligible items for parallel fix"
     );
 
     // 3. Pre-compute per-item data and spawn into JoinSet
@@ -88,7 +93,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let mut join_set = tokio::task::JoinSet::new();
 
     let mut skipped: usize = 0;
-    for item in &eligible {
+    for item in &eligible_refs {
         let item = (*item).clone();
 
         let Some(prepared) = prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine)
@@ -102,14 +107,14 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
         join_set.spawn(async move { acquire_and_run_fix(&shared, prepared, pr_number).await });
     }
 
-    if skipped == eligible.len() {
+    if skipped == eligible_refs.len() {
         return Err(Error::Orchestrator(format!(
             "all {skipped} eligible fix item(s) were skipped due to validation errors"
         )));
     } else if skipped > 0 {
         warn!(
             skipped,
-            total = eligible.len(),
+            total = eligible_refs.len(),
             "some fix items were skipped due to validation errors"
         );
     }
@@ -182,6 +187,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
     let mut failed: HashSet<String> = HashSet::new();
     let mut cycle: u64 = 0;
     let mut cached_comment_id: Option<u64> = None;
+    let mut finding_deps: Option<FindingDeps> = None;
 
     loop {
         cycle += 1;
@@ -227,20 +233,38 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             break;
         }
 
-        // Filter: checked AND not already tracked
-        let newly_checked: Vec<FixItem> = items
-            .into_iter()
-            .filter(|item| {
+        // Build dependency graph, rebuilding if item count changed (e.g. comment edited mid-loop)
+        let deps = match &finding_deps {
+            Some(existing) if !existing.is_stale(items.len()) => finding_deps.as_ref().unwrap(),
+            Some(_) => {
+                warn!(
+                    old_count = finding_deps.as_ref().unwrap().item_count(),
+                    new_count = items.len(),
+                    "review comment edited: item count changed, rebuilding dependency graph"
+                );
+                finding_deps.insert(FindingDeps::build(&items))
+            }
+            None => finding_deps.insert(FindingDeps::build(&items)),
+        };
+        let resolved = resolved_finding_ids(&items);
+
+        // Filter: checked AND not already tracked AND deps met
+        let (eligible_refs, dep_blocked) = dep_eligible(
+            items.iter().filter(|item| {
                 item.state == CheckboxState::Checked
                     && !in_flight.contains(&item.finding.id)
                     && !completed.contains(&item.finding.id)
                     && !failed.contains(&item.finding.id)
-            })
-            .collect();
+            }),
+            deps,
+            &resolved,
+        );
+        let newly_checked: Vec<FixItem> = eligible_refs.into_iter().cloned().collect();
 
         info!(
             cycle,
             newly_checked = newly_checked.len(),
+            dep_blocked,
             in_flight = in_flight.len(),
             completed = completed.len(),
             failed = failed.len(),
@@ -333,6 +357,37 @@ fn fetch_and_parse_items(
         })?;
     let comment_id = review_comment.id;
     Ok((parse_fix_items(&review_comment.body), comment_id))
+}
+
+/// Filter pre-screened items through the dependency gate.
+///
+/// Accepts an iterator of items that already passed caller-specific checks
+/// (e.g. `Checked` state, not already in-flight). Returns the dep-eligible
+/// subset and a count of items held back by unmet dependencies.
+fn dep_eligible<'a>(
+    items: impl Iterator<Item = &'a FixItem>,
+    deps: &FindingDeps,
+    resolved: &HashSet<&str>,
+) -> (Vec<&'a FixItem>, usize) {
+    let mut eligible = Vec::new();
+    let mut dep_blocked: usize = 0;
+    for item in items {
+        if deps.in_cycle(&item.finding.id) {
+            continue; // already warned during FindingDeps::build
+        }
+        if !deps.deps_met(&item.finding.id, resolved) {
+            dep_blocked += 1;
+            continue;
+        }
+        eligible.push(item);
+    }
+    if dep_blocked > 0 {
+        info!(
+            count = dep_blocked,
+            "items held back waiting for dependencies"
+        );
+    }
+    (eligible, dep_blocked)
 }
 
 /// Drain completed tasks from the JoinSet without blocking.
@@ -786,8 +841,9 @@ async fn push_to_pr_branch_with_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fix_deps::{FindingDeps, resolved_finding_ids};
     use crate::review_schema::render_findings_for_github;
-    use crate::test_helpers::make_finding;
+    use crate::test_helpers::{make_finding, make_finding_with_deps};
 
     #[test]
     fn test_fix_branch_name_is_valid() {
@@ -950,5 +1006,135 @@ mod tests {
             .collect();
 
         assert!(eligible.is_empty());
+    }
+
+    // --- Dependency-aware eligibility tests ---
+
+    /// Helper: render findings to a comment, apply state changes, and parse back.
+    fn render_and_parse(findings: &[crate::review_schema::ReviewFinding]) -> String {
+        render_findings_for_github(findings, "Summary.")
+    }
+
+    /// Apply a state change to a specific finding in the rendered comment.
+    fn set_state(comment: &str, finding_id: &str, old: &str, new: &str) -> String {
+        let target = format!("{finding_id} description");
+        comment
+            .lines()
+            .map(|line| {
+                if line.contains(&target) {
+                    line.replace(old, new)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn test_dependent_item_blocked_when_dep_unchecked() {
+        let findings = vec![make_finding("a"), make_finding_with_deps("b", &["a"])];
+        let comment = render_and_parse(&findings);
+        // Check both a and b
+        let comment = comment.replace("- [ ] ", "- [x] ");
+        let items = parse_fix_items(&comment);
+
+        let deps = FindingDeps::build(&items);
+        let resolved = resolved_finding_ids(&items);
+
+        // a has no deps → eligible
+        assert!(deps.deps_met("a", &resolved));
+        // b depends on a which is Checked (not Fixed) → blocked
+        assert!(!deps.deps_met("b", &resolved));
+    }
+
+    #[test]
+    fn test_dependent_item_unblocked_when_dep_fixed() {
+        let findings = vec![make_finding("a"), make_finding_with_deps("b", &["a"])];
+        let comment = render_and_parse(&findings);
+        // a is fixed, b is checked
+        let comment = set_state(&comment, "a", "- [ ] ", "- ✅ ");
+        let comment = set_state(&comment, "b", "- [ ] ", "- [x] ");
+        let items = parse_fix_items(&comment);
+
+        let deps = FindingDeps::build(&items);
+        let resolved = resolved_finding_ids(&items);
+
+        assert!(deps.deps_met("b", &resolved));
+    }
+
+    #[test]
+    fn test_dependent_item_unblocked_when_dep_wontfix() {
+        let findings = vec![make_finding("a"), make_finding_with_deps("b", &["a"])];
+        let comment = render_and_parse(&findings);
+        // a is wontfix, b is checked
+        let comment = set_state(&comment, "a", "- [ ] ", "- \u{1F635} ");
+        let comment = set_state(&comment, "b", "- [ ] ", "- [x] ");
+        let items = parse_fix_items(&comment);
+
+        let deps = FindingDeps::build(&items);
+        let resolved = resolved_finding_ids(&items);
+
+        assert!(deps.deps_met("b", &resolved));
+    }
+
+    #[test]
+    fn test_circular_deps_detected_in_rendered_comment() {
+        let findings = vec![
+            make_finding_with_deps("a", &["b"]),
+            make_finding_with_deps("b", &["a"]),
+        ];
+        let comment = render_and_parse(&findings);
+        let comment = comment.replace("- [ ] ", "- [x] ");
+        let items = parse_fix_items(&comment);
+
+        let deps = FindingDeps::build(&items);
+        assert!(deps.in_cycle("a"));
+        assert!(deps.in_cycle("b"));
+    }
+
+    #[test]
+    fn test_dep_chain_through_rendered_comment() {
+        let findings = vec![
+            make_finding("a"),
+            make_finding_with_deps("b", &["a"]),
+            make_finding_with_deps("c", &["b"]),
+        ];
+        let comment = render_and_parse(&findings);
+        let comment = comment.replace("- [ ] ", "- [x] ");
+        let items = parse_fix_items(&comment);
+
+        let deps = FindingDeps::build(&items);
+        let resolved = resolved_finding_ids(&items);
+
+        // Initially: a eligible, b and c blocked
+        assert!(deps.deps_met("a", &resolved));
+        assert!(!deps.deps_met("b", &resolved));
+        assert!(!deps.deps_met("c", &resolved));
+
+        // After a is fixed: b eligible, c still blocked
+        let comment2 = set_state(&render_and_parse(&findings), "a", "- [ ] ", "- ✅ ");
+        let comment2 = set_state(&comment2, "b", "- [ ] ", "- [x] ");
+        let comment2 = set_state(&comment2, "c", "- [ ] ", "- [x] ");
+        let items2 = parse_fix_items(&comment2);
+        let resolved2 = resolved_finding_ids(&items2);
+
+        assert!(deps.deps_met("b", &resolved2));
+        assert!(!deps.deps_met("c", &resolved2));
+    }
+
+    #[test]
+    fn test_unknown_dep_does_not_block() {
+        // Finding references a dependency not present in the comment
+        let findings = vec![make_finding_with_deps("a", &["nonexistent"])];
+        let comment = render_and_parse(&findings);
+        let comment = comment.replace("- [ ] ", "- [x] ");
+        let items = parse_fix_items(&comment);
+
+        let deps = FindingDeps::build(&items);
+        let resolved = resolved_finding_ids(&items);
+
+        // Unknown deps are ignored → eligible
+        assert!(deps.deps_met("a", &resolved));
     }
 }
