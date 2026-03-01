@@ -133,20 +133,17 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
                 .acquire()
                 .await
                 .expect("concurrency semaphore closed unexpectedly");
-            run_single_fix(
+            let ctx = FixContext {
                 item,
                 pr_number,
-                &pr_branch,
-                &fix_branch,
-                &fix_config,
+                pr_branch: &pr_branch,
+                fix_branch: &fix_branch,
+                fix_config: &fix_config,
                 agent_timeout_retries,
-                &worktree_dir,
-                &repo_root,
-                &prompt,
-                &*submission,
-                &*correction_runner,
-            )
-            .await
+                prompt: &prompt,
+            };
+            run_single_fix(ctx, &worktree_dir, &repo_root, &*submission, &*correction_runner)
+                .await
         });
     }
 
@@ -188,51 +185,33 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 }
 
 /// Run a single fix: create worktree, run agent, push, update comment, cleanup.
-#[allow(clippy::too_many_arguments)]
 async fn run_single_fix(
-    item: FixItem,
-    pr_number: u64,
-    pr_branch: &str,
-    fix_branch: &str,
-    fix_config: &ReviewStepConfig,
-    agent_timeout_retries: u32,
+    ctx: FixContext<'_>,
     worktree_dir: &str,
     repo_root: &Path,
-    prompt: &str,
     submission: &(impl SubmissionBackend + ?Sized),
     correction_runner: &(impl CorrectionRunner + ?Sized),
 ) -> Result<()> {
     let wm = WorktreeManager::new(
         repo_root.to_path_buf(),
         repo_root.join(worktree_dir),
-        pr_branch.to_string(),
+        ctx.pr_branch.to_string(),
     );
-    let worktree_path = wm.create_fresh(fix_branch, pr_branch)?.path;
+    let worktree_path = wm.create_fresh(ctx.fix_branch, ctx.pr_branch)?.path;
     info!(
-        finding_id = %item.finding.id,
+        finding_id = %ctx.item.finding.id,
         path = %worktree_path.display(),
-        branch = %fix_branch,
+        branch = %ctx.fix_branch,
         "created fix worktree"
     );
 
     // Run the fix agent and handle results, ensuring worktree cleanup
-    let result = run_fix_agent_and_apply(
-        &item,
-        pr_number,
-        pr_branch,
-        fix_branch,
-        &worktree_path,
-        fix_config,
-        agent_timeout_retries,
-        prompt,
-        submission,
-        correction_runner,
-    )
-    .await;
+    let result =
+        run_fix_agent_and_apply(&ctx, &worktree_path, submission, correction_runner).await;
 
     // Clean up worktree (always, even on error)
     info!(
-        finding_id = %item.finding.id,
+        finding_id = %ctx.item.finding.id,
         path = %worktree_path.display(),
         "cleaning up fix worktree"
     );
@@ -241,6 +220,17 @@ async fn run_single_fix(
     }
 
     result
+}
+
+/// Bundled context for a single fix operation, replacing long parameter lists.
+struct FixContext<'a> {
+    item: FixItem,
+    pr_number: u64,
+    pr_branch: &'a str,
+    fix_branch: &'a str,
+    fix_config: &'a ReviewStepConfig,
+    agent_timeout_retries: u32,
+    prompt: &'a str,
 }
 
 /// Build template variables from a fix item's finding.
@@ -265,51 +255,45 @@ fn build_finding_vars(item: &FixItem) -> HashMap<String, String> {
 }
 
 /// Inner function: spawn agent, parse output, rebase/push with retry, update comment.
-#[allow(clippy::too_many_arguments)]
 async fn run_fix_agent_and_apply(
-    item: &FixItem,
-    pr_number: u64,
-    pr_branch: &str,
-    fix_branch: &str,
+    ctx: &FixContext<'_>,
     worktree_path: &Path,
-    fix_config: &ReviewStepConfig,
-    agent_timeout_retries: u32,
-    prompt: &str,
     submission: &(impl SubmissionBackend + ?Sized),
     correction_runner: &(impl CorrectionRunner + ?Sized),
 ) -> Result<()> {
     // Spawn fix agent
-    info!(finding_id = %item.finding.id, "spawning fix agent");
+    info!(finding_id = %ctx.item.finding.id, "spawning fix agent");
     let runner = build_runner(
-        fix_config.runner,
-        &fix_config.agent_binary,
-        fix_config.agent_model.as_deref(),
-        fix_config.agent_effort.as_deref(),
-        fix_config.agent_variant.as_deref(),
-        fix_config.agent_timeout.map(Duration::from_secs),
-        agent_timeout_retries,
+        ctx.fix_config.runner,
+        &ctx.fix_config.agent_binary,
+        ctx.fix_config.agent_model.as_deref(),
+        ctx.fix_config.agent_effort.as_deref(),
+        ctx.fix_config.agent_variant.as_deref(),
+        ctx.fix_config.agent_timeout.map(Duration::from_secs),
+        ctx.agent_timeout_retries,
     )
     .with_stream_prefix("fix".to_string());
 
-    let run_result = runner.run(Phase::Fix, prompt, worktree_path).await?;
+    let run_result = runner.run(Phase::Fix, ctx.prompt, worktree_path).await?;
 
     // Parse StandaloneFixOutput JSON (with retry on failure)
     let fix_output =
-        parse_fix_with_retry(&run_result, fix_config, worktree_path, correction_runner).await?;
+        parse_fix_with_retry(&run_result, ctx.fix_config, worktree_path, correction_runner)
+            .await?;
 
-    info!(finding_id = %item.finding.id, ?fix_output, "fix agent completed");
+    info!(finding_id = %ctx.item.finding.id, ?fix_output, "fix agent completed");
 
     // Apply result and update comment
     let fix_result = match fix_output {
         StandaloneFixOutput::Fixed { commit_message } => {
-            info!(finding_id = %item.finding.id, commit_message, "fix applied — rebasing and pushing");
-            push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch)?;
+            info!(finding_id = %ctx.item.finding.id, commit_message, "fix applied — rebasing and pushing");
+            push_to_pr_branch_with_retry(worktree_path, ctx.fix_branch, ctx.pr_branch)?;
             FixResultKind::Fixed {
                 commit_message: commit_message.clone(),
             }
         }
         StandaloneFixOutput::WontFix { reason } => {
-            info!(finding_id = %item.finding.id, reason, "finding marked as won't fix");
+            info!(finding_id = %ctx.item.finding.id, reason, "finding marked as won't fix");
             FixResultKind::WontFix {
                 reason: reason.clone(),
             }
@@ -322,19 +306,22 @@ async fn run_fix_agent_and_apply(
         .await
         .expect("comment update semaphore closed unexpectedly");
 
-    info!(pr_number, finding_id = %item.finding.id, "polling GitHub to re-fetch review comment");
-    let comments = submission.fetch_pr_comments(pr_number)?;
+    info!(pr_number = ctx.pr_number, finding_id = %ctx.item.finding.id, "polling GitHub to re-fetch review comment");
+    let comments = submission.fetch_pr_comments(ctx.pr_number)?;
     let fresh_body = comments
         .iter()
         .find(|c| c.body.contains(REVIEW_MARKER))
         .map(|c| c.body.as_str())
         .ok_or_else(|| {
-            Error::Orchestrator(format!("review comment disappeared from PR #{}", pr_number))
+            Error::Orchestrator(format!(
+                "review comment disappeared from PR #{}",
+                ctx.pr_number
+            ))
         })?;
 
-    let updated_body = update_comment(fresh_body, &item.finding.id, &fix_result);
-    info!(pr_number, finding_id = %item.finding.id, "updating review comment");
-    submission.upsert_review_comment(pr_number, &updated_body)?;
+    let updated_body = update_comment(fresh_body, &ctx.item.finding.id, &fix_result);
+    info!(pr_number = ctx.pr_number, finding_id = %ctx.item.finding.id, "updating review comment");
+    submission.upsert_review_comment(ctx.pr_number, &updated_body)?;
 
     Ok(())
 }
