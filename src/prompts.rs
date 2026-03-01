@@ -8,7 +8,7 @@ const DEFAULT_IMPLEMENT: &str = include_str!("default_prompts/implement-issue.md
 const DEFAULT_CORRECTNESS_REVIEW: &str =
     include_str!("default_prompts/correctness-review-issue.md");
 const DEFAULT_SECURITY_REVIEW: &str = include_str!("default_prompts/security-review-issue.md");
-const DEFAULT_STYLE_REVIEW: &str = include_str!("default_prompts/style-review-issue.md");
+const DEFAULT_HYGIENE_REVIEW: &str = include_str!("default_prompts/hygiene-review-issue.md");
 const DEFAULT_REVIEW_AGGREGATE: &str = include_str!("default_prompts/review-aggregate-issue.md");
 const DEFAULT_REVIEW_FIX: &str = include_str!("default_prompts/review-fix-issue.md");
 const DEFAULT_PRD: &str = include_str!("default_prompts/prd.md");
@@ -20,7 +20,7 @@ fn default_template(phase: &str) -> Option<&'static str> {
         "implement" => Some(DEFAULT_IMPLEMENT),
         "correctness-review" => Some(DEFAULT_CORRECTNESS_REVIEW),
         "security-review" => Some(DEFAULT_SECURITY_REVIEW),
-        "style-review" => Some(DEFAULT_STYLE_REVIEW),
+        "hygiene-review" => Some(DEFAULT_HYGIENE_REVIEW),
         "review-aggregate" => Some(DEFAULT_REVIEW_AGGREGATE),
         "review-fix" => Some(DEFAULT_REVIEW_FIX),
         "prd" => Some(DEFAULT_PRD),
@@ -143,10 +143,10 @@ mod tests {
     }
 
     #[test]
-    fn test_load_default_style_review() {
+    fn test_load_default_hygiene_review() {
         let engine = PromptEngine::new(None);
-        let template = engine.load_template("style-review").unwrap();
-        assert!(template.contains("Style Review Coordinator"));
+        let template = engine.load_template("hygiene-review").unwrap();
+        assert!(template.contains("Hygiene Review Coordinator"));
         assert!(template.contains("{{base_branch}}"));
     }
 

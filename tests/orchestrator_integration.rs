@@ -1528,7 +1528,7 @@ async fn test_review_reports_phases_started() {
             assert_eq!(*count, 3);
             assert!(names.contains(&"correctness".to_string()));
             assert!(names.contains(&"security".to_string()));
-            assert!(names.contains(&"style".to_string()));
+            assert!(names.contains(&"hygiene".to_string()));
         }
         _ => unreachable!(),
     }
@@ -1568,7 +1568,7 @@ async fn test_review_reports_phase_completions() {
     let completion_set: HashSet<_> = completions.into_iter().collect();
     assert!(completion_set.contains("correctness"));
     assert!(completion_set.contains("security"));
-    assert!(completion_set.contains("style"));
+    assert!(completion_set.contains("hygiene"));
 }
 
 #[tokio::test]
