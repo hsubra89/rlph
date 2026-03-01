@@ -91,7 +91,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let mut join_set = tokio::task::JoinSet::new();
     let concurrency = Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES));
 
-    let mut skipped = 0usize;
+    let mut skipped: usize = 0;
     for item in &eligible {
         let item = (*item).clone();
         let fix_config = Arc::clone(&fix_config);
