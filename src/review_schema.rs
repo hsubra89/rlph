@@ -974,4 +974,36 @@ mod tests {
         assert_eq!(parsed.category, None);
         assert!(parsed.depends_on.is_empty());
     }
+
+    #[test]
+    fn test_github_render_embedded_json_escapes_double_dashes() {
+        let findings = vec![ReviewFinding {
+            id: "html-comment-close".to_string(),
+            file: "src/tmpl.rs".to_string(),
+            line: 10,
+            severity: Severity::Warning,
+            description: "Outputs --> and --!> unescaped -- dangerous".to_string(),
+            category: Some("security".to_string()),
+            depends_on: vec!["html--parse".to_string()],
+        }];
+        let result = render_findings_for_github(&findings, "Review.");
+
+        // The raw HTML must not contain bare -- inside the comment
+        let marker = "<!-- rlph-finding:";
+        let start = result.find(marker).unwrap() + marker.len();
+        let end = result[start..].find(" -->").unwrap() + start;
+        let json_str = &result[start..end];
+        assert!(
+            !json_str.contains("--"),
+            "bare -- found in embedded JSON: {json_str}"
+        );
+
+        // JSON unicode escapes round-trip back to original strings
+        let parsed: ReviewFinding = serde_json::from_str(json_str).unwrap();
+        assert_eq!(
+            parsed.description,
+            "Outputs --> and --!> unescaped -- dangerous"
+        );
+        assert_eq!(parsed.depends_on, vec!["html--parse"]);
+    }
 }
