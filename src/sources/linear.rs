@@ -9,11 +9,10 @@ use tracing::{debug, info, warn};
 use crate::config::Config;
 use crate::error::{Error, Result};
 
-use super::{Priority, Task, TaskSource};
+use super::{INITIAL_BACKOFF_MS, MAX_RETRIES, Priority, Task, TaskSource};
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 const LINEAR_CLI_CREDENTIALS: &str = ".config/linear/credentials.toml";
-use super::{INITIAL_BACKOFF_MS, MAX_RETRIES};
 
 /// Resolve the Linear API key: env var first, then Linear CLI credentials file.
 fn resolve_api_key(api_key_env: &str) -> Result<String> {
