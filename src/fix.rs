@@ -284,6 +284,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             let fix_branch = format!("rlph-fix-{pr_number}-{finding_id}");
             if let Err(e) = validate_branch_name(&fix_branch) {
                 warn!(finding_id, error = %e, "invalid fix branch name, skipping");
+                failed.insert(finding_id);
                 skipped += 1;
                 continue;
             }
@@ -293,6 +294,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
                 Ok(p) => p,
                 Err(e) => {
                     warn!(finding_id, error = %e, "failed to render prompt, skipping");
+                    failed.insert(finding_id);
                     skipped += 1;
                     continue;
                 }
