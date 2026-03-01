@@ -45,6 +45,23 @@ fn parse_pr_ref_or_exit(s: &str) -> u64 {
     })
 }
 
+/// Install a double-SIGINT handler: first signal sends `true` on the channel
+/// (graceful shutdown), second signal exits immediately with code 130.
+fn install_sigint_handler(first_message: &'static str) -> watch::Receiver<bool> {
+    let (tx, rx) = watch::channel(false);
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            eprintln!("{first_message}");
+            let _ = tx.send(true);
+        }
+        if tokio::signal::ctrl_c().await.is_ok() {
+            eprintln!("[rlph] Second SIGINT received; exiting immediately");
+            std::process::exit(130);
+        }
+    });
+    rx
+}
+
 fn init_logging() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -248,19 +265,9 @@ async fn main() {
             let prompt_engine = PromptEngine::new(None);
 
             // Set up SIGINT handler for graceful shutdown
-            let (shutdown_tx, shutdown_rx) = watch::channel(false);
-            tokio::spawn(async move {
-                if tokio::signal::ctrl_c().await.is_ok() {
-                    eprintln!(
-                        "[rlph] SIGINT received; completing in-flight fixes then exiting"
-                    );
-                    let _ = shutdown_tx.send(true);
-                }
-                if tokio::signal::ctrl_c().await.is_ok() {
-                    eprintln!("[rlph] Second SIGINT received; exiting immediately");
-                    std::process::exit(130);
-                }
-            });
+            let shutdown_rx = install_sigint_handler(
+                "[rlph] SIGINT received; completing in-flight fixes then exiting",
+            );
 
             if let Err(e) = fix::run_fix_loop(
                 pr_number,
@@ -390,19 +397,9 @@ async fn main() {
         repo_root,
     );
 
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    tokio::spawn(async move {
-        // First SIGINT: graceful shutdown after current iteration
-        if tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!("[rlph] SIGINT received; shutting down after current iteration");
-            let _ = shutdown_tx.send(true);
-        }
-        // Second SIGINT: force exit
-        if tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!("[rlph] Second SIGINT received; exiting immediately");
-            std::process::exit(130);
-        }
-    });
+    let shutdown_rx = install_sigint_handler(
+        "[rlph] SIGINT received; shutting down after current iteration",
+    );
 
     if let Err(e) = orchestrator.run_loop(Some(shutdown_rx)).await {
         if matches!(&e, rlph::error::Error::Interrupted) {
