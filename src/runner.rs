@@ -262,34 +262,32 @@ const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 
 /// Format a single Claude stream-json event line and write the result to `sink`.
 ///
-/// `context_pct` is the latest known context usage percentage (updated in-place
-/// from assistant events that carry usage data).
+/// `context_pct` is the latest known context usage percentage.
 ///
-/// Returns `true` if any output was written, `false` if the event was skipped.
+/// Returns `(wrote, updated_pct)` — whether any output was written, and the
+/// (possibly refreshed) context usage percentage for the caller to store.
 fn format_claude_line(
     prefix: &str,
     line: &str,
-    context_pct: &mut Option<f64>,
+    context_pct: Option<f64>,
     sink: &mut impl std::io::Write,
-) -> bool {
+) -> (bool, Option<f64>) {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
-        return false;
+        return (false, context_pct);
     };
     let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
-        return false;
+        return (false, context_pct);
     };
     if event_type != "assistant" {
-        return false;
+        return (false, context_pct);
     }
-    // Update context usage percentage from this event's usage data.
-    if let Some(pct) = extract_context_pct(&val, DEFAULT_CONTEXT_WINDOW) {
-        *context_pct = Some(pct);
-    }
+    // Compute possibly-updated context usage percentage from this event.
+    let context_pct = extract_context_pct(&val, DEFAULT_CONTEXT_WINDOW).or(context_pct);
     let pct_tag = context_pct
         .map(|p| format!(" {p:.0}%"))
         .unwrap_or_default();
     let Some(content) = val.pointer("/message/content").and_then(|v| v.as_array()) else {
-        return false;
+        return (false, context_pct);
     };
     let mut wrote = false;
     for block in content {
@@ -314,7 +312,7 @@ fn format_claude_line(
             _ => {}
         }
     }
-    wrote
+    (wrote, context_pct)
 }
 
 /// Spawn a task that reads Claude stream-json lines from a channel and prints
@@ -330,7 +328,9 @@ fn spawn_claude_stream_formatter(
         let mut stderr = std::io::stderr();
         let mut context_pct: Option<f64> = None;
         while let Some(line) = rx.recv().await {
-            format_claude_line(&prefix, &line, &mut context_pct, &mut stderr);
+            let (_wrote, updated_pct) =
+                format_claude_line(&prefix, &line, context_pct, &mut stderr);
+            context_pct = updated_pct;
         }
     })
 }
@@ -1927,7 +1927,8 @@ mod tests {
         let mut buf = Vec::new();
         let mut context_pct: Option<f64> = None;
         for line in lines {
-            format_claude_line(prefix, line, &mut context_pct, &mut buf);
+            let (_wrote, updated_pct) = format_claude_line(prefix, line, context_pct, &mut buf);
+            context_pct = updated_pct;
         }
         String::from_utf8(buf).unwrap()
     }
