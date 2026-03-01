@@ -181,19 +181,11 @@ fn tarjan_strong_connect(
 mod tests {
     use super::*;
     use crate::fix_comment::FixItem;
-    use crate::review_schema::{ReviewFinding, Severity};
+    use crate::test_helpers::make_finding_with_deps;
 
     fn make_item(id: &str, deps: &[&str], state: CheckboxState) -> FixItem {
         FixItem {
-            finding: ReviewFinding {
-                id: id.to_string(),
-                file: "src/main.rs".to_string(),
-                line: 42,
-                severity: Severity::Warning,
-                description: format!("{id} description"),
-                category: Some("correctness".to_string()),
-                depends_on: deps.iter().map(|s| s.to_string()).collect(),
-            },
+            finding: make_finding_with_deps(id, deps),
             state,
         }
     }
