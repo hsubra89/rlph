@@ -1,6 +1,8 @@
-use std::path::Path;
+mod common;
+
 use std::process::Command;
 
+use common::run_git;
 use rlph::worktree::WorktreeManager;
 use tempfile::TempDir;
 
@@ -38,20 +40,6 @@ fn init_temp_repo() -> TempDir {
     run(&["remote", "add", "origin", path_str]);
 
     dir
-}
-
-fn run_git(dir: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 fn create_remote_branch(repo: &TempDir, branch: &str) {

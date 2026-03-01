@@ -1,3 +1,5 @@
+mod common;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
@@ -5,9 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rlph::config::{
-    Config, ReviewPhaseConfig, ReviewStepConfig, default_review_phases, default_review_step,
-};
+use common::{default_test_config, setup_git_repo};
+use rlph::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
 use rlph::error::{Error, Result};
 use rlph::orchestrator::{
     CorrectionRunner, Orchestrator, ProgressReporter, ReviewInvocation, ReviewRunnerFactory,
@@ -675,30 +676,8 @@ fn make_task(number: u64, title: &str) -> Task {
 
 fn make_config(dry_run: bool) -> Config {
     Config {
-        source: "github".to_string(),
-        runner: RunnerKind::Claude,
-        submission: "github".to_string(),
-        label: "rlph".to_string(),
-        poll_seconds: 30,
-        worktree_dir: String::new(),
-        base_branch: "main".to_string(),
-        max_iterations: None,
         dry_run,
-        once: true,
-        continuous: false,
-        agent_binary: "claude".to_string(),
-        agent_model: None,
-        agent_timeout: None,
-        implement_timeout: None,
-        agent_effort: None,
-        agent_variant: None,
-        max_review_rounds: 3,
-        agent_timeout_retries: 2,
-        review_phases: default_review_phases(),
-        review_aggregate: default_review_step("review-aggregate"),
-        review_fix: default_review_step("review-fix"),
-        fix: default_review_step("fix"),
-        linear: None,
+        ..default_test_config()
     }
 }
 
@@ -716,47 +695,18 @@ fn make_review_vars(
     vars
 }
 
-/// Set up a git repo with a bare remote for testing.
-fn setup_git_repo() -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir) {
-    let bare_dir = tempfile::TempDir::new().unwrap();
-    run_git(bare_dir.path(), &["init", "--bare"]);
-
-    let repo_dir = tempfile::TempDir::new().unwrap();
-    run_git(repo_dir.path(), &["init"]);
-    run_git(repo_dir.path(), &["config", "user.email", "test@test.com"]);
-    run_git(repo_dir.path(), &["config", "user.name", "Test"]);
-    run_git(repo_dir.path(), &["commit", "--allow-empty", "-m", "init"]);
-    run_git(repo_dir.path(), &["branch", "-M", "main"]);
-    run_git(
-        repo_dir.path(),
-        &["remote", "add", "origin", bare_dir.path().to_str().unwrap()],
-    );
-    run_git(repo_dir.path(), &["push", "-u", "origin", "main"]);
-
+/// Set up a git repo with a bare remote and a worktree dir for testing.
+fn setup_git_repo_with_worktree() -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir) {
+    let (bare_dir, repo_dir) = setup_git_repo();
     let wt_dir = tempfile::TempDir::new().unwrap();
-
     (bare_dir, repo_dir, wt_dir)
-}
-
-fn run_git(dir: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("failed to run git");
-    assert!(
-        output.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 // --- Tests ---
 
 #[tokio::test]
 async fn test_full_loop_dry_run() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix the bug");
 
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
@@ -806,7 +756,7 @@ async fn test_full_loop_dry_run() {
 
 #[tokio::test]
 async fn test_full_loop_with_push() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix the bug");
 
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
@@ -867,7 +817,7 @@ async fn test_full_loop_with_push() {
 
 #[tokio::test]
 async fn test_no_eligible_tasks() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
 
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
@@ -894,7 +844,7 @@ async fn test_no_eligible_tasks() {
 
 #[tokio::test]
 async fn test_error_at_choose_phase() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     // Need 2+ tasks so choose phase actually runs (single task is auto-selected)
     let tasks = vec![make_task(42, "Fix bug"), make_task(43, "Add feature")];
 
@@ -927,7 +877,7 @@ async fn test_error_at_choose_phase() {
 
 #[tokio::test]
 async fn test_error_at_implement_phase() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let runner = FailAtPhaseRunner {
@@ -966,7 +916,7 @@ async fn test_error_at_implement_phase() {
 
 #[tokio::test]
 async fn test_error_at_review_phase() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let state_dir = repo_dir.path().join(".rlph-test-state");
@@ -1001,7 +951,7 @@ async fn test_error_at_review_phase() {
 
 #[tokio::test]
 async fn test_error_at_submission() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
@@ -1027,7 +977,7 @@ async fn test_error_at_submission() {
 
 #[tokio::test]
 async fn test_state_transitions_through_phases() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(7, "Add feature");
 
     let state_dir = repo_dir.path().join(".rlph-test-state");
@@ -1062,7 +1012,7 @@ async fn test_state_transitions_through_phases() {
 
 #[tokio::test]
 async fn test_worktree_cleaned_up_after_success() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
@@ -1097,7 +1047,7 @@ async fn test_worktree_cleaned_up_after_success() {
 
 #[tokio::test]
 async fn test_review_exhaustion_preserves_state() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let state_dir = repo_dir.path().join(".rlph-test-state");
@@ -1139,7 +1089,7 @@ async fn test_review_exhaustion_preserves_state() {
 
 #[tokio::test]
 async fn test_existing_pr_skips_submission() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
@@ -1174,7 +1124,7 @@ async fn test_existing_pr_skips_submission() {
 
 #[tokio::test]
 async fn test_continuous_mode_polls_with_empty_results() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
     let counts = Arc::new(RunnerCounts::default());
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
@@ -1211,7 +1161,7 @@ async fn test_continuous_mode_polls_with_empty_results() {
 
 #[tokio::test]
 async fn test_max_iterations_stops_at_limit() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
     let counts = Arc::new(RunnerCounts::default());
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
@@ -1247,7 +1197,7 @@ async fn test_max_iterations_stops_at_limit() {
 
 #[tokio::test]
 async fn test_continuous_shutdown_exits_between_iterations() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
     let counts = Arc::new(RunnerCounts::default());
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
@@ -1287,7 +1237,7 @@ async fn test_continuous_shutdown_exits_between_iterations() {
 
 #[tokio::test]
 async fn test_review_only_success_posts_comment_and_marks_review() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
@@ -1351,7 +1301,7 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
 
 #[tokio::test]
 async fn test_review_only_without_linked_issue_skips_mark_in_review() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(88, "Review branch");
 
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
@@ -1409,7 +1359,7 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
 
 #[tokio::test]
 async fn test_review_only_exhaustion_preserves_state() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(99, "Needs fixes");
 
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
@@ -1522,7 +1472,7 @@ fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
 
 #[tokio::test]
 async fn test_review_reports_phases_started() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
@@ -1556,7 +1506,7 @@ async fn test_review_reports_phases_started() {
 
 #[tokio::test]
 async fn test_review_reports_phase_completions() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
@@ -1593,7 +1543,7 @@ async fn test_review_reports_phase_completions() {
 
 #[tokio::test]
 async fn test_review_reports_summary() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
@@ -1622,7 +1572,7 @@ async fn test_review_reports_summary() {
 
 #[tokio::test]
 async fn test_review_reports_pr_url() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let (orchestrator, invocation, events) = build_review_orchestrator_with_reporter(
@@ -1695,7 +1645,7 @@ fn build_iteration_orchestrator_with_reporter<F: ReviewRunnerFactory>(
 
 #[tokio::test]
 async fn test_iteration_reports_fetching_tasks() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
@@ -1718,7 +1668,7 @@ async fn test_iteration_reports_fetching_tasks() {
 
 #[tokio::test]
 async fn test_iteration_reports_tasks_found() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
@@ -1741,7 +1691,7 @@ async fn test_iteration_reports_tasks_found() {
 
 #[tokio::test]
 async fn test_iteration_reports_task_selected() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
@@ -1767,7 +1717,7 @@ async fn test_iteration_reports_task_selected() {
 
 #[tokio::test]
 async fn test_iteration_reports_implement_started() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
@@ -1790,7 +1740,7 @@ async fn test_iteration_reports_implement_started() {
 
 #[tokio::test]
 async fn test_iteration_reports_pr_created() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
@@ -1822,7 +1772,7 @@ async fn test_iteration_reports_pr_created() {
 
 #[tokio::test]
 async fn test_iteration_reports_iteration_complete() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
@@ -1848,7 +1798,7 @@ async fn test_iteration_reports_iteration_complete() {
 
 #[tokio::test]
 async fn test_iteration_reports_full_event_sequence() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let (orchestrator, events) = build_iteration_orchestrator_with_reporter(
@@ -2166,7 +2116,7 @@ fn build_correction_test_orchestrator<F: ReviewRunnerFactory>(
 
 #[tokio::test]
 async fn test_phase_malformed_json_correction_succeeds() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let factory = MalformedPhaseFactory {
@@ -2204,7 +2154,7 @@ async fn test_phase_malformed_json_correction_succeeds() {
 
 #[tokio::test]
 async fn test_phase_malformed_json_correction_exhausted_fails_round() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let factory = MalformedPhaseFactory {
@@ -2250,7 +2200,7 @@ async fn test_phase_malformed_json_correction_exhausted_fails_round() {
 
 #[tokio::test]
 async fn test_aggregator_malformed_json_correction_succeeds() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let factory = MalformedAggregatorFactory {
@@ -2289,7 +2239,7 @@ async fn test_aggregator_malformed_json_correction_succeeds() {
 
 #[tokio::test]
 async fn test_aggregator_malformed_json_correction_exhausted_retries_round() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     // Aggregator always returns malformed JSON — after correction exhaustion the
@@ -2385,7 +2335,7 @@ fn build_fix_correction_orchestrator(
 
 #[tokio::test]
 async fn test_fix_malformed_json_correction_succeeds() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let factory = MalformedFixFactory::new("BROKEN FIX JSON");
@@ -2419,7 +2369,7 @@ async fn test_fix_malformed_json_correction_succeeds() {
 
 #[tokio::test]
 async fn test_fix_malformed_json_correction_exhausted_retries_round() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo();
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let factory = MalformedFixFactory::new("BROKEN FIX JSON");
