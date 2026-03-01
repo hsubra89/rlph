@@ -83,7 +83,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let worktree_dir = config.worktree_dir.clone();
     let agent_timeout_retries = config.agent_timeout_retries;
     let repo_root = repo_root.to_path_buf();
-    let pr_branch_owned = pr_branch.to_string();
+    let pr_branch = pr_branch.to_string();
 
     let mut join_set = tokio::task::JoinSet::new();
     let concurrency = Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES));
@@ -93,7 +93,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
         let fix_config = fix_config.clone();
         let worktree_dir = worktree_dir.clone();
         let repo_root = repo_root.clone();
-        let pr_branch = pr_branch_owned.clone();
+        let pr_branch = pr_branch.clone();
         let submission = Arc::clone(&submission);
         let correction_runner = Arc::clone(&correction_runner);
 
