@@ -162,11 +162,7 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
     // Group by lowercase category, alphabetically via BTreeMap.
     let mut groups: BTreeMap<String, Vec<&ReviewFinding>> = BTreeMap::new();
     for f in findings {
-        let key = f
-            .category
-            .as_deref()
-            .unwrap_or("general")
-            .to_lowercase();
+        let key = f.category.as_deref().unwrap_or("general").to_lowercase();
         groups.entry(key).or_default().push(f);
     }
 
