@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 
 /// Result of Tarjan's strongly connected components algorithm.
 pub struct TarjanScc<T> {
     pub components: Vec<Vec<T>>,
 }
 
-impl<T: Eq + std::hash::Hash + Clone + Ord> TarjanScc<T> {
+impl<T: Eq + Hash + Clone + Ord> TarjanScc<T> {
     /// Compute all SCCs from a directed edge map.
     ///
     /// Nodes are collected from both keys and values of `edges`, sorted for
@@ -72,7 +73,7 @@ impl<T> Default for TarjanState<T> {
     }
 }
 
-fn strong_connect<T: Eq + std::hash::Hash + Clone + Ord>(
+fn strong_connect<T: Eq + Hash + Clone + Ord>(
     node: &T,
     edges: &HashMap<T, HashSet<T>>,
     state: &mut TarjanState<T>,
