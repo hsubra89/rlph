@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -9,12 +8,12 @@ use tracing_subscriber::EnvFilter;
 
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
-use rlph::orchestrator::{Orchestrator, ReviewInvocation};
+use rlph::orchestrator::{Orchestrator, ReviewInvocation, build_task_vars};
 use rlph::prd;
 use rlph::prompts::PromptEngine;
 use rlph::runner::build_runner;
 use rlph::sources::AnySource;
-use rlph::sources::TaskSource;
+use rlph::sources::{Task, TaskSource};
 use rlph::sources::github::GitHubSource;
 use rlph::sources::linear::LinearSource;
 use rlph::state::StateManager;
@@ -132,21 +131,24 @@ async fn main() {
                 }
             }
 
-            let mut vars = HashMap::new();
-            vars.insert("issue_title".to_string(), issue_title);
-            vars.insert("issue_body".to_string(), issue_body);
-            vars.insert("issue_number".to_string(), issue_number);
-            vars.insert("issue_url".to_string(), issue_url);
+            let task = Task {
+                id: issue_number,
+                title: issue_title,
+                body: issue_body,
+                url: issue_url,
+                labels: vec![],
+                priority: None,
+            };
+            let mut vars = build_task_vars(
+                &task,
+                &repo_root,
+                &worktree_info.branch,
+                &worktree_info.path,
+                &config.base_branch,
+            );
             vars.insert("pr_number".to_string(), pr_context.number.to_string());
             vars.insert("pr_branch".to_string(), pr_context.head_branch.clone());
             vars.insert("pr_url".to_string(), pr_context.url.clone());
-            vars.insert("repo_path".to_string(), repo_root.display().to_string());
-            vars.insert("base_branch".to_string(), config.base_branch.clone());
-            vars.insert("branch_name".to_string(), worktree_info.branch.clone());
-            vars.insert(
-                "worktree_path".to_string(),
-                worktree_info.path.display().to_string(),
-            );
 
             let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
             let prompt_engine = PromptEngine::new(None);
