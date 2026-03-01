@@ -12,6 +12,9 @@ static COMMENT_UPDATE_LOCK: Semaphore = Semaphore::const_new(1);
 /// Maximum number of push attempts before giving up (rebase+retry on conflict).
 const MAX_PUSH_ATTEMPTS: u32 = 3;
 
+/// Maximum number of fetch retry attempts (git lock contention under concurrency).
+const MAX_FETCH_ATTEMPTS: u32 = 3;
+
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
 use crate::fix_comment::{CheckboxState, FixItem, FixResultKind, parse_fix_items, update_comment};
@@ -351,18 +354,36 @@ async fn parse_fix_with_retry(
     }
 }
 
-/// Run a git command in the given directory, mapping failures to [`Error::Orchestrator`].
-fn run_git(cwd: &Path, args: &[&str], label: &str) -> Result<String> {
-    git_in_dir(cwd, args).map_err(|stderr| Error::Orchestrator(format!("{label} failed: {stderr}")))
+/// Fetch a ref from origin with retries to handle git lock contention under concurrency.
+fn fetch_with_retry(cwd: &Path, refspec: &str) -> Result<()> {
+    let mut last_err = String::new();
+    for attempt in 1..=MAX_FETCH_ATTEMPTS {
+        match git_in_dir(cwd, &["fetch", "origin", refspec]) {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                warn!(
+                    attempt,
+                    max_attempts = MAX_FETCH_ATTEMPTS,
+                    error = %e.trim(),
+                    "git fetch origin {} failed",
+                    refspec
+                );
+                last_err = e;
+                if attempt < MAX_FETCH_ATTEMPTS {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+        }
+    }
+    Err(Error::Orchestrator(format!(
+        "git fetch origin {refspec} failed after {MAX_FETCH_ATTEMPTS} attempts: {}",
+        last_err.trim()
+    )))
 }
 
 /// Rebase current branch onto origin/<pr-branch>.
 fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
-    run_git(
-        worktree_path,
-        &["fetch", "origin", pr_branch],
-        &format!("git fetch origin {pr_branch}"),
-    )?;
+    fetch_with_retry(worktree_path, pr_branch)?;
 
     let remote_ref = format!("origin/{pr_branch}");
 
