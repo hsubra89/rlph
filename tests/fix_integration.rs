@@ -318,8 +318,7 @@ async fn test_parallel_fix_worktrees_cleaned_up() {
 /// comment will also have "beta" checked — simulating a user checking a new box
 /// between poll cycles.
 struct PollingMockSubmission {
-    comment_body: Mutex<String>,
-    upsert_calls: Mutex<Vec<String>>,
+    base: MockFixSubmission,
     fetch_count: AtomicUsize,
     /// Finding ID to dynamically "check" after the first fix completes.
     deferred_check_id: Option<String>,
@@ -328,56 +327,52 @@ struct PollingMockSubmission {
 impl PollingMockSubmission {
     fn new(initial_comment: String, deferred_check_id: Option<String>) -> Self {
         Self {
-            comment_body: Mutex::new(initial_comment),
-            upsert_calls: Mutex::new(Vec::new()),
+            base: MockFixSubmission::new(initial_comment),
             fetch_count: AtomicUsize::new(0),
             deferred_check_id,
         }
     }
 
     fn upsert_count(&self) -> usize {
-        self.upsert_calls.lock().unwrap().len()
+        self.base.upsert_count()
     }
 
     /// Compute the current comment body, applying deferred checkbox checks
     /// after the first fix completes.
     fn current_body(&self) -> String {
-        let mut body = self.comment_body.lock().unwrap().clone();
-        if let Some(ref id) = self.deferred_check_id {
-            let upsert_count = self.upsert_calls.lock().unwrap().len();
-            if upsert_count >= 1 {
-                body = body
-                    .lines()
-                    .map(|line| {
-                        if line.contains(&format!("{id} description"))
-                            && line.contains("- [ ]")
-                        {
-                            line.replace("- [ ] ", "- [x] ")
-                        } else {
-                            line.to_string()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-            }
+        let mut body = self.base.get_comment_body();
+        if let Some(ref id) = self.deferred_check_id
+            && self.base.upsert_count() >= 1
+        {
+            body = body
+                .lines()
+                .map(|line| {
+                    if line.contains(&format!("{id} description"))
+                        && line.contains("- [ ]")
+                    {
+                        line.replace("- [ ] ", "- [x] ")
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
         }
         body
     }
 }
 
 impl SubmissionBackend for PollingMockSubmission {
-    fn submit(&self, _: &str, _: &str, _: &str, _: &str) -> Result<SubmitResult> {
-        unimplemented!()
+    fn submit(&self, a: &str, b: &str, c: &str, d: &str) -> Result<SubmitResult> {
+        self.base.submit(a, b, c, d)
     }
 
-    fn find_existing_pr_for_issue(&self, _: u64) -> Result<Option<u64>> {
-        Ok(None)
+    fn find_existing_pr_for_issue(&self, issue_number: u64) -> Result<Option<u64>> {
+        self.base.find_existing_pr_for_issue(issue_number)
     }
 
-    fn upsert_review_comment(&self, _pr_number: u64, body: &str) -> Result<()> {
-        *self.comment_body.lock().unwrap() = body.to_string();
-        self.upsert_calls.lock().unwrap().push(body.to_string());
-        Ok(())
+    fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()> {
+        self.base.upsert_review_comment(pr_number, body)
     }
 
     fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
