@@ -432,7 +432,8 @@ async fn wait_or_shutdown(
             if changed.is_ok() {
                 *shutdown.borrow()
             } else {
-                false
+                // Sender dropped — no one can signal shutdown anymore, so exit gracefully.
+                true
             }
         }
     }
