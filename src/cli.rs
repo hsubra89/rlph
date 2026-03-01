@@ -67,6 +67,10 @@ pub struct Cli {
     #[arg(long)]
     pub agent_timeout: Option<u64>,
 
+    /// Implement phase timeout in seconds (default: 1800)
+    #[arg(long)]
+    pub implement_timeout: Option<u64>,
+
     /// Effort level for the agent (low, medium, high) — Claude/Codex runner only
     #[arg(long)]
     pub agent_effort: Option<String>,

@@ -91,6 +91,7 @@ pub struct ConfigFile {
     pub agent_binary: Option<String>,
     pub agent_model: Option<String>,
     pub agent_timeout: Option<u64>,
+    pub implement_timeout: Option<u64>,
     pub agent_effort: Option<String>,
     pub agent_variant: Option<String>,
     pub max_review_rounds: Option<u32>,
@@ -117,6 +118,7 @@ pub struct Config {
     pub agent_binary: String,
     pub agent_model: Option<String>,
     pub agent_timeout: Option<u64>,
+    pub implement_timeout: Option<u64>,
     pub agent_effort: Option<String>,
     pub agent_variant: Option<String>,
     pub max_review_rounds: u32,
@@ -321,6 +323,10 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         .or_else(|| default_effort.map(str::to_string));
     let global_variant = global_variant_override.clone();
     let global_timeout = cli.agent_timeout.or(file.agent_timeout).or(Some(600));
+    let implement_timeout = cli
+        .implement_timeout
+        .or(file.implement_timeout)
+        .or(Some(1800));
 
     let review_phases: Vec<ReviewPhaseConfig> = file
         .review_phases
@@ -438,6 +444,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         agent_binary: global_binary,
         agent_model: global_model,
         agent_timeout: global_timeout,
+        implement_timeout,
         agent_effort: global_effort,
         agent_variant: global_variant,
         max_review_rounds: cli
@@ -697,6 +704,7 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.agent_model.as_deref(), Some("claude-opus-4-6"));
         assert_eq!(config.agent_effort.as_deref(), Some("high"));
         assert_eq!(config.agent_timeout, Some(600));
+        assert_eq!(config.implement_timeout, Some(1800));
         assert_eq!(config.agent_timeout_retries, 2);
     }
 

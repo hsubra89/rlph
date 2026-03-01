@@ -220,6 +220,7 @@ mod tests {
             agent_binary: binary.to_string(),
             agent_model: model.map(str::to_string),
             agent_timeout: Some(600),
+            implement_timeout: Some(1800),
             agent_effort: Some("high".to_string()),
             agent_variant: None,
             max_review_rounds: 3,
