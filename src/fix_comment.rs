@@ -398,10 +398,7 @@ mod tests {
         let comment = render_findings_for_github(&[f], "S.");
         let items = parse_fix_items(&comment);
         assert_eq!(items.len(), 1);
-        assert_eq!(
-            items[0].finding.description,
-            "Outputs --> and -- unescaped"
-        );
+        assert_eq!(items[0].finding.description, "Outputs --> and -- unescaped");
     }
 
     // ---- Updater tests ----

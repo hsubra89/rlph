@@ -8,7 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
-use rlph::fix_comment::{parse_fix_items, format_fix_items_for_display};
+use rlph::fix_comment::{format_fix_items_for_display, parse_fix_items};
 use rlph::orchestrator::{Orchestrator, ReviewInvocation, build_task_vars};
 use rlph::prd;
 use rlph::prompts::PromptEngine;
