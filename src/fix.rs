@@ -62,18 +62,11 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let finding_deps = FindingDeps::build(&items);
     let resolved = resolved_finding_ids(&items);
 
-    let (eligible_refs, dep_blocked) = dep_eligible(
+    let (eligible_refs, _dep_blocked) = dep_eligible(
         items.iter().filter(|i| i.state == CheckboxState::Checked),
         &finding_deps,
         &resolved,
     );
-
-    if dep_blocked > 0 {
-        info!(
-            count = dep_blocked,
-            "items held back waiting for dependencies"
-        );
-    }
 
     if eligible_refs.is_empty() {
         info!("no eligible items found — nothing to fix");
@@ -268,13 +261,6 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         );
         let newly_checked: Vec<FixItem> = eligible_refs.into_iter().cloned().collect();
 
-        if dep_blocked > 0 {
-            info!(
-                count = dep_blocked,
-                "items held back waiting for dependencies"
-            );
-        }
-
         info!(
             cycle,
             newly_checked = newly_checked.len(),
@@ -394,6 +380,12 @@ fn dep_eligible<'a>(
             continue;
         }
         eligible.push(item);
+    }
+    if dep_blocked > 0 {
+        info!(
+            count = dep_blocked,
+            "items held back waiting for dependencies"
+        );
     }
     (eligible, dep_blocked)
 }
