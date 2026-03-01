@@ -70,7 +70,8 @@ impl FindingDeps {
     }
 
     /// Returns `true` if any finding has dependencies.
-    pub fn has_any_deps(&self) -> bool {
+    #[cfg(test)]
+    fn has_any_deps(&self) -> bool {
         !self.edges.is_empty()
     }
 }
