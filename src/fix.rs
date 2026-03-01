@@ -439,7 +439,7 @@ fn push_to_pr_branch_with_retry(
                     );
                 } else {
                     return Err(Error::Orchestrator(format!(
-                        "git push origin {refspec} failed after {MAX_PUSH_ATTEMPTS} attempts: {stderr}"
+                        "git push origin {refspec} failed after {attempt} attempts: {stderr}"
                     )));
                 }
             }
