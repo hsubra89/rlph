@@ -287,7 +287,7 @@ async fn run_fix_agent_and_apply(
     let fix_result = match fix_output {
         StandaloneFixOutput::Fixed { commit_message } => {
             info!(finding_id = %ctx.item.finding.id, commit_message, "fix applied — rebasing and pushing");
-            push_to_pr_branch_with_retry(worktree_path, ctx.fix_branch, ctx.pr_branch)?;
+            push_to_pr_branch_with_retry(worktree_path, ctx.fix_branch, ctx.pr_branch).await?;
             FixResultKind::Fixed {
                 commit_message: commit_message.clone(),
             }
@@ -362,7 +362,7 @@ async fn parse_fix_with_retry(
 }
 
 /// Fetch a ref from origin with retries to handle git lock contention under concurrency.
-fn fetch_with_retry(cwd: &Path, refspec: &str) -> Result<()> {
+async fn fetch_with_retry(cwd: &Path, refspec: &str) -> Result<()> {
     let mut last_err = String::new();
     for attempt in 1..=MAX_FETCH_ATTEMPTS {
         match git_in_dir(cwd, &["fetch", "origin", refspec]) {
@@ -377,7 +377,7 @@ fn fetch_with_retry(cwd: &Path, refspec: &str) -> Result<()> {
                 );
                 last_err = e;
                 if attempt < MAX_FETCH_ATTEMPTS {
-                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
         }
@@ -389,8 +389,8 @@ fn fetch_with_retry(cwd: &Path, refspec: &str) -> Result<()> {
 }
 
 /// Rebase current branch onto origin/<pr-branch>.
-fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
-    fetch_with_retry(worktree_path, pr_branch)?;
+async fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
+    fetch_with_retry(worktree_path, pr_branch).await?;
 
     let remote_ref = format!("origin/{pr_branch}");
 
@@ -409,7 +409,7 @@ fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
 ///
 /// On push failure (likely because another fix pushed first), fetches latest,
 /// rebases, and retries up to [`MAX_PUSH_ATTEMPTS`] times.
-fn push_to_pr_branch_with_retry(
+async fn push_to_pr_branch_with_retry(
     worktree_path: &Path,
     fix_branch: &str,
     pr_branch: &str,
@@ -418,7 +418,7 @@ fn push_to_pr_branch_with_retry(
     for attempt in 1..=MAX_PUSH_ATTEMPTS {
         // Skip rebase on first attempt: worktree was just created from origin/<pr-branch>
         if attempt > 1 {
-            rebase_onto(worktree_path, pr_branch)?;
+            rebase_onto(worktree_path, pr_branch).await?;
         }
 
         match git_in_dir(worktree_path, &["push", "origin", &refspec]) {
