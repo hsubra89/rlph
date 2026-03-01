@@ -671,6 +671,7 @@ fn make_config(dry_run: bool) -> Config {
         agent_binary: "claude".to_string(),
         agent_model: None,
         agent_timeout: None,
+        implement_timeout: None,
         agent_effort: None,
         agent_variant: None,
         max_review_rounds: 3,

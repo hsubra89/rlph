@@ -21,6 +21,7 @@ fn test_config(source: &str) -> Config {
         agent_binary: "claude".to_string(),
         agent_model: Some("claude-opus-4-6".to_string()),
         agent_timeout: Some(600),
+        implement_timeout: Some(1800),
         agent_effort: Some("high".to_string()),
         agent_variant: None,
         max_review_rounds: 3,

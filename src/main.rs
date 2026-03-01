@@ -158,7 +158,7 @@ async fn main() {
 
             let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
             let prompt_engine = PromptEngine::new(None);
-            let timeout = config.agent_timeout.map(Duration::from_secs);
+            let timeout = config.implement_timeout.map(Duration::from_secs);
             let factory = rlph::orchestrator::DefaultReviewRunnerFactory { stream: true };
             let orchestrator = Orchestrator::new(
                 source,
@@ -307,7 +307,7 @@ async fn main() {
         },
         _ => AnySource::GitHub(GitHubSource::new(&config)),
     };
-    let timeout = config.agent_timeout.map(Duration::from_secs);
+    let timeout = config.implement_timeout.map(Duration::from_secs);
     let runner = build_runner(
         config.runner,
         &config.agent_binary,
