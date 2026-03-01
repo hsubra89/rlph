@@ -119,6 +119,16 @@ cargo clippy         # Lint
 cargo fmt            # Format
 ```
 
+### Git hooks
+
+The repo includes a pre-commit hook at `.hooks/pre-commit`. To activate it, symlink it into your local `.git/hooks/`:
+
+```bash
+ln -sf ../../.hooks/pre-commit .git/hooks/pre-commit
+```
+
+This approach works in both the main checkout and git worktrees (unlike `core.hooksPath`, which breaks on relative paths in worktrees).
+
 ## Release Process
 
 Releases are automated through GitHub Actions in two ways:
