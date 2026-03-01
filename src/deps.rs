@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use tracing::warn;
 
+use crate::scc::TarjanScc;
 use crate::sources::Task;
 
 /// Parse dependency issue numbers from an issue body.
@@ -43,16 +44,6 @@ pub struct DependencyGraph {
     edges: HashMap<u64, HashSet<u64>>,
 }
 
-#[derive(Default)]
-struct TarjanState {
-    index: usize,
-    indices: HashMap<u64, usize>,
-    lowlink: HashMap<u64, usize>,
-    stack: Vec<u64>,
-    on_stack: HashSet<u64>,
-    components: Vec<Vec<u64>>,
-}
-
 impl DependencyGraph {
     /// Build a dependency graph from tasks by parsing each task's body for dependency patterns.
     pub fn build(tasks: &[Task]) -> Self {
@@ -71,28 +62,12 @@ impl DependencyGraph {
     }
 
     fn cycle_peers(&self) -> (HashMap<u64, HashSet<u64>>, Vec<Vec<u64>>) {
-        let all_nodes: HashSet<u64> = self
-            .edges
-            .keys()
-            .chain(self.edges.values().flat_map(|deps| deps.iter()))
-            .copied()
-            .collect();
-
-        let mut nodes: Vec<u64> = all_nodes.into_iter().collect();
-        nodes.sort_unstable();
-
-        let mut state = TarjanState::default();
-
-        for node in nodes {
-            if !state.indices.contains_key(&node) {
-                self.tarjan_strong_connect(node, &mut state);
-            }
-        }
+        let scc = TarjanScc::compute(&self.edges);
 
         let mut cycle_peers: HashMap<u64, HashSet<u64>> = HashMap::new();
         let mut cycles_for_log = Vec::new();
 
-        for component in state.components {
+        for component in &scc.components {
             let has_self_loop = component
                 .iter()
                 .any(|node| self.edges.get(node).is_some_and(|deps| deps.contains(node)));
@@ -104,9 +79,7 @@ impl DependencyGraph {
             component_sorted.sort_unstable();
             cycles_for_log.push(component_sorted);
 
-            // Peer set includes the node itself; harmless because a node's deps
-            // never contain itself (except self-loops, where this is correct).
-            let component_set: HashSet<u64> = component.into_iter().collect();
+            let component_set: HashSet<u64> = component.iter().copied().collect();
             for &node in &component_set {
                 cycle_peers
                     .entry(node)
@@ -118,46 +91,6 @@ impl DependencyGraph {
         cycles_for_log.sort_unstable();
 
         (cycle_peers, cycles_for_log)
-    }
-
-    fn tarjan_strong_connect(&self, node: u64, state: &mut TarjanState) {
-        state.indices.insert(node, state.index);
-        state.lowlink.insert(node, state.index);
-        state.index += 1;
-        state.stack.push(node);
-        state.on_stack.insert(node);
-
-        if let Some(deps) = self.edges.get(&node) {
-            let mut sorted_deps: Vec<u64> = deps.iter().copied().collect();
-            sorted_deps.sort_unstable();
-
-            for dep in sorted_deps {
-                if !state.indices.contains_key(&dep) {
-                    self.tarjan_strong_connect(dep, state);
-                    let dep_low = state.lowlink[&dep];
-                    if let Some(node_low) = state.lowlink.get_mut(&node) {
-                        *node_low = (*node_low).min(dep_low);
-                    }
-                } else if state.on_stack.contains(&dep) {
-                    let dep_index = state.indices[&dep];
-                    if let Some(node_low) = state.lowlink.get_mut(&node) {
-                        *node_low = (*node_low).min(dep_index);
-                    }
-                }
-            }
-        }
-
-        if state.lowlink[&node] == state.indices[&node] {
-            let mut component = Vec::new();
-            while let Some(stack_node) = state.stack.pop() {
-                state.on_stack.remove(&stack_node);
-                component.push(stack_node);
-                if stack_node == node {
-                    break;
-                }
-            }
-            state.components.push(component);
-        }
     }
 
     /// Filter tasks, returning only those whose dependencies are all in `done_ids`.

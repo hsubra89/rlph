@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
 use crate::fix_comment::{CheckboxState, FixItem};
+use crate::scc::TarjanScc;
 
 /// Dependency graph for review findings within a single PR.
 ///
@@ -39,11 +40,7 @@ impl FindingDeps {
             }
         }
 
-        let cycle_members = if edges.is_empty() {
-            HashSet::new()
-        } else {
-            detect_cycles(&edges)
-        };
+        let cycle_members = TarjanScc::compute(&edges).cycle_members(&edges);
         if !cycle_members.is_empty() {
             let mut sorted: Vec<&str> = cycle_members.iter().map(|s| s.as_str()).collect();
             sorted.sort();
@@ -100,98 +97,6 @@ pub fn resolved_finding_ids(items: &[FixItem]) -> HashSet<&str> {
         .filter(|i| matches!(i.state, CheckboxState::Fixed | CheckboxState::WontFix))
         .map(|i| i.finding.id.as_str())
         .collect()
-}
-
-// --- Tarjan's SCC for cycle detection ---
-
-#[derive(Default)]
-struct TarjanState {
-    index: usize,
-    indices: HashMap<String, usize>,
-    lowlink: HashMap<String, usize>,
-    stack: Vec<String>,
-    on_stack: HashSet<String>,
-    components: Vec<Vec<String>>,
-}
-
-/// Detect all finding IDs that are part of a dependency cycle.
-fn detect_cycles(edges: &HashMap<String, HashSet<String>>) -> HashSet<String> {
-    let mut all_nodes: HashSet<&str> = HashSet::new();
-    for (finding_id, deps) in edges {
-        all_nodes.insert(finding_id.as_str());
-        for dep in deps {
-            all_nodes.insert(dep.as_str());
-        }
-    }
-
-    let mut nodes: Vec<&str> = all_nodes.into_iter().collect();
-    nodes.sort();
-
-    let mut state = TarjanState::default();
-    for &node in &nodes {
-        if !state.indices.contains_key(node) {
-            tarjan_strong_connect(node, edges, &mut state);
-        }
-    }
-
-    let mut cycle_members = HashSet::new();
-    for component in &state.components {
-        let has_self_loop = component.iter().any(|node| {
-            edges
-                .get(node.as_str())
-                .is_some_and(|deps| deps.contains(node))
-        });
-        if component.len() > 1 || has_self_loop {
-            cycle_members.extend(component.iter().cloned());
-        }
-    }
-    cycle_members
-}
-
-fn tarjan_strong_connect(
-    node: &str,
-    edges: &HashMap<String, HashSet<String>>,
-    state: &mut TarjanState,
-) {
-    let node_owned = node.to_string();
-    state.indices.insert(node_owned.clone(), state.index);
-    state.lowlink.insert(node_owned.clone(), state.index);
-    state.index += 1;
-    state.stack.push(node_owned.clone());
-    state.on_stack.insert(node_owned);
-
-    if let Some(deps) = edges.get(node) {
-        let mut sorted_deps: Vec<&str> = deps.iter().map(|s| s.as_str()).collect();
-        sorted_deps.sort();
-
-        for dep in sorted_deps {
-            if !state.indices.contains_key(dep) {
-                tarjan_strong_connect(dep, edges, state);
-                let dep_low = state.lowlink[dep];
-                if let Some(node_low) = state.lowlink.get_mut(node) {
-                    *node_low = (*node_low).min(dep_low);
-                }
-            } else if state.on_stack.contains(dep) {
-                let dep_index = state.indices[dep];
-                if let Some(node_low) = state.lowlink.get_mut(node) {
-                    *node_low = (*node_low).min(dep_index);
-                }
-            }
-        }
-    }
-
-    if state.lowlink[node] == state.indices[node] {
-        let mut component = Vec::new();
-        while let Some(stack_node) = state.stack.pop() {
-            state.on_stack.remove(&stack_node);
-            let is_root = stack_node == node;
-            component.push(stack_node);
-            if is_root {
-                break;
-            }
-        }
-        state.components.push(component);
-    }
 }
 
 #[cfg(test)]
