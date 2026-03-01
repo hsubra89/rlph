@@ -423,10 +423,7 @@ impl<
             )
             .await;
 
-        info!("cleaning up worktree");
-        if let Err(e) = self.worktree_mgr.remove(&invocation.worktree_info.path) {
-            warn!(error = %e, "failed to clean up worktree");
-        }
+        self.cleanup_worktree(&invocation.worktree_info.path);
 
         match result {
             Ok(()) => {
@@ -543,10 +540,7 @@ impl<
             .await;
 
         // 11. Clean up worktree
-        info!("cleaning up worktree");
-        if let Err(e) = self.worktree_mgr.remove(&worktree_info.path) {
-            warn!(error = %e, "failed to clean up worktree");
-        }
+        self.cleanup_worktree(&worktree_info.path);
 
         match result {
             Ok(()) => {
@@ -562,6 +556,13 @@ impl<
                 warn!(error = %e, "iteration failed");
                 Err(e)
             }
+        }
+    }
+
+    fn cleanup_worktree(&self, path: &Path) {
+        info!("cleaning up worktree");
+        if let Err(e) = self.worktree_mgr.remove(path) {
+            warn!(error = %e, "failed to clean up worktree");
         }
     }
 
