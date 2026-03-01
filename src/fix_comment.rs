@@ -36,6 +36,7 @@ pub struct FixItem {
 }
 
 /// Result of applying a fix to a finding.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FixResultKind {
     Fixed { commit_message: String },
     WontFix { reason: String },
