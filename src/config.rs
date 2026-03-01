@@ -443,7 +443,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         max_review_rounds: cli
             .max_review_rounds
             .or(file.max_review_rounds)
-            .unwrap_or(3),
+            .unwrap_or(1),
         agent_timeout_retries: cli
             .agent_timeout_retries
             .or(file.agent_timeout_retries)
