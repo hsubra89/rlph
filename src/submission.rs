@@ -1,5 +1,6 @@
 use std::process::Command;
 
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use tracing::info;
 
@@ -326,43 +327,31 @@ impl SubmissionBackend for GitHubSubmission {
 
     fn fetch_pr_comments(&self, pr_number: u64) -> Result<Vec<PrComment>> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments");
-        let output = Command::new("gh")
-            .args(["api", &endpoint])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!(
-                "gh api fetch comments failed: {stderr}"
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let comments: Vec<PrComment> = serde_json::from_str(&stdout)
-            .map_err(|e| Error::Submission(format!("failed to parse comments json: {e}")))?;
-        Ok(comments)
+        run_gh_api(&endpoint)
     }
 
     fn fetch_comment_by_id(&self, comment_id: u64) -> Result<PrComment> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}");
-        let output = Command::new("gh")
-            .args(["api", &endpoint])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!(
-                "gh api fetch comment {comment_id} failed: {stderr}"
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let comment: PrComment = serde_json::from_str(&stdout)
-            .map_err(|e| Error::Submission(format!("failed to parse comment json: {e}")))?;
-        Ok(comment)
+        run_gh_api(&endpoint)
     }
+}
+
+fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
+    let output = Command::new("gh")
+        .args(["api", endpoint])
+        .output()
+        .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Submission(format!(
+            "gh api {endpoint} failed: {stderr}"
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout)
+        .map_err(|e| Error::Submission(format!("failed to parse gh api response: {e}")))
 }
 
 /// Parse PR number from a URL like `https://github.com/owner/repo/pull/123`.
