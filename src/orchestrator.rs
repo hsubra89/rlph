@@ -423,14 +423,11 @@ impl<
             )
             .await;
 
+        self.cleanup_worktree(&invocation.worktree_info.path);
+
         match result {
             Ok(()) => {
                 self.state_mgr.complete_current_task()?;
-
-                info!("cleaning up worktree");
-                if let Err(e) = self.worktree_mgr.remove(&invocation.worktree_info.path) {
-                    warn!(error = %e, "failed to clean up worktree");
-                }
                 let _ = self
                     .state_mgr
                     .remove_worktree_mapping(&invocation.task_id_for_state);
@@ -542,16 +539,14 @@ impl<
             .run_implement_review(&task, issue_number, &worktree_info, existing_pr_number)
             .await;
 
+        // 11. Clean up worktree
+        self.cleanup_worktree(&worktree_info.path);
+
         match result {
             Ok(()) => {
-                // 11. Mark done — skipped; GitHub auto-closes the issue when the PR merges
+                // 12. Mark done — no explicit source.mark_done() call; GitHub auto-closes
+                //     the issue when the PR merges
                 self.state_mgr.complete_current_task()?;
-
-                // 12. Clean up worktree
-                info!("cleaning up worktree");
-                if let Err(e) = self.worktree_mgr.remove(&worktree_info.path) {
-                    warn!(error = %e, "failed to clean up worktree");
-                }
                 let _ = self.state_mgr.remove_worktree_mapping(&task_id);
 
                 info!("iteration complete");
@@ -562,6 +557,13 @@ impl<
                 warn!(error = %e, "iteration failed");
                 Err(e)
             }
+        }
+    }
+
+    fn cleanup_worktree(&self, path: &Path) {
+        info!("cleaning up worktree");
+        if let Err(e) = self.worktree_mgr.remove(path) {
+            warn!(error = %e, "failed to clean up worktree");
         }
     }
 

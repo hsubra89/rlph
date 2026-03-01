@@ -1420,7 +1420,7 @@ async fn test_review_only_exhaustion_preserves_state() {
     assert!(state.current_task.is_some());
     assert_eq!(state.current_task.unwrap().phase, "review");
     assert!(state.history.is_empty());
-    assert!(worktree_info.path.exists());
+    assert!(!worktree_info.path.exists());
 }
 
 // --- ProgressReporter output tests ---
