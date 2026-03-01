@@ -100,8 +100,8 @@ struct TarjanState {
 /// Detect all finding IDs that are part of a dependency cycle.
 fn detect_cycles(edges: &HashMap<String, HashSet<String>>) -> HashSet<String> {
     let mut all_nodes: HashSet<&str> = HashSet::new();
-    for (k, deps) in edges {
-        all_nodes.insert(k.as_str());
+    for (finding_id, deps) in edges {
+        all_nodes.insert(finding_id.as_str());
         for dep in deps {
             all_nodes.insert(dep.as_str());
         }
