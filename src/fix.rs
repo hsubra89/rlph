@@ -72,7 +72,8 @@ pub async fn run_fix(
     );
 
     // 3. Create worktree off origin/<pr-branch>
-    let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
+    let id = &item.finding.id;
+    let fix_branch = format!("rlph-fix-{pr_number}-{id}");
     validate_branch_name(&fix_branch)?;
 
     let worktree_path =
