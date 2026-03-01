@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::Command;
 
-pub fn run_git(dir: &Path, args: &[&str]) -> String {
+pub fn run_git(dir: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -14,7 +14,6 @@ pub fn run_git(dir: &Path, args: &[&str]) -> String {
         dir.display(),
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 /// Create a bare remote + working repo with an initial commit pushed to main.
