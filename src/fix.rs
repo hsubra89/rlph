@@ -129,11 +129,7 @@ fn build_finding_vars(item: &FixItem) -> HashMap<String, String> {
     );
     vars.insert(
         "finding_depends_on".to_string(),
-        if item.finding.depends_on.is_empty() {
-            String::new()
-        } else {
-            item.finding.depends_on.join(", ")
-        },
+        item.finding.depends_on.join(", "),
     );
     vars
 }
