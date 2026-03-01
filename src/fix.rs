@@ -69,7 +69,8 @@ pub async fn run_fix(
     let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
     validate_branch_name(&fix_branch)?;
 
-    let worktree_path = create_fix_worktree(repo_root, pr_branch, &fix_branch)?;
+    let worktree_path =
+        create_fix_worktree(repo_root, &config.worktree_dir, pr_branch, &fix_branch)?;
     info!(path = %worktree_path.display(), branch = %fix_branch, "created fix worktree");
 
     // Run the fix agent and handle results, ensuring worktree cleanup
@@ -246,7 +247,12 @@ async fn parse_with_retry(
 }
 
 /// Create a worktree for the fix branch, branching off origin/<pr-branch>.
-fn create_fix_worktree(repo_root: &Path, pr_branch: &str, fix_branch: &str) -> Result<PathBuf> {
+fn create_fix_worktree(
+    repo_root: &Path,
+    worktree_dir: &str,
+    pr_branch: &str,
+    fix_branch: &str,
+) -> Result<PathBuf> {
     // Fetch latest PR branch
     info!(pr_branch, "fetching latest PR branch from origin");
     git(repo_root, &["fetch", "origin", pr_branch])?;
@@ -254,7 +260,7 @@ fn create_fix_worktree(repo_root: &Path, pr_branch: &str, fix_branch: &str) -> R
     let remote_ref = format!("origin/{pr_branch}");
 
     // Determine worktree path
-    let worktree_dir = repo_root.join("..").join("rlph-worktrees");
+    let worktree_dir = repo_root.join(worktree_dir);
     std::fs::create_dir_all(&worktree_dir).map_err(|e| {
         Error::Worktree(format!(
             "failed to create worktree dir {}: {e}",
