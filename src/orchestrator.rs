@@ -271,7 +271,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             prompt_engine,
             config,
             repo_root,
-            review_factory: DefaultReviewRunnerFactory::default(),
+            review_factory: DefaultReviewRunnerFactory { stream: true },
             reporter: StderrReporter,
             correction_runner: DefaultCorrectionRunner,
         }
