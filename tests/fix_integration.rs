@@ -3,7 +3,7 @@ mod common;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use rlph::config::{Config, ReviewStepConfig, default_review_phases, default_review_step};
+use rlph::config::{Config, ReviewStepConfig};
 use rlph::error::{Error, Result};
 use rlph::fix::run_fix;
 use rlph::orchestrator::CorrectionRunner;
@@ -12,7 +12,7 @@ use rlph::test_helpers::make_finding;
 use rlph::runner::{RunResult, RunnerKind};
 use rlph::submission::{PrComment, REVIEW_MARKER, SubmissionBackend, SubmitResult};
 
-use common::{run_git, setup_git_repo};
+use common::{default_test_config, run_git, setup_git_repo};
 
 /// Create a remote PR branch with a commit.
 fn create_pr_branch(repo: &Path, branch: &str) {
@@ -73,30 +73,9 @@ fn make_fix_step_config(agent_binary: String) -> ReviewStepConfig {
 
 fn make_config() -> Config {
     Config {
-        source: "github".to_string(),
-        runner: RunnerKind::Claude,
-        submission: "github".to_string(),
-        label: "rlph".to_string(),
-        poll_seconds: 30,
-        worktree_dir: "__test_worktree_dir_not_set__".to_string(),
-        base_branch: "main".to_string(),
-        max_iterations: None,
-        dry_run: false,
-        once: true,
-        continuous: false,
-        agent_binary: "claude".to_string(),
-        agent_model: None,
-        agent_timeout: None,
-        implement_timeout: None,
-        agent_effort: None,
-        agent_variant: None,
         max_review_rounds: 1,
         agent_timeout_retries: 0,
-        review_phases: default_review_phases(),
-        review_aggregate: default_review_step("review-aggregate"),
-        review_fix: default_review_step("review-fix"),
-        fix: default_review_step("fix"),
-        linear: None,
+        ..default_test_config()
     }
 }
 

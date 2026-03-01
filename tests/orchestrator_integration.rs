@@ -7,10 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::{run_git, setup_git_repo};
-use rlph::config::{
-    Config, ReviewPhaseConfig, ReviewStepConfig, default_review_phases, default_review_step,
-};
+use common::{default_test_config, run_git, setup_git_repo};
+use rlph::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
 use rlph::error::{Error, Result};
 use rlph::orchestrator::{
     CorrectionRunner, Orchestrator, ProgressReporter, ReviewInvocation, ReviewRunnerFactory,
@@ -678,30 +676,8 @@ fn make_task(number: u64, title: &str) -> Task {
 
 fn make_config(dry_run: bool) -> Config {
     Config {
-        source: "github".to_string(),
-        runner: RunnerKind::Claude,
-        submission: "github".to_string(),
-        label: "rlph".to_string(),
-        poll_seconds: 30,
-        worktree_dir: String::new(),
-        base_branch: "main".to_string(),
-        max_iterations: None,
         dry_run,
-        once: true,
-        continuous: false,
-        agent_binary: "claude".to_string(),
-        agent_model: None,
-        agent_timeout: None,
-        implement_timeout: None,
-        agent_effort: None,
-        agent_variant: None,
-        max_review_rounds: 3,
-        agent_timeout_retries: 2,
-        review_phases: default_review_phases(),
-        review_aggregate: default_review_step("review-aggregate"),
-        review_fix: default_review_step("review-fix"),
-        fix: default_review_step("fix"),
-        linear: None,
+        ..default_test_config()
     }
 }
 
