@@ -1001,15 +1001,18 @@ mod tests {
 
     /// Apply a state change to a specific finding in the rendered comment.
     fn set_state(comment: &str, finding_id: &str, old: &str, new: &str) -> String {
-        let mut result = Vec::new();
-        for line in comment.lines() {
-            if line.contains(&format!("{finding_id} description")) {
-                result.push(line.replace(old, new));
-            } else {
-                result.push(line.to_string());
-            }
-        }
-        result.join("\n")
+        let target = format!("{finding_id} description");
+        comment
+            .lines()
+            .map(|line| {
+                if line.contains(&target) {
+                    line.replace(old, new)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
