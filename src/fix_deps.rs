@@ -37,7 +37,11 @@ impl FindingDeps {
             }
         }
 
-        let cycle_members = detect_cycles(&edges);
+        let cycle_members = if edges.is_empty() {
+            HashSet::new()
+        } else {
+            detect_cycles(&edges)
+        };
         if !cycle_members.is_empty() {
             let mut sorted: Vec<&str> = cycle_members.iter().map(|s| s.as_str()).collect();
             sorted.sort();
