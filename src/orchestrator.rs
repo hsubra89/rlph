@@ -542,6 +542,7 @@ impl<
             .run_implement_review(&task, issue_number, &worktree_info, existing_pr_number)
             .await;
 
+        // 11. Clean up worktree
         info!("cleaning up worktree");
         if let Err(e) = self.worktree_mgr.remove(&worktree_info.path) {
             warn!(error = %e, "failed to clean up worktree");
@@ -549,6 +550,7 @@ impl<
 
         match result {
             Ok(()) => {
+                // 12. Mark done
                 self.state_mgr.complete_current_task()?;
                 let _ = self.state_mgr.remove_worktree_mapping(&task_id);
 
