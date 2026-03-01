@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
+use rlph::fix_comment::{parse_fix_items, format_fix_items_for_display};
 use rlph::orchestrator::{Orchestrator, ReviewInvocation, build_task_vars};
 use rlph::prd;
 use rlph::prompts::PromptEngine;
@@ -17,7 +18,7 @@ use rlph::sources::github::GitHubSource;
 use rlph::sources::linear::LinearSource;
 use rlph::sources::{Task, TaskSource};
 use rlph::state::StateManager;
-use rlph::submission::GitHubSubmission;
+use rlph::submission::{GitHubSubmission, REVIEW_MARKER, SubmissionBackend};
 use rlph::worktree::WorktreeManager;
 
 /// Parse a PR reference that is either a plain number or a GitHub PR URL.
@@ -187,6 +188,39 @@ async fn main() {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
+            return;
+        }
+        Some(CliCommand::Fix {
+            ref pr_ref,
+            dry_run,
+        }) => {
+            let pr_number: u64 = parse_pr_ref(pr_ref).unwrap_or_else(|msg| {
+                eprintln!("error: {msg}");
+                std::process::exit(1);
+            });
+
+            if !dry_run {
+                eprintln!("error: only --dry-run is supported currently");
+                std::process::exit(1);
+            }
+
+            let submission = GitHubSubmission::new();
+            let comments = match submission.fetch_pr_comments(pr_number) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+            let review_comment = comments.iter().find(|c| c.body.contains(REVIEW_MARKER));
+            let Some(review_comment) = review_comment else {
+                eprintln!("No rlph review comment found on PR #{pr_number}.");
+                std::process::exit(1);
+            };
+
+            let items = parse_fix_items(&review_comment.body);
+            print!("{}", format_fix_items_for_display(&items));
             return;
         }
         Some(CliCommand::Prd {

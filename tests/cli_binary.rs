@@ -96,6 +96,49 @@ fn once_and_continuous_conflict() {
         .stderr(predicate::str::contains("cannot be used with"));
 }
 
+// --- Fix subcommand ---
+
+#[test]
+fn fix_help() {
+    if !integration_enabled() {
+        return;
+    }
+    cmd()
+        .args(["fix", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PR_REF"))
+        .stdout(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn fix_missing_pr_ref() {
+    if !integration_enabled() {
+        return;
+    }
+    cmd()
+        .arg("fix")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("PR_REF"));
+}
+
+#[test]
+fn fix_without_dry_run_rejected() {
+    if !integration_enabled() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    cmd()
+        .current_dir(&tmp)
+        .args(["fix", "999"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("only --dry-run is supported"));
+}
+
 // --- Missing required args ---
 
 #[test]
