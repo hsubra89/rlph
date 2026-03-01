@@ -82,7 +82,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     );
 
     // 3. Pre-compute per-item data and spawn into JoinSet
-    let fix_config = config.fix.clone();
+    let fix_config = Arc::new(config.fix.clone());
     let worktree_dir: Arc<str> = Arc::from(config.worktree_dir.as_str());
     let agent_timeout_retries = config.agent_timeout_retries;
     let repo_root: Arc<Path> = Arc::from(repo_root);
@@ -94,7 +94,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let mut skipped = 0usize;
     for item in &eligible {
         let item = (*item).clone();
-        let fix_config = fix_config.clone();
+        let fix_config = Arc::clone(&fix_config);
         let worktree_dir = Arc::clone(&worktree_dir);
         let repo_root = Arc::clone(&repo_root);
         let pr_branch = pr_branch.clone();
