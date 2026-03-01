@@ -227,6 +227,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
     let mut completed: HashSet<String> = HashSet::new();
     let mut failed: HashSet<String> = HashSet::new();
     let mut cycle = 0u64;
+    let mut cached_comment_id: Option<u64> = None;
 
     loop {
         cycle += 1;
@@ -241,8 +242,8 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
         // Fetch and parse
         info!(pr_number, cycle, in_flight = in_flight.len(), completed = completed.len(), "polling for newly-checked items");
-        let items = match fetch_and_parse_items(pr_number, &*submission) {
-            Ok(items) => items,
+        let (items, comment_id) = match fetch_and_parse_items(pr_number, &*submission, cached_comment_id) {
+            Ok(result) => result,
             Err(e) => {
                 warn!(error = %e, cycle, "failed to fetch review comment, retrying next cycle");
                 if wait_or_shutdown(poll_duration, &mut shutdown).await {
@@ -251,6 +252,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
                 continue;
             }
         };
+        cached_comment_id = Some(comment_id);
 
         if *shutdown.borrow() {
             info!("shutdown requested after fetch, stopping poll loop");
@@ -387,10 +389,20 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 }
 
 /// Fetch the review comment and parse fix items from it.
+///
+/// If `cached_comment_id` is `Some`, fetches only that single comment instead
+/// of all PR comments — avoiding redundant API calls on subsequent poll cycles.
+/// Returns the parsed items and the comment ID for caching.
 fn fetch_and_parse_items(
     pr_number: u64,
     submission: &(impl SubmissionBackend + ?Sized),
-) -> Result<Vec<FixItem>> {
+    cached_comment_id: Option<u64>,
+) -> Result<(Vec<FixItem>, u64)> {
+    if let Some(comment_id) = cached_comment_id {
+        let comment = submission.fetch_comment_by_id(comment_id)?;
+        return Ok((parse_fix_items(&comment.body), comment_id));
+    }
+
     let comments = submission.fetch_pr_comments(pr_number)?;
     let review_comment = comments
         .iter()
@@ -398,7 +410,8 @@ fn fetch_and_parse_items(
         .ok_or_else(|| {
             Error::Orchestrator(format!("no rlph review comment found on PR #{pr_number}"))
         })?;
-    Ok(parse_fix_items(&review_comment.body))
+    let comment_id = review_comment.id;
+    Ok((parse_fix_items(&review_comment.body), comment_id))
 }
 
 /// Drain completed tasks from the JoinSet without blocking.

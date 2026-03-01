@@ -123,6 +123,11 @@ impl SubmissionBackend for MockFixSubmission {
         let body = self.comment_body.lock().unwrap().clone();
         Ok(vec![make_pr_comment(&body)])
     }
+
+    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<PrComment> {
+        let body = self.comment_body.lock().unwrap().clone();
+        Ok(make_pr_comment(&body))
+    }
 }
 
 /// No-op correction runner for tests.
@@ -333,6 +338,31 @@ impl PollingMockSubmission {
     fn upsert_count(&self) -> usize {
         self.upsert_calls.lock().unwrap().len()
     }
+
+    /// Compute the current comment body, applying deferred checkbox checks
+    /// after the first fix completes.
+    fn current_body(&self) -> String {
+        let mut body = self.comment_body.lock().unwrap().clone();
+        if let Some(ref id) = self.deferred_check_id {
+            let upsert_count = self.upsert_calls.lock().unwrap().len();
+            if upsert_count >= 1 {
+                body = body
+                    .lines()
+                    .map(|line| {
+                        if line.contains(&format!("{id} description"))
+                            && line.contains("- [ ]")
+                        {
+                            line.replace("- [ ] ", "- [x] ")
+                        } else {
+                            line.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+            }
+        }
+        body
+    }
 }
 
 impl SubmissionBackend for PollingMockSubmission {
@@ -352,29 +382,12 @@ impl SubmissionBackend for PollingMockSubmission {
 
     fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
         self.fetch_count.fetch_add(1, Ordering::SeqCst);
-        let mut body = self.comment_body.lock().unwrap().clone();
+        Ok(vec![make_pr_comment(&self.current_body())])
+    }
 
-        // After first fix completes, simulate user checking the deferred item
-        if let Some(ref id) = self.deferred_check_id {
-            let upsert_count = self.upsert_calls.lock().unwrap().len();
-            if upsert_count >= 1 {
-                body = body
-                    .lines()
-                    .map(|line| {
-                        if line.contains(&format!("{id} description"))
-                            && line.contains("- [ ]")
-                        {
-                            line.replace("- [ ] ", "- [x] ")
-                        } else {
-                            line.to_string()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-            }
-        }
-
-        Ok(vec![make_pr_comment(&body)])
+    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<PrComment> {
+        self.fetch_count.fetch_add(1, Ordering::SeqCst);
+        Ok(make_pr_comment(&self.current_body()))
     }
 }
 

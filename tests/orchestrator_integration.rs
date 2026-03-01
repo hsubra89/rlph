@@ -411,6 +411,10 @@ impl SubmissionBackend for MockSubmission {
     fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<rlph::submission::PrComment>> {
         Ok(vec![])
     }
+
+    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<rlph::submission::PrComment> {
+        Err(Error::Submission("not implemented in mock".to_string()))
+    }
 }
 
 struct FailSubmission;
@@ -430,6 +434,10 @@ impl SubmissionBackend for FailSubmission {
 
     fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<rlph::submission::PrComment>> {
         Ok(vec![])
+    }
+
+    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<rlph::submission::PrComment> {
+        Err(Error::Submission("not implemented in mock".to_string()))
     }
 }
 
