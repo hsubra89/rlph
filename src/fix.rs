@@ -266,6 +266,10 @@ async fn parse_fix_with_retry(
 
 /// Rebase current branch onto origin/<pr-branch>.
 fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
+    git_in_dir(worktree_path, &["fetch", "origin", pr_branch]).map_err(|stderr| {
+        Error::Orchestrator(format!("git fetch origin {pr_branch} failed: {stderr}"))
+    })?;
+
     let remote_ref = format!("origin/{pr_branch}");
 
     if let Err(stderr) = git_in_dir(worktree_path, &["rebase", &remote_ref]) {
