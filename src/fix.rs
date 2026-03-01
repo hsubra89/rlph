@@ -62,21 +62,11 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let finding_deps = FindingDeps::build(&items);
     let resolved = resolved_finding_ids(&items);
 
-    let mut eligible: Vec<&FixItem> = Vec::new();
-    let mut dep_blocked: usize = 0;
-    for item in &items {
-        if item.state != CheckboxState::Checked {
-            continue;
-        }
-        if finding_deps.in_cycle(&item.finding.id) {
-            continue; // already warned during build
-        }
-        if !finding_deps.deps_met(&item.finding.id, &resolved) {
-            dep_blocked += 1;
-            continue;
-        }
-        eligible.push(item);
-    }
+    let (eligible, dep_blocked) = dep_eligible(
+        items.iter().filter(|i| i.state == CheckboxState::Checked),
+        &finding_deps,
+        &resolved,
+    );
 
     if dep_blocked > 0 {
         info!(count = dep_blocked, "items held back waiting for dependencies");
@@ -252,25 +242,17 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         let resolved = resolved_finding_ids(&items);
 
         // Filter: checked AND not already tracked AND deps met
-        let mut newly_checked: Vec<FixItem> = Vec::new();
-        let mut dep_blocked: usize = 0;
-        for item in items {
-            if item.state != CheckboxState::Checked
-                || in_flight.contains(&item.finding.id)
-                || completed.contains(&item.finding.id)
-                || failed.contains(&item.finding.id)
-            {
-                continue;
-            }
-            if deps.in_cycle(&item.finding.id) {
-                continue; // already warned during FindingDeps::build
-            }
-            if !deps.deps_met(&item.finding.id, &resolved) {
-                dep_blocked += 1;
-                continue;
-            }
-            newly_checked.push(item);
-        }
+        let (eligible_refs, dep_blocked) = dep_eligible(
+            items.iter().filter(|item| {
+                item.state == CheckboxState::Checked
+                    && !in_flight.contains(&item.finding.id)
+                    && !completed.contains(&item.finding.id)
+                    && !failed.contains(&item.finding.id)
+            }),
+            deps,
+            &resolved,
+        );
+        let newly_checked: Vec<FixItem> = eligible_refs.into_iter().cloned().collect();
 
         if dep_blocked > 0 {
             info!(count = dep_blocked, "items held back waiting for dependencies");
@@ -372,6 +354,31 @@ fn fetch_and_parse_items(
         })?;
     let comment_id = review_comment.id;
     Ok((parse_fix_items(&review_comment.body), comment_id))
+}
+
+/// Filter pre-screened items through the dependency gate.
+///
+/// Accepts an iterator of items that already passed caller-specific checks
+/// (e.g. `Checked` state, not already in-flight). Returns the dep-eligible
+/// subset and a count of items held back by unmet dependencies.
+fn dep_eligible<'a>(
+    items: impl Iterator<Item = &'a FixItem>,
+    deps: &FindingDeps,
+    resolved: &HashSet<String>,
+) -> (Vec<&'a FixItem>, usize) {
+    let mut eligible = Vec::new();
+    let mut dep_blocked: usize = 0;
+    for item in items {
+        if deps.in_cycle(&item.finding.id) {
+            continue; // already warned during FindingDeps::build
+        }
+        if !deps.deps_met(&item.finding.id, resolved) {
+            dep_blocked += 1;
+            continue;
+        }
+        eligible.push(item);
+    }
+    (eligible, dep_blocked)
 }
 
 /// Drain completed tasks from the JoinSet without blocking.
