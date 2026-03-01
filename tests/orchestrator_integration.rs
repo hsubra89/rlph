@@ -1,3 +1,5 @@
+mod common;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
@@ -5,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use common::run_git;
 use rlph::config::{
     Config, ReviewPhaseConfig, ReviewStepConfig, default_review_phases, default_review_step,
 };
@@ -736,20 +739,6 @@ fn setup_git_repo() -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir)
     let wt_dir = tempfile::TempDir::new().unwrap();
 
     (bare_dir, repo_dir, wt_dir)
-}
-
-fn run_git(dir: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("failed to run git");
-    assert!(
-        output.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 // --- Tests ---

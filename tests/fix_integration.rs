@@ -1,5 +1,6 @@
+mod common;
+
 use std::path::Path;
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use rlph::config::{Config, ReviewStepConfig, default_review_phases, default_review_step};
@@ -10,23 +11,7 @@ use rlph::review_schema::{ReviewFinding, Severity, render_findings_for_github};
 use rlph::runner::{RunResult, RunnerKind};
 use rlph::submission::{PrComment, REVIEW_MARKER, SubmissionBackend, SubmitResult};
 
-// --- Git helpers ---
-
-fn run_git(cwd: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {:?} in {} failed: {}",
-        args,
-        cwd.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
-}
+use common::run_git;
 
 /// Create a bare remote + working repo + push main.
 fn setup_git_repo() -> (tempfile::TempDir, tempfile::TempDir) {
