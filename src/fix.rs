@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
 use tracing::{info, warn};
 
 /// Serializes comment re-fetch + update to prevent concurrent fix agents from racing.
@@ -191,6 +191,250 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
             "{count} fix(es) failed; first: {}",
             errors[0]
         )))
+    }
+}
+
+/// Run the fix command as a continuous polling loop.
+///
+/// Polls for newly-checked checkboxes every `poll_seconds`, spawns fix agents
+/// for new items, and tracks in-flight/completed items to avoid re-processing.
+///
+/// On shutdown signal: stops accepting new tasks, waits for in-flight agents
+/// to complete, then exits cleanly.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
+    pr_number: u64,
+    pr_branch: &str,
+    config: &Config,
+    submission: Arc<impl SubmissionBackend + 'static>,
+    prompt_engine: &PromptEngine,
+    repo_root: &Path,
+    correction_runner: Arc<C>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    validate_branch_name(pr_branch)?;
+
+    let fix_config = Arc::new(config.fix.clone());
+    let worktree_dir: Arc<str> = Arc::from(config.worktree_dir.as_str());
+    let agent_timeout_retries = config.agent_timeout_retries;
+    let repo_root: Arc<Path> = Arc::from(repo_root);
+    let pr_branch_owned = pr_branch.to_string();
+    let poll_duration = Duration::from_secs(config.poll_seconds);
+    let concurrency = Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES));
+
+    let mut join_set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
+    let mut in_flight: HashSet<String> = HashSet::new();
+    let mut completed: HashSet<String> = HashSet::new();
+    let mut failed: HashSet<String> = HashSet::new();
+    let mut cycle = 0u64;
+
+    loop {
+        cycle += 1;
+
+        if *shutdown.borrow() {
+            info!("shutdown requested, stopping poll loop");
+            break;
+        }
+
+        // Drain completed tasks (non-blocking)
+        drain_completed(&mut join_set, &mut in_flight, &mut completed, &mut failed);
+
+        // Fetch and parse
+        info!(pr_number, cycle, in_flight = in_flight.len(), completed = completed.len(), "polling for newly-checked items");
+        let items = match fetch_and_parse_items(pr_number, &*submission) {
+            Ok(items) => items,
+            Err(e) => {
+                warn!(error = %e, cycle, "failed to fetch review comment, retrying next cycle");
+                if wait_or_shutdown(poll_duration, &mut shutdown).await {
+                    break;
+                }
+                continue;
+            }
+        };
+
+        // Filter: checked AND not already tracked
+        let newly_checked: Vec<FixItem> = items
+            .into_iter()
+            .filter(|item| {
+                item.state == CheckboxState::Checked
+                    && !in_flight.contains(&item.finding.id)
+                    && !completed.contains(&item.finding.id)
+                    && !failed.contains(&item.finding.id)
+            })
+            .collect();
+
+        info!(
+            cycle,
+            newly_checked = newly_checked.len(),
+            in_flight = in_flight.len(),
+            completed = completed.len(),
+            failed = failed.len(),
+            "poll cycle summary"
+        );
+
+        // Spawn fix agents for newly checked items
+        let mut skipped = 0usize;
+        for item in newly_checked {
+            let finding_id = item.finding.id.clone();
+            let fix_branch = format!("rlph-fix-{pr_number}-{finding_id}");
+            if let Err(e) = validate_branch_name(&fix_branch) {
+                warn!(finding_id, error = %e, "invalid fix branch name, skipping");
+                skipped += 1;
+                continue;
+            }
+
+            let vars = build_finding_vars(&item);
+            let prompt = match prompt_engine.render_phase(&fix_config.prompt, &vars) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(finding_id, error = %e, "failed to render prompt, skipping");
+                    skipped += 1;
+                    continue;
+                }
+            };
+
+            info!(
+                finding_id,
+                file = %item.finding.file,
+                line = item.finding.line,
+                severity = %item.finding.severity.label(),
+                "spawning fix agent"
+            );
+
+            in_flight.insert(finding_id.clone());
+
+            let fix_config = Arc::clone(&fix_config);
+            let worktree_dir = Arc::clone(&worktree_dir);
+            let repo_root = Arc::clone(&repo_root);
+            let pr_branch = pr_branch_owned.clone();
+            let submission = Arc::clone(&submission);
+            let correction_runner = Arc::clone(&correction_runner);
+            let concurrency = Arc::clone(&concurrency);
+
+            join_set.spawn(async move {
+                let _permit = concurrency
+                    .acquire()
+                    .await
+                    .expect("concurrency semaphore closed unexpectedly");
+                let ctx = FixContext {
+                    item,
+                    pr_number,
+                    pr_branch: &pr_branch,
+                    fix_branch: &fix_branch,
+                    fix_config: &fix_config,
+                    agent_timeout_retries,
+                    prompt: &prompt,
+                };
+                let result = run_single_fix(
+                    ctx,
+                    &worktree_dir,
+                    &repo_root,
+                    &*submission,
+                    &*correction_runner,
+                )
+                .await;
+                (finding_id, result)
+            });
+        }
+
+        if skipped > 0 {
+            warn!(skipped, "some fix items skipped due to validation errors");
+        }
+
+        // Wait for poll interval or shutdown
+        if wait_or_shutdown(poll_duration, &mut shutdown).await {
+            info!("shutdown requested during poll wait");
+            break;
+        }
+    }
+
+    // Graceful shutdown: wait for all in-flight tasks to complete
+    if !join_set.is_empty() {
+        info!(count = in_flight.len(), "graceful shutdown: waiting for in-flight fix agents");
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok((finding_id, Ok(()))) => {
+                    info!(finding_id, "fix completed during shutdown");
+                    in_flight.remove(&finding_id);
+                    completed.insert(finding_id);
+                }
+                Ok((finding_id, Err(e))) => {
+                    warn!(finding_id, error = %e, "fix failed during shutdown");
+                    in_flight.remove(&finding_id);
+                    failed.insert(finding_id);
+                }
+                Err(e) => {
+                    warn!(error = %e, "fix task panicked during shutdown");
+                }
+            }
+        }
+    }
+
+    info!(
+        completed = completed.len(),
+        failed = failed.len(),
+        "fix loop finished"
+    );
+
+    Ok(())
+}
+
+/// Fetch the review comment and parse fix items from it.
+fn fetch_and_parse_items(
+    pr_number: u64,
+    submission: &(impl SubmissionBackend + ?Sized),
+) -> Result<Vec<FixItem>> {
+    let comments = submission.fetch_pr_comments(pr_number)?;
+    let review_comment = comments
+        .iter()
+        .find(|c| c.body.contains(REVIEW_MARKER))
+        .ok_or_else(|| {
+            Error::Orchestrator(format!("no rlph review comment found on PR #{pr_number}"))
+        })?;
+    Ok(parse_fix_items(&review_comment.body))
+}
+
+/// Drain completed tasks from the JoinSet without blocking.
+fn drain_completed(
+    join_set: &mut tokio::task::JoinSet<(String, Result<()>)>,
+    in_flight: &mut HashSet<String>,
+    completed: &mut HashSet<String>,
+    failed: &mut HashSet<String>,
+) {
+    while let Some(result) = join_set.try_join_next() {
+        match result {
+            Ok((finding_id, Ok(()))) => {
+                info!(finding_id, "fix completed successfully");
+                in_flight.remove(&finding_id);
+                completed.insert(finding_id);
+            }
+            Ok((finding_id, Err(e))) => {
+                warn!(finding_id, error = %e, "fix agent failed");
+                in_flight.remove(&finding_id);
+                failed.insert(finding_id);
+            }
+            Err(e) => {
+                warn!(error = %e, "fix task panicked");
+            }
+        }
+    }
+}
+
+/// Sleep for the poll duration, but return early if shutdown is requested.
+/// Returns `true` if shutdown was requested.
+async fn wait_or_shutdown(
+    duration: Duration,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(duration) => false,
+        changed = shutdown.changed() => {
+            if changed.is_ok() {
+                *shutdown.borrow()
+            } else {
+                false
+            }
+        }
     }
 }
 

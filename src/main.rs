@@ -226,7 +226,7 @@ async fn main() {
                 return;
             }
 
-            // Non-dry-run: run the fix agent
+            // Non-dry-run: run the fix polling loop
             let config = match Config::load(&cli) {
                 Ok(c) => c,
                 Err(e) => {
@@ -247,7 +247,22 @@ async fn main() {
             let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let prompt_engine = PromptEngine::new(None);
 
-            if let Err(e) = fix::run_fix(
+            // Set up SIGINT handler for graceful shutdown
+            let (shutdown_tx, shutdown_rx) = watch::channel(false);
+            tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    eprintln!(
+                        "[rlph] SIGINT received; completing in-flight fixes then exiting"
+                    );
+                    let _ = shutdown_tx.send(true);
+                }
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    eprintln!("[rlph] Second SIGINT received; exiting immediately");
+                    std::process::exit(130);
+                }
+            });
+
+            if let Err(e) = fix::run_fix_loop(
                 pr_number,
                 &pr_context.head_branch,
                 &config,
@@ -255,6 +270,7 @@ async fn main() {
                 &prompt_engine,
                 &repo_root,
                 Arc::new(DefaultCorrectionRunner),
+                shutdown_rx,
             )
             .await
             {
