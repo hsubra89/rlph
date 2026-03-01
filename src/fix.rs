@@ -384,7 +384,10 @@ fn handle_join_result(
 
 /// Sleep for the poll duration, but return early if shutdown is requested.
 /// Returns `true` if shutdown was requested.
-async fn wait_or_shutdown(duration: Duration, shutdown: &mut watch::Receiver<bool>) -> bool {
+pub(crate) async fn wait_or_shutdown(
+    duration: Duration,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
     tokio::select! {
         _ = tokio::time::sleep(duration) => false,
         changed = shutdown.changed() => {

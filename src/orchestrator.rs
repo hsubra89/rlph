@@ -574,16 +574,7 @@ impl<
         shutdown: &mut Option<watch::Receiver<bool>>,
     ) -> bool {
         if let Some(rx) = shutdown {
-            tokio::select! {
-                _ = tokio::time::sleep(poll_duration) => false,
-                changed = rx.changed() => {
-                    if changed.is_ok() {
-                        *rx.borrow()
-                    } else {
-                        false
-                    }
-                }
-            }
+            crate::fix::wait_or_shutdown(poll_duration, rx).await
         } else {
             tokio::time::sleep(poll_duration).await;
             false
