@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use serde::{Deserialize, Deserializer};
@@ -24,6 +25,38 @@ pub enum Severity {
     Critical,
     Warning,
     Info,
+}
+
+impl Severity {
+    /// Numeric rank for sorting (lower = more severe).
+    fn rank(&self) -> u8 {
+        match self {
+            Severity::Critical => 0,
+            Severity::Warning => 1,
+            Severity::Info => 2,
+        }
+    }
+
+    /// Human-readable uppercase label.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Severity::Critical => "CRITICAL",
+            Severity::Warning => "WARNING",
+            Severity::Info => "INFO",
+        }
+    }
+}
+
+impl Ord for Severity {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.rank().cmp(&other.rank())
+    }
+}
+
+impl PartialOrd for Severity {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -83,11 +116,6 @@ pub fn render_findings_for_prompt(
         if i > 0 {
             result.push('\n');
         }
-        let severity = match f.severity {
-            Severity::Critical => "CRITICAL",
-            Severity::Warning => "WARNING",
-            Severity::Info => "INFO",
-        };
         let category = f
             .category
             .as_deref()
@@ -96,7 +124,12 @@ pub fn render_findings_for_prompt(
         write!(
             result,
             "- ({}) **{}** [{}] `{}` L{}: {}",
-            f.id, severity, category, f.file, f.line, f.description
+            f.id,
+            f.severity.label(),
+            category,
+            f.file,
+            f.line,
+            f.description
         )
         .unwrap();
         if !f.depends_on.is_empty() {
@@ -104,6 +137,62 @@ pub fn render_findings_for_prompt(
         }
     }
     result
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+    }
+}
+
+/// Render findings as a GitHub PR comment grouped by category.
+///
+/// Produces a markdown body with the summary at the top, then `### Category`
+/// headings with checklist items sorted by severity (critical first), then
+/// file+line.
+pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> String {
+    let mut body = summary.trim().to_string();
+
+    if findings.is_empty() {
+        return body;
+    }
+
+    // Group by lowercase category, alphabetically via BTreeMap.
+    let mut groups: BTreeMap<String, Vec<&ReviewFinding>> = BTreeMap::new();
+    for f in findings {
+        let key = f.category.as_deref().unwrap_or("general").to_lowercase();
+        groups.entry(key).or_default().push(f);
+    }
+
+    for (category, group) in &mut groups {
+        let mut sorted: Vec<&ReviewFinding> = group.clone();
+        sorted.sort_by(|a, b| {
+            a.severity
+                .cmp(&b.severity)
+                .then_with(|| a.file.cmp(&b.file))
+                .then_with(|| a.line.cmp(&b.line))
+        });
+
+        write!(body, "\n\n### {}", capitalize_first(category)).unwrap();
+        for f in sorted {
+            write!(
+                body,
+                "\n- [ ] **{}** `{}` L{}: {}",
+                f.severity.label(),
+                f.file,
+                f.line,
+                f.description
+            )
+            .unwrap();
+            if !f.depends_on.is_empty() {
+                write!(body, " *(depends on: {})*", f.depends_on.join(", ")).unwrap();
+            }
+        }
+    }
+
+    body
 }
 
 /// Strip markdown code fences (` ```json ... ``` `) that Claude sometimes wraps output in,
@@ -684,5 +773,134 @@ mod tests {
         assert!(prompt.contains("files_changed"));
         let example = SchemaName::Fix.example_json();
         assert!(serde_json::from_str::<FixOutput>(example).is_ok());
+    }
+
+    // ---- Severity ordering tests ----
+
+    #[test]
+    fn test_severity_ord() {
+        assert!(Severity::Critical < Severity::Warning);
+        assert!(Severity::Warning < Severity::Info);
+        assert!(Severity::Critical < Severity::Info);
+    }
+
+    #[test]
+    fn test_severity_label() {
+        assert_eq!(Severity::Critical.label(), "CRITICAL");
+        assert_eq!(Severity::Warning.label(), "WARNING");
+        assert_eq!(Severity::Info.label(), "INFO");
+    }
+
+    // ---- render_findings_for_github tests ----
+
+    #[test]
+    fn test_github_render_empty_findings() {
+        let result = render_findings_for_github(&[], "All good.");
+        assert_eq!(result, "All good.");
+    }
+
+    #[test]
+    fn test_github_render_single_finding() {
+        let findings = vec![ReviewFinding {
+            id: "sql-inj".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 42,
+            severity: Severity::Critical,
+            description: "SQL injection".to_string(),
+            category: Some("correctness".to_string()),
+            depends_on: vec![],
+        }];
+        let result = render_findings_for_github(&findings, "Issues found.");
+        let expected = "\
+Issues found.
+
+### Correctness
+- [ ] **CRITICAL** `src/main.rs` L42: SQL injection";
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_github_render_category_grouping() {
+        let findings = vec![
+            ReviewFinding {
+                id: "a".to_string(),
+                file: "src/a.rs".to_string(),
+                line: 1,
+                severity: Severity::Warning,
+                description: "Style issue".to_string(),
+                category: Some("style".to_string()),
+                depends_on: vec![],
+            },
+            ReviewFinding {
+                id: "b".to_string(),
+                file: "src/b.rs".to_string(),
+                line: 2,
+                severity: Severity::Critical,
+                description: "Bug".to_string(),
+                category: Some("correctness".to_string()),
+                depends_on: vec![],
+            },
+        ];
+        let result = render_findings_for_github(&findings, "Summary.");
+        // BTreeMap: correctness before style
+        assert!(result.find("### Correctness").unwrap() < result.find("### Style").unwrap());
+    }
+
+    #[test]
+    fn test_github_render_severity_ordering_within_category() {
+        let findings = vec![
+            ReviewFinding {
+                id: "info-one".to_string(),
+                file: "src/a.rs".to_string(),
+                line: 1,
+                severity: Severity::Info,
+                description: "Nit".to_string(),
+                category: Some("correctness".to_string()),
+                depends_on: vec![],
+            },
+            ReviewFinding {
+                id: "crit-one".to_string(),
+                file: "src/b.rs".to_string(),
+                line: 2,
+                severity: Severity::Critical,
+                description: "Bug".to_string(),
+                category: Some("correctness".to_string()),
+                depends_on: vec![],
+            },
+        ];
+        let result = render_findings_for_github(&findings, "S.");
+        let crit_pos = result.find("**CRITICAL**").unwrap();
+        let info_pos = result.find("**INFO**").unwrap();
+        assert!(crit_pos < info_pos);
+    }
+
+    #[test]
+    fn test_github_render_depends_on() {
+        let findings = vec![ReviewFinding {
+            id: "deref".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 15,
+            severity: Severity::Critical,
+            description: "Null deref".to_string(),
+            category: Some("correctness".to_string()),
+            depends_on: vec!["null-check".to_string(), "init-val".to_string()],
+        }];
+        let result = render_findings_for_github(&findings, "S.");
+        assert!(result.contains("*(depends on: null-check, init-val)*"));
+    }
+
+    #[test]
+    fn test_github_render_no_category_fallback() {
+        let findings = vec![ReviewFinding {
+            id: "x".to_string(),
+            file: "src/lib.rs".to_string(),
+            line: 5,
+            severity: Severity::Info,
+            description: "Unused import".to_string(),
+            category: None,
+            depends_on: vec![],
+        }];
+        let result = render_findings_for_github(&findings, "S.");
+        assert!(result.contains("### General"));
     }
 }
