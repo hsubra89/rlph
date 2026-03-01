@@ -1,16 +1,18 @@
 mod common;
 
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rlph::config::{Config, ReviewStepConfig};
 use rlph::error::{Error, Result};
-use rlph::fix::run_fix;
+use rlph::fix::{run_fix, run_fix_loop};
 use rlph::orchestrator::CorrectionRunner;
 use rlph::review_schema::{ReviewFinding, render_findings_for_github};
 use rlph::runner::{RunResult, RunnerKind};
 use rlph::submission::{PrComment, REVIEW_MARKER, SubmissionBackend, SubmitResult};
 use rlph::test_helpers::make_finding;
+use tokio::sync::watch;
 
 use common::{default_test_config, run_git, setup_git_repo};
 
@@ -120,6 +122,11 @@ impl SubmissionBackend for MockFixSubmission {
     fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
         let body = self.comment_body.lock().unwrap().clone();
         Ok(vec![make_pr_comment(&body)])
+    }
+
+    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<PrComment> {
+        let body = self.comment_body.lock().unwrap().clone();
+        Ok(make_pr_comment(&body))
     }
 }
 
@@ -300,5 +307,293 @@ async fn test_parallel_fix_worktrees_cleaned_up() {
         wt_entries.is_empty(),
         "expected all fix worktrees to be cleaned up, found: {:?}",
         wt_entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+    );
+}
+
+// --- Polling loop tests ---
+
+/// Mock submission that dynamically checks new items after initial fixes complete.
+///
+/// On `fetch_pr_comments`: after the first upsert (alpha fixed), the returned
+/// comment will also have "beta" checked — simulating a user checking a new box
+/// between poll cycles.
+struct PollingMockSubmission {
+    base: MockFixSubmission,
+    fetch_count: AtomicUsize,
+    /// Finding ID to dynamically "check" after the first fix completes.
+    deferred_check_id: Option<String>,
+}
+
+impl PollingMockSubmission {
+    fn new(initial_comment: String, deferred_check_id: Option<String>) -> Self {
+        Self {
+            base: MockFixSubmission::new(initial_comment),
+            fetch_count: AtomicUsize::new(0),
+            deferred_check_id,
+        }
+    }
+
+    fn upsert_count(&self) -> usize {
+        self.base.upsert_count()
+    }
+
+    /// Compute the current comment body, applying deferred checkbox checks
+    /// after the first fix completes.
+    fn current_body(&self) -> String {
+        let mut body = self.base.get_comment_body();
+        if let Some(ref id) = self.deferred_check_id
+            && self.base.upsert_count() >= 1
+        {
+            body = body
+                .lines()
+                .map(|line| {
+                    if line.contains(&format!("{id} description"))
+                        && line.contains("- [ ]")
+                    {
+                        line.replace("- [ ] ", "- [x] ")
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        body
+    }
+}
+
+impl SubmissionBackend for PollingMockSubmission {
+    fn submit(&self, a: &str, b: &str, c: &str, d: &str) -> Result<SubmitResult> {
+        self.base.submit(a, b, c, d)
+    }
+
+    fn find_existing_pr_for_issue(&self, issue_number: u64) -> Result<Option<u64>> {
+        self.base.find_existing_pr_for_issue(issue_number)
+    }
+
+    fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()> {
+        self.base.upsert_review_comment(pr_number, body)
+    }
+
+    fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
+        self.fetch_count.fetch_add(1, Ordering::SeqCst);
+        Ok(vec![make_pr_comment(&self.current_body())])
+    }
+
+    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<PrComment> {
+        self.fetch_count.fetch_add(1, Ordering::SeqCst);
+        Ok(make_pr_comment(&self.current_body()))
+    }
+}
+
+/// Test that `run_fix_loop` picks up newly-checked items across poll cycles.
+///
+/// Cycle 1: "alpha" is checked → fix agent spawned and completes
+/// Cycle 2: "beta" becomes checked (simulated) → fix agent spawned and completes
+/// After both are done, shutdown is triggered.
+#[tokio::test]
+async fn test_fix_loop_picks_up_newly_checked_items() {
+    let (_bare_dir, repo_dir) = setup_git_repo();
+    let repo_root = repo_dir.path();
+
+    let pr_branch = "feature/poll-test";
+    create_pr_branch(repo_root, pr_branch);
+
+    let agent_script = create_mock_agent_script(repo_root);
+
+    let findings = vec![make_finding("alpha"), make_finding("beta")];
+    // Start with only "alpha" checked; "beta" will be checked after alpha completes
+    let initial_comment = make_review_comment(&findings, &["alpha"]);
+
+    let submission = Arc::new(PollingMockSubmission::new(
+        initial_comment,
+        Some("beta".to_string()),
+    ));
+    let correction_runner = Arc::new(MockCorrectionRunner);
+
+    let wt_dir = tempfile::TempDir::new().unwrap();
+    let mut config = make_config();
+    config.fix = make_fix_step_config(agent_script);
+    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    config.poll_seconds = 1; // Fast polling for test
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let submission_clone = Arc::clone(&submission);
+
+    // Monitor upsert count and trigger shutdown after both fixes complete
+    let shutdown_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if submission_clone.upsert_count() >= 2 {
+                let _ = shutdown_tx.send(true);
+                return;
+            }
+        }
+    });
+
+    let result = run_fix_loop(
+        42,
+        pr_branch,
+        &config,
+        Arc::clone(&submission),
+        &rlph::prompts::PromptEngine::new(None),
+        repo_root,
+        correction_runner,
+        shutdown_rx,
+    )
+    .await;
+
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // Both items should have been fixed
+    assert_eq!(
+        submission.upsert_count(),
+        2,
+        "expected 2 comment updates (one per finding across different poll cycles)"
+    );
+
+    // Multiple fetch calls (at least 2 poll cycles)
+    let fetches = submission.fetch_count.load(Ordering::SeqCst);
+    assert!(
+        fetches >= 2,
+        "expected at least 2 poll cycles, got {fetches}"
+    );
+}
+
+/// Test that already-completed items are not re-processed by the polling loop.
+#[tokio::test]
+async fn test_fix_loop_skips_completed_items() {
+    let (_bare_dir, repo_dir) = setup_git_repo();
+    let repo_root = repo_dir.path();
+
+    let pr_branch = "feature/skip-test";
+    create_pr_branch(repo_root, pr_branch);
+
+    let agent_script = create_mock_agent_script(repo_root);
+
+    let findings = vec![make_finding("only-one")];
+    let initial_comment = make_review_comment(&findings, &["only-one"]);
+
+    // No deferred checks — just the one item
+    let submission = Arc::new(PollingMockSubmission::new(initial_comment, None));
+    let correction_runner = Arc::new(MockCorrectionRunner);
+
+    let wt_dir = tempfile::TempDir::new().unwrap();
+    let mut config = make_config();
+    config.fix = make_fix_step_config(agent_script);
+    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    config.poll_seconds = 1;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let submission_clone = Arc::clone(&submission);
+
+    // Let the loop run for a few cycles after the fix completes, then shutdown.
+    // If the item gets re-processed, upsert_count will be > 1.
+    let shutdown_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let fetches = submission_clone.fetch_count.load(Ordering::SeqCst);
+            // Wait for at least 3 poll cycles after the fix completes
+            if submission_clone.upsert_count() >= 1 && fetches >= 4 {
+                let _ = shutdown_tx.send(true);
+                return;
+            }
+        }
+    });
+
+    let result = run_fix_loop(
+        42,
+        pr_branch,
+        &config,
+        Arc::clone(&submission),
+        &rlph::prompts::PromptEngine::new(None),
+        repo_root,
+        correction_runner,
+        shutdown_rx,
+    )
+    .await;
+
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // Item should have been processed exactly once
+    assert_eq!(
+        submission.upsert_count(),
+        1,
+        "completed item should not be re-processed"
+    );
+}
+
+/// Test that `run_fix_loop` gracefully shuts down: waits for in-flight tasks,
+/// then exits cleanly.
+#[tokio::test]
+async fn test_fix_loop_graceful_shutdown() {
+    let (_bare_dir, repo_dir) = setup_git_repo();
+    let repo_root = repo_dir.path();
+
+    let pr_branch = "feature/shutdown-test";
+    create_pr_branch(repo_root, pr_branch);
+
+    // Use a slow agent (sleeps 2 seconds before committing)
+    let script_path = repo_root.join("mock-slow-agent.sh");
+    let script = r#"#!/bin/bash
+sleep 2
+ID="$$-$RANDOM"
+echo "fix-$ID" > "fix-$ID.txt"
+git add .
+git commit -m "fix: slow-$ID" 2>/dev/null
+echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit_message\\\":\\\"fix: slow-$ID\\\"}\"}"
+"#;
+    std::fs::write(&script_path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let findings = vec![make_finding("slow-item")];
+    let initial_comment = make_review_comment(&findings, &["slow-item"]);
+
+    let submission = Arc::new(PollingMockSubmission::new(initial_comment, None));
+    let correction_runner = Arc::new(MockCorrectionRunner);
+
+    let wt_dir = tempfile::TempDir::new().unwrap();
+    let mut config = make_config();
+    config.fix = make_fix_step_config(script_path.to_str().unwrap().to_string());
+    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    config.poll_seconds = 5; // Short poll to avoid long hangs if agent errors before shutdown
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Send shutdown after 1 second (agent takes 2s, so it should be in-flight)
+    let shutdown_handle = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let _ = shutdown_tx.send(true);
+    });
+
+    let result = run_fix_loop(
+        42,
+        pr_branch,
+        &config,
+        Arc::clone(&submission),
+        &rlph::prompts::PromptEngine::new(None),
+        repo_root,
+        correction_runner,
+        shutdown_rx,
+    )
+    .await;
+
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // The slow agent should have completed during graceful shutdown
+    assert_eq!(
+        submission.upsert_count(),
+        1,
+        "in-flight fix should complete during graceful shutdown"
     );
 }

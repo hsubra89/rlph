@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
 use tracing::{info, warn};
 
 /// Serializes comment re-fetch + update to prevent concurrent fix agents from racing.
@@ -54,15 +54,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 
     // 1. Fetch review comment and parse checked items
     info!(pr_number, "polling GitHub for PR comments");
-    let comments = submission.fetch_pr_comments(pr_number)?;
-    let review_comment = comments
-        .iter()
-        .find(|c| c.body.contains(REVIEW_MARKER))
-        .ok_or_else(|| {
-            Error::Orchestrator(format!("no rlph review comment found on PR #{pr_number}"))
-        })?;
-
-    let items = parse_fix_items(&review_comment.body);
+    let (items, _comment_id) = fetch_and_parse_items(pr_number, &*submission, None)?;
     info!(total = items.len(), "parsed fix items from review comment");
 
     // 2. Collect ALL eligible checked items
@@ -82,72 +74,50 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     );
 
     // 3. Pre-compute per-item data and spawn into JoinSet
-    let fix_config = Arc::new(config.fix.clone());
-    let worktree_dir: Arc<str> = Arc::from(config.worktree_dir.as_str());
-    let agent_timeout_retries = config.agent_timeout_retries;
-    let repo_root: Arc<Path> = Arc::from(repo_root);
-    let pr_branch = pr_branch.to_string();
+    let shared = SharedFixState {
+        fix_config: Arc::new(config.fix.clone()),
+        worktree_dir: Arc::from(config.worktree_dir.as_str()),
+        repo_root: Arc::from(repo_root),
+        pr_branch: Arc::from(pr_branch),
+        submission: Arc::clone(&submission),
+        correction_runner: Arc::clone(&correction_runner),
+        concurrency: Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES)),
+        agent_timeout_retries: config.agent_timeout_retries,
+    };
 
     let mut join_set = tokio::task::JoinSet::new();
-    let concurrency = Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES));
 
     let mut skipped: usize = 0;
     for item in &eligible {
         let item = (*item).clone();
-        let fix_config = Arc::clone(&fix_config);
-        let worktree_dir = Arc::clone(&worktree_dir);
-        let repo_root = Arc::clone(&repo_root);
-        let pr_branch = pr_branch.clone();
-        let submission = Arc::clone(&submission);
-        let correction_runner = Arc::clone(&correction_runner);
 
-        let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
-        if let Err(e) = validate_branch_name(&fix_branch) {
-            warn!(finding_id = %item.finding.id, error = %e, "invalid fix branch name, skipping");
+        let Some(prepared) = prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine) else {
             skipped += 1;
             continue;
-        }
-
-        // Pre-render prompt
-        let vars = build_finding_vars(&item);
-        let prompt = match prompt_engine.render_phase(&fix_config.prompt, &vars) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(finding_id = %item.finding.id, error = %e, "failed to render prompt, skipping");
-                skipped += 1;
-                continue;
-            }
         };
 
-        info!(
-            finding_id = %item.finding.id,
-            file = %item.finding.file,
-            line = item.finding.line,
-            severity = %item.finding.severity.label(),
-            "spawning parallel fix agent"
-        );
+        let shared = shared.clone();
 
-        let concurrency = Arc::clone(&concurrency);
         join_set.spawn(async move {
-            let _permit = concurrency
+            let _permit = shared.concurrency
                 .acquire()
                 .await
                 .expect("concurrency semaphore closed unexpectedly");
             let ctx = FixContext {
-                item,
+                item: prepared.item,
                 pr_number,
-                pr_branch: &pr_branch,
-                fix_branch: &fix_branch,
-                fix_config: &fix_config,
-                agent_timeout_retries,
-                prompt: &prompt,
+                pr_branch: &shared.pr_branch,
+                fix_branch: &prepared.fix_branch,
+                fix_config: &shared.fix_config,
+                agent_timeout_retries: shared.agent_timeout_retries,
+                prompt: &prepared.prompt,
             };
             run_single_fix(
                 ctx,
-                &worktree_dir,
-                &repo_root,
-                &*submission,
-                &*correction_runner,
+                &shared.worktree_dir,
+                &shared.repo_root,
+                &*shared.submission,
+                &*shared.correction_runner,
             )
             .await
         });
@@ -191,6 +161,257 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
             "{count} fix(es) failed; first: {}",
             errors[0]
         )))
+    }
+}
+
+/// Run the fix command as a continuous polling loop.
+///
+/// Polls for newly-checked checkboxes every `poll_seconds`, spawns fix agents
+/// for new items, and tracks in-flight/completed items to avoid re-processing.
+///
+/// On shutdown signal: stops accepting new tasks, waits for in-flight agents
+/// to complete, then exits cleanly.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
+    pr_number: u64,
+    pr_branch: &str,
+    config: &Config,
+    submission: Arc<impl SubmissionBackend + 'static>,
+    prompt_engine: &PromptEngine,
+    repo_root: &Path,
+    correction_runner: Arc<C>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    validate_branch_name(pr_branch)?;
+
+    let shared = SharedFixState {
+        fix_config: Arc::new(config.fix.clone()),
+        worktree_dir: Arc::from(config.worktree_dir.as_str()),
+        repo_root: Arc::from(repo_root),
+        pr_branch: Arc::from(pr_branch),
+        submission: Arc::clone(&submission),
+        correction_runner: Arc::clone(&correction_runner),
+        concurrency: Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES)),
+        agent_timeout_retries: config.agent_timeout_retries,
+    };
+    let poll_duration = Duration::from_secs(config.poll_seconds);
+
+    let mut join_set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
+    let mut task_finding_ids: HashMap<tokio::task::Id, String> = HashMap::new();
+    let mut in_flight: HashSet<String> = HashSet::new();
+    let mut completed: HashSet<String> = HashSet::new();
+    let mut failed: HashSet<String> = HashSet::new();
+    let mut cycle: u64 = 0;
+    let mut cached_comment_id: Option<u64> = None;
+
+    loop {
+        cycle += 1;
+
+        if *shutdown.borrow() {
+            info!("shutdown requested, stopping poll loop");
+            break;
+        }
+
+        // Drain completed tasks (non-blocking)
+        drain_completed(&mut join_set, &mut task_finding_ids, &mut in_flight, &mut completed, &mut failed);
+
+        // Fetch and parse
+        info!(pr_number, cycle, in_flight = in_flight.len(), completed = completed.len(), "polling for newly-checked items");
+        let (items, comment_id) = match fetch_and_parse_items(pr_number, &*shared.submission, cached_comment_id) {
+            Ok(result) => result,
+            Err(e) => {
+                warn!(error = %e, cycle, "failed to fetch review comment, retrying next cycle");
+                if wait_or_shutdown(poll_duration, &mut shutdown).await {
+                    break;
+                }
+                continue;
+            }
+        };
+        cached_comment_id = Some(comment_id);
+
+        if *shutdown.borrow() {
+            info!("shutdown requested after fetch, stopping poll loop");
+            break;
+        }
+
+        // Filter: checked AND not already tracked
+        let newly_checked: Vec<FixItem> = items
+            .into_iter()
+            .filter(|item| {
+                item.state == CheckboxState::Checked
+                    && !in_flight.contains(&item.finding.id)
+                    && !completed.contains(&item.finding.id)
+                    && !failed.contains(&item.finding.id)
+            })
+            .collect();
+
+        info!(
+            cycle,
+            newly_checked = newly_checked.len(),
+            in_flight = in_flight.len(),
+            completed = completed.len(),
+            failed = failed.len(),
+            "poll cycle summary"
+        );
+
+        // Spawn fix agents for newly checked items
+        let mut skipped: usize = 0;
+        for item in newly_checked {
+            let finding_id = item.finding.id.clone();
+
+            let Some(prepared) = prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine) else {
+                failed.insert(finding_id);
+                skipped += 1;
+                continue;
+            };
+
+            in_flight.insert(finding_id.clone());
+            let finding_id_for_map = finding_id.clone();
+
+            let shared = shared.clone();
+
+            let abort_handle = join_set.spawn(async move {
+                let _permit = shared.concurrency
+                    .acquire()
+                    .await
+                    .expect("concurrency semaphore closed unexpectedly");
+                let ctx = FixContext {
+                    item: prepared.item,
+                    pr_number,
+                    pr_branch: &shared.pr_branch,
+                    fix_branch: &prepared.fix_branch,
+                    fix_config: &shared.fix_config,
+                    agent_timeout_retries: shared.agent_timeout_retries,
+                    prompt: &prepared.prompt,
+                };
+                let result = run_single_fix(
+                    ctx,
+                    &shared.worktree_dir,
+                    &shared.repo_root,
+                    &*shared.submission,
+                    &*shared.correction_runner,
+                )
+                .await;
+                (finding_id, result)
+            });
+            task_finding_ids.insert(abort_handle.id(), finding_id_for_map);
+        }
+
+        if skipped > 0 {
+            warn!(skipped, "some fix items skipped due to validation errors");
+        }
+
+        // Wait for poll interval or shutdown
+        if wait_or_shutdown(poll_duration, &mut shutdown).await {
+            info!("shutdown requested during poll wait");
+            break;
+        }
+    }
+
+    // Graceful shutdown: wait for all in-flight tasks to complete
+    if !join_set.is_empty() {
+        info!(count = in_flight.len(), "graceful shutdown: waiting for in-flight fix agents");
+        while let Some(result) = join_set.join_next().await {
+            handle_join_result(result, &mut task_finding_ids, &mut in_flight, &mut completed, &mut failed);
+        }
+    }
+
+    info!(
+        completed = completed.len(),
+        failed = failed.len(),
+        "fix loop finished"
+    );
+
+    Ok(())
+}
+
+/// Fetch the review comment and parse fix items from it.
+///
+/// If `cached_comment_id` is `Some`, fetches only that single comment instead
+/// of all PR comments — avoiding redundant API calls on subsequent poll cycles.
+/// Returns the parsed items and the comment ID for caching.
+fn fetch_and_parse_items(
+    pr_number: u64,
+    submission: &(impl SubmissionBackend + ?Sized),
+    cached_comment_id: Option<u64>,
+) -> Result<(Vec<FixItem>, u64)> {
+    if let Some(comment_id) = cached_comment_id {
+        let comment = submission.fetch_comment_by_id(comment_id)?;
+        return Ok((parse_fix_items(&comment.body), comment_id));
+    }
+
+    let comments = submission.fetch_pr_comments(pr_number)?;
+    let review_comment = comments
+        .iter()
+        .find(|c| c.body.contains(REVIEW_MARKER))
+        .ok_or_else(|| {
+            Error::Orchestrator(format!("no rlph review comment found on PR #{pr_number}"))
+        })?;
+    let comment_id = review_comment.id;
+    Ok((parse_fix_items(&review_comment.body), comment_id))
+}
+
+/// Drain completed tasks from the JoinSet without blocking.
+fn drain_completed(
+    join_set: &mut tokio::task::JoinSet<(String, Result<()>)>,
+    task_finding_ids: &mut HashMap<tokio::task::Id, String>,
+    in_flight: &mut HashSet<String>,
+    completed: &mut HashSet<String>,
+    failed: &mut HashSet<String>,
+) {
+    while let Some(result) = join_set.try_join_next() {
+        handle_join_result(result, task_finding_ids, in_flight, completed, failed);
+    }
+}
+
+/// Process one completed task result, updating tracking sets.
+fn handle_join_result(
+    result: std::result::Result<(String, Result<()>), tokio::task::JoinError>,
+    task_finding_ids: &mut HashMap<tokio::task::Id, String>,
+    in_flight: &mut HashSet<String>,
+    completed: &mut HashSet<String>,
+    failed: &mut HashSet<String>,
+) {
+    match result {
+        Ok((finding_id, Ok(()))) => {
+            info!(%finding_id, "fix completed");
+            in_flight.remove(&finding_id);
+            completed.insert(finding_id);
+        }
+        Ok((finding_id, Err(e))) => {
+            warn!(%finding_id, error = %e, "fix failed");
+            in_flight.remove(&finding_id);
+            failed.insert(finding_id);
+        }
+        Err(e) => {
+            let finding_id = task_finding_ids.remove(&e.id());
+            if let Some(ref id) = finding_id {
+                warn!(finding_id = id, error = %e, "fix task panicked");
+                in_flight.remove(id);
+                failed.insert(id.clone());
+            } else {
+                warn!(error = %e, "fix task panicked (unknown finding_id)");
+            }
+        }
+    }
+}
+
+/// Sleep for the poll duration, but return early if shutdown is requested.
+/// Returns `true` if shutdown was requested.
+async fn wait_or_shutdown(
+    duration: Duration,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(duration) => false,
+        changed = shutdown.changed() => {
+            if changed.is_ok() {
+                *shutdown.borrow()
+            } else {
+                // Sender dropped — no one can signal shutdown anymore, so exit gracefully.
+                true
+            }
+        }
     }
 }
 
@@ -242,6 +463,37 @@ struct FixContext<'a> {
     prompt: &'a str,
 }
 
+/// Shared state cloned into each spawned fix task.
+///
+/// Groups the Arc-wrapped values that both `run_fix` and `run_fix_loop` need
+/// to clone per spawned task, replacing individual `Arc::clone` lines with
+/// a single `shared.clone()`.
+struct SharedFixState<S, C> {
+    fix_config: Arc<ReviewStepConfig>,
+    worktree_dir: Arc<str>,
+    repo_root: Arc<Path>,
+    pr_branch: Arc<str>,
+    submission: Arc<S>,
+    correction_runner: Arc<C>,
+    concurrency: Arc<Semaphore>,
+    agent_timeout_retries: u32,
+}
+
+impl<S, C> Clone for SharedFixState<S, C> {
+    fn clone(&self) -> Self {
+        Self {
+            fix_config: Arc::clone(&self.fix_config),
+            worktree_dir: Arc::clone(&self.worktree_dir),
+            repo_root: Arc::clone(&self.repo_root),
+            pr_branch: Arc::clone(&self.pr_branch),
+            submission: Arc::clone(&self.submission),
+            correction_runner: Arc::clone(&self.correction_runner),
+            concurrency: Arc::clone(&self.concurrency),
+            agent_timeout_retries: self.agent_timeout_retries,
+        }
+    }
+}
+
 /// Build template variables from a fix item's finding.
 fn build_finding_vars(item: &FixItem) -> HashMap<String, String> {
     let mut vars = HashMap::with_capacity(6);
@@ -261,6 +513,53 @@ fn build_finding_vars(item: &FixItem) -> HashMap<String, String> {
         item.finding.depends_on.join(", "),
     );
     vars
+}
+
+/// Validated and pre-rendered data for spawning a fix agent.
+struct PreparedFixItem {
+    item: FixItem,
+    fix_branch: String,
+    prompt: String,
+}
+
+/// Validate branch name, render the prompt, and log the spawn.
+///
+/// Returns `None` if the item should be skipped (invalid branch name or prompt
+/// rendering failure), with a warning already logged.
+fn prepare_fix_item(
+    item: FixItem,
+    pr_number: u64,
+    fix_config: &ReviewStepConfig,
+    prompt_engine: &PromptEngine,
+) -> Option<PreparedFixItem> {
+    let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
+    if let Err(e) = validate_branch_name(&fix_branch) {
+        warn!(finding_id = %item.finding.id, error = %e, "invalid fix branch name, skipping");
+        return None;
+    }
+
+    let vars = build_finding_vars(&item);
+    let prompt = match prompt_engine.render_phase(&fix_config.prompt, &vars) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(finding_id = %item.finding.id, error = %e, "failed to render prompt, skipping");
+            return None;
+        }
+    };
+
+    info!(
+        finding_id = %item.finding.id,
+        file = %item.finding.file,
+        line = item.finding.line,
+        severity = %item.finding.severity.label(),
+        "spawning fix agent"
+    );
+
+    Some(PreparedFixItem {
+        item,
+        fix_branch,
+        prompt,
+    })
 }
 
 /// Inner function: spawn agent, parse output, rebase/push with retry, update comment.
