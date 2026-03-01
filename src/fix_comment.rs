@@ -13,7 +13,7 @@ pub enum CheckboxState {
     Checked,
     /// `- ✅` — already fixed
     Fixed,
-    /// `- ‐` — won't fix (figure dash U+2010)
+    /// `- 😵` — won't fix
     WontFix,
 }
 
@@ -23,7 +23,7 @@ impl fmt::Display for CheckboxState {
             CheckboxState::Unchecked => write!(f, "[ ]"),
             CheckboxState::Checked => write!(f, "[x]"),
             CheckboxState::Fixed => write!(f, "✅"),
-            CheckboxState::WontFix => write!(f, "‐"),
+            CheckboxState::WontFix => write!(f, "😵"),
         }
     }
 }
@@ -69,7 +69,7 @@ pub fn parse_fix_items(body: &str) -> Vec<FixItem> {
 ///
 /// - **Fixed**: replaces the checkbox prefix with `- ✅` and appends
 ///   `\n  > Fixed: <commit_message>` on the next line.
-/// - **WontFix**: replaces the prefix with `- ‐` and appends
+/// - **WontFix**: replaces the prefix with `- 😵` and appends
 ///   `\n  > Won't fix: <reason>` on the next line.
 ///
 /// All other lines are preserved unchanged.
@@ -87,7 +87,7 @@ pub fn update_comment(body: &str, finding_id: &str, result: &FixResultKind) -> S
                     ("\u{2705}", format!("  > Fixed: {commit_message}"))
                 }
                 FixResultKind::WontFix { reason } => {
-                    ("\u{2010}", format!("  > Won't fix: {reason}"))
+                    ("\u{1F635}", format!("  > Won't fix: {reason}"))
                 }
             };
             let updated = replace_checkbox_prefix(line, new_prefix);
@@ -122,7 +122,7 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
                 CheckboxState::Unchecked => "[ ]",
                 CheckboxState::Checked => "[x]",
                 CheckboxState::Fixed => " ✅ ",
-                CheckboxState::WontFix => " ‐  ",
+                CheckboxState::WontFix => " 😵 ",
             };
             out.push_str(&format!(
                 "  {} ({}) {} `{}` L{}: {}\n",
@@ -146,7 +146,7 @@ fn detect_checkbox_state(trimmed: &str) -> Option<CheckboxState> {
         Some(CheckboxState::Checked)
     } else if trimmed.starts_with("- \u{2705}") {
         Some(CheckboxState::Fixed)
-    } else if trimmed.starts_with("- \u{2010}") {
+    } else if trimmed.starts_with("- \u{1F635}") {
         Some(CheckboxState::WontFix)
     } else {
         None
@@ -170,8 +170,8 @@ fn replace_checkbox_prefix(line: &str, new_marker: &str) -> String {
         "- [X] ",
         "- \u{2705} ",
         "- \u{2705}",
-        "- \u{2010} ",
-        "- \u{2010}",
+        "- \u{1F635} ",
+        "- \u{1F635}",
     ];
 
     for prefix in prefixes {
@@ -248,7 +248,7 @@ mod tests {
     fn parse_wontfix_item() {
         let f = make_finding("bug-1", Severity::Critical, "correctness");
         let comment = render_findings_for_github(&[f], "Summary.");
-        let comment = comment.replace("- [ ] ", "- \u{2010} ");
+        let comment = comment.replace("- [ ] ", "- \u{1F635} ");
         let items = parse_fix_items(&comment);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].state, CheckboxState::WontFix);
@@ -417,7 +417,7 @@ mod tests {
             },
         );
 
-        assert!(updated.contains("- \u{2010} "));
+        assert!(updated.contains("- \u{1F635} "));
         assert!(!updated.contains("- [x] "));
         assert!(updated.contains("  > Won't fix: Not worth the effort"));
     }
@@ -541,7 +541,7 @@ mod tests {
         assert!(out.contains("[ ]"));
         assert!(out.contains("[x]"));
         assert!(out.contains("✅"));
-        assert!(out.contains("‐"));
+        assert!(out.contains("😵"));
     }
 
     // ---- CheckboxState Display ----
@@ -551,6 +551,6 @@ mod tests {
         assert_eq!(CheckboxState::Unchecked.to_string(), "[ ]");
         assert_eq!(CheckboxState::Checked.to_string(), "[x]");
         assert_eq!(CheckboxState::Fixed.to_string(), "✅");
-        assert_eq!(CheckboxState::WontFix.to_string(), "‐");
+        assert_eq!(CheckboxState::WontFix.to_string(), "😵");
     }
 }

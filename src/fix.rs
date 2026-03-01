@@ -394,7 +394,7 @@ mod tests {
             },
         );
 
-        assert!(updated.contains("\u{2010}"));
+        assert!(updated.contains("\u{1F635}"));
         assert!(updated.contains("> Won't fix: false positive"));
     }
 
