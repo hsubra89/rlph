@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
     SchemaName, Verdict, correction_prompt, parse_aggregator_output, parse_fix_output,
-    parse_phase_output, render_findings_for_prompt,
+    parse_phase_output, render_findings_for_github, render_findings_for_prompt,
 };
 use crate::runner::{
     AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, resume_with_correction,
@@ -834,7 +834,10 @@ impl<
                 }
             };
 
-            let comment_body = format!("{REVIEW_MARKER}\n{}", agg_output.comment);
+            let comment_body = format!(
+                "{REVIEW_MARKER}\n{}",
+                render_findings_for_github(&agg_output.findings, &agg_output.comment),
+            );
             let summary = agg_output.comment.trim();
             if !summary.is_empty() {
                 self.reporter.review_summary(summary);
