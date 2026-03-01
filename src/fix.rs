@@ -210,7 +210,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
     let worktree_dir: Arc<str> = Arc::from(config.worktree_dir.as_str());
     let agent_timeout_retries = config.agent_timeout_retries;
     let repo_root: Arc<Path> = Arc::from(repo_root);
-    let pr_branch_owned = pr_branch.to_string();
+    let pr_branch_owned: Arc<str> = Arc::from(pr_branch);
     let poll_duration = Duration::from_secs(config.poll_seconds);
     let concurrency = Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES));
 
@@ -309,7 +309,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             let fix_config = Arc::clone(&fix_config);
             let worktree_dir = Arc::clone(&worktree_dir);
             let repo_root = Arc::clone(&repo_root);
-            let pr_branch = pr_branch_owned.clone();
+            let pr_branch = Arc::clone(&pr_branch_owned);
             let submission = Arc::clone(&submission);
             let correction_runner = Arc::clone(&correction_runner);
             let concurrency = Arc::clone(&concurrency);
