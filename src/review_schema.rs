@@ -190,7 +190,7 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
                 write!(body, " *(depends on: {})*", f.depends_on.join(", ")).unwrap();
             }
             let json = serde_json::to_string(f).expect("ReviewFinding serializes to JSON");
-            let json = json.replace("-->", r"--\u003e");
+            let json = json.replace("--", r"\u002d\u002d");
             write!(body, " <!-- rlph-finding:{json} -->").unwrap();
         }
     }
