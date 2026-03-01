@@ -57,7 +57,7 @@ pub struct PrContext {
     pub linked_issue_number: Option<u64>,
 }
 
-pub trait SubmissionBackend {
+pub trait SubmissionBackend: Send + Sync {
     /// Submit a branch as a PR or diff. Returns the URL of the created PR/diff.
     fn submit(&self, branch: &str, base: &str, title: &str, body: &str) -> Result<SubmitResult>;
 

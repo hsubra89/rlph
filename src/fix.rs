@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Semaphore;
@@ -7,6 +8,9 @@ use tracing::{info, warn};
 
 /// Serializes comment re-fetch + update to prevent concurrent fix agents from racing.
 static COMMENT_UPDATE_LOCK: Semaphore = Semaphore::const_new(1);
+
+/// Maximum number of push attempts before giving up (rebase+retry on conflict).
+const MAX_PUSH_ATTEMPTS: u32 = 3;
 
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
@@ -18,25 +22,26 @@ use crate::runner::{AgentRunner, Phase, RunResult, build_runner};
 use crate::submission::{REVIEW_MARKER, SubmissionBackend};
 use crate::worktree::{WorktreeManager, git_in_dir, validate_branch_name};
 
-/// Run the standalone fix flow for a single checked finding on a PR.
+/// Run the standalone fix flow for ALL checked findings on a PR concurrently.
 ///
 /// Steps:
 /// 1. Fetch review comment, parse checked items
-/// 2. Take the first eligible checked item
-/// 3. Create worktree off `origin/<pr-branch>`
-/// 4. Spawn fix agent with finding context
-/// 5. Parse StandaloneFixOutput JSON (with retry)
-/// 6. If fixed: rebase onto `origin/<pr-branch>`, push to PR branch
-/// 7. Update review comment checkbox with result
-/// 8. Clean up worktree
-pub async fn run_fix(
+/// 2. Collect all eligible checked items
+/// 3. Spawn a fix agent for each item in parallel (JoinSet)
+///    - Each gets its own worktree off `origin/<pr-branch>`
+///    - Parse StandaloneFixOutput JSON (with retry)
+///    - If fixed: rebase onto `origin/<pr-branch>`, push with retry
+///    - Update review comment checkbox with result
+///    - Clean up worktree
+/// 4. Collect results, log any errors
+pub async fn run_fix<C: CorrectionRunner + 'static>(
     pr_number: u64,
     pr_branch: &str,
     config: &Config,
-    submission: &impl SubmissionBackend,
+    submission: Arc<impl SubmissionBackend + 'static>,
     prompt_engine: &PromptEngine,
     repo_root: &Path,
-    correction_runner: &(impl CorrectionRunner + ?Sized),
+    correction_runner: Arc<C>,
 ) -> Result<()> {
     // Validate pr_branch from GitHub API at the trust boundary
     validate_branch_name(pr_branch)?;
@@ -54,63 +59,162 @@ pub async fn run_fix(
     let items = parse_fix_items(&review_comment.body);
     info!(total = items.len(), "parsed fix items from review comment");
 
-    // 2. Take the first eligible checked item
-    let eligible = items
+    // 2. Collect ALL eligible checked items
+    let eligible: Vec<&FixItem> = items
         .iter()
-        .find(|item| item.state == CheckboxState::Checked);
-    let Some(item) = eligible else {
+        .filter(|item| item.state == CheckboxState::Checked)
+        .collect();
+
+    if eligible.is_empty() {
         info!("no checked items found — nothing to fix");
         return Ok(());
-    };
+    }
 
-    info!(
-        finding_id = %item.finding.id,
-        file = %item.finding.file,
-        line = item.finding.line,
-        severity = %item.finding.severity.label(),
-        "selected finding for fix"
-    );
+    info!(count = eligible.len(), "found checked items for parallel fix");
 
-    // 3. Create worktree off origin/<pr-branch>
-    let id = &item.finding.id;
-    let fix_branch = format!("rlph-fix-{pr_number}-{id}");
-    validate_branch_name(&fix_branch)?;
+    // 3. Pre-compute per-item data and spawn into JoinSet
+    let fix_config = config.fix.clone();
+    let worktree_dir = config.worktree_dir.clone();
+    let agent_timeout_retries = config.agent_timeout_retries;
+    let repo_root = repo_root.to_path_buf();
+    let pr_branch_owned = pr_branch.to_string();
 
+    let mut join_set = tokio::task::JoinSet::new();
+
+    for item in &eligible {
+        let item = (*item).clone();
+        let fix_config = fix_config.clone();
+        let worktree_dir = worktree_dir.clone();
+        let repo_root = repo_root.clone();
+        let pr_branch = pr_branch_owned.clone();
+        let submission = Arc::clone(&submission);
+        let correction_runner = Arc::clone(&correction_runner);
+
+        let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
+        if let Err(e) = validate_branch_name(&fix_branch) {
+            warn!(finding_id = %item.finding.id, error = %e, "invalid fix branch name, skipping");
+            continue;
+        }
+
+        // Pre-render prompt
+        let vars = build_finding_vars(&item);
+        let prompt = match prompt_engine.render_phase(&fix_config.prompt, &vars) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(finding_id = %item.finding.id, error = %e, "failed to render prompt, skipping");
+                continue;
+            }
+        };
+
+        info!(
+            finding_id = %item.finding.id,
+            file = %item.finding.file,
+            line = item.finding.line,
+            severity = %item.finding.severity.label(),
+            "spawning parallel fix agent"
+        );
+
+        join_set.spawn(async move {
+            run_single_fix(
+                item,
+                pr_number,
+                &pr_branch,
+                &fix_branch,
+                &fix_config,
+                agent_timeout_retries,
+                &worktree_dir,
+                &repo_root,
+                &prompt,
+                &*submission,
+                &*correction_runner,
+            )
+            .await
+        });
+    }
+
+    // 4. Collect results as each fix completes
+    let mut errors = Vec::new();
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                warn!(error = %e, "fix agent failed");
+                errors.push(e);
+            }
+            Err(e) => {
+                warn!(error = %e, "fix task panicked");
+                errors.push(Error::Orchestrator(format!("fix task panicked: {e}")));
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        info!(pr_number, "all fixes completed successfully");
+        Ok(())
+    } else {
+        let count = errors.len();
+        // Return the first error but log all
+        Err(Error::Orchestrator(format!(
+            "{count} fix(es) failed; first: {}",
+            errors[0]
+        )))
+    }
+}
+
+/// Run a single fix: create worktree, run agent, push, update comment, cleanup.
+#[allow(clippy::too_many_arguments)]
+async fn run_single_fix(
+    item: FixItem,
+    pr_number: u64,
+    pr_branch: &str,
+    fix_branch: &str,
+    fix_config: &ReviewStepConfig,
+    agent_timeout_retries: u32,
+    worktree_dir: &str,
+    repo_root: &Path,
+    prompt: &str,
+    submission: &(impl SubmissionBackend + ?Sized),
+    correction_runner: &(impl CorrectionRunner + ?Sized),
+) -> Result<()> {
     let wm = WorktreeManager::new(
         repo_root.to_path_buf(),
-        repo_root.join(&config.worktree_dir),
+        repo_root.join(worktree_dir),
         pr_branch.to_string(),
     );
-    let worktree_path = wm.create_fresh(&fix_branch, pr_branch)?.path;
-    info!(path = %worktree_path.display(), branch = %fix_branch, "created fix worktree");
+    let worktree_path = wm.create_fresh(fix_branch, pr_branch)?.path;
+    info!(
+        finding_id = %item.finding.id,
+        path = %worktree_path.display(),
+        branch = %fix_branch,
+        "created fix worktree"
+    );
 
     // Run the fix agent and handle results, ensuring worktree cleanup
-    let ctx = FixContext {
-        item,
+    let result = run_fix_agent_and_apply(
+        &item,
         pr_number,
         pr_branch,
-        fix_branch: &fix_branch,
-        worktree_path: &worktree_path,
-    };
-    let result =
-        run_fix_agent_and_apply(&ctx, config, submission, prompt_engine, correction_runner).await;
+        fix_branch,
+        &worktree_path,
+        fix_config,
+        agent_timeout_retries,
+        prompt,
+        submission,
+        correction_runner,
+    )
+    .await;
 
-    // 8. Clean up worktree (always, even on error)
-    info!(path = %worktree_path.display(), "cleaning up fix worktree");
+    // Clean up worktree (always, even on error)
+    info!(
+        finding_id = %item.finding.id,
+        path = %worktree_path.display(),
+        "cleaning up fix worktree"
+    );
     if let Err(e) = wm.remove(&worktree_path) {
         warn!(error = %e, "failed to clean up fix worktree");
     }
 
     result
-}
-
-/// Context for a single fix agent invocation.
-struct FixContext<'a> {
-    item: &'a FixItem,
-    pr_number: u64,
-    pr_branch: &'a str,
-    fix_branch: &'a str,
-    worktree_path: &'a Path,
 }
 
 /// Build template variables from a fix item's finding.
@@ -134,21 +238,22 @@ fn build_finding_vars(item: &FixItem) -> HashMap<String, String> {
     vars
 }
 
-/// Inner function: spawn agent, parse output, rebase/push, update comment.
+/// Inner function: spawn agent, parse output, rebase/push with retry, update comment.
+#[allow(clippy::too_many_arguments)]
 async fn run_fix_agent_and_apply(
-    ctx: &FixContext<'_>,
-    config: &Config,
-    submission: &impl SubmissionBackend,
-    prompt_engine: &PromptEngine,
+    item: &FixItem,
+    pr_number: u64,
+    pr_branch: &str,
+    fix_branch: &str,
+    worktree_path: &Path,
+    fix_config: &ReviewStepConfig,
+    agent_timeout_retries: u32,
+    prompt: &str,
+    submission: &(impl SubmissionBackend + ?Sized),
     correction_runner: &(impl CorrectionRunner + ?Sized),
 ) -> Result<()> {
-    let fix_config = &config.fix;
-
-    // 4. Render prompt and spawn fix agent
-    let vars = build_finding_vars(ctx.item);
-    let prompt = prompt_engine.render_phase(&fix_config.prompt, &vars)?;
-
-    info!(finding_id = %ctx.item.finding.id, "spawning fix agent");
+    // Spawn fix agent
+    info!(finding_id = %item.finding.id, "spawning fix agent");
     let runner = build_runner(
         fix_config.runner,
         &fix_config.agent_binary,
@@ -156,44 +261,29 @@ async fn run_fix_agent_and_apply(
         fix_config.agent_effort.as_deref(),
         fix_config.agent_variant.as_deref(),
         fix_config.agent_timeout.map(Duration::from_secs),
-        config.agent_timeout_retries,
+        agent_timeout_retries,
     )
     .with_stream_prefix("fix".to_string());
 
-    let run_result = runner.run(Phase::Fix, &prompt, ctx.worktree_path).await?;
+    let run_result = runner.run(Phase::Fix, prompt, worktree_path).await?;
 
-    // 5. Parse StandaloneFixOutput JSON (with retry on failure)
-    let fix_output = parse_fix_with_retry(
-        &run_result,
-        fix_config,
-        ctx.worktree_path,
-        correction_runner,
-    )
-    .await?;
+    // Parse StandaloneFixOutput JSON (with retry on failure)
+    let fix_output =
+        parse_fix_with_retry(&run_result, fix_config, worktree_path, correction_runner).await?;
 
-    info!(finding_id = %ctx.item.finding.id, ?fix_output, "fix agent completed");
+    info!(finding_id = %item.finding.id, ?fix_output, "fix agent completed");
 
-    // 6 & 7. Apply result and update comment
-    apply_fix_and_update_comment(ctx, &fix_output, submission).await
-}
-
-/// Apply fix result (rebase+push if fixed) and update the review comment.
-async fn apply_fix_and_update_comment(
-    ctx: &FixContext<'_>,
-    fix_output: &StandaloneFixOutput,
-    submission: &impl SubmissionBackend,
-) -> Result<()> {
+    // Apply result and update comment
     let fix_result = match fix_output {
         StandaloneFixOutput::Fixed { commit_message } => {
-            info!(commit_message, "fix applied — rebasing and pushing");
-            rebase_onto(ctx.worktree_path, ctx.pr_branch)?;
-            push_to_pr_branch(ctx.worktree_path, ctx.fix_branch, ctx.pr_branch)?;
+            info!(finding_id = %item.finding.id, commit_message, "fix applied — rebasing and pushing");
+            push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch)?;
             FixResultKind::Fixed {
                 commit_message: commit_message.clone(),
             }
         }
         StandaloneFixOutput::WontFix { reason } => {
-            info!(reason, "finding marked as won't fix");
+            info!(finding_id = %item.finding.id, reason, "finding marked as won't fix");
             FixResultKind::WontFix {
                 reason: reason.clone(),
             }
@@ -206,8 +296,8 @@ async fn apply_fix_and_update_comment(
         .await
         .expect("comment update semaphore closed unexpectedly");
 
-    info!(ctx.pr_number, finding_id = %ctx.item.finding.id, "polling GitHub to re-fetch review comment");
-    let comments = submission.fetch_pr_comments(ctx.pr_number)?;
+    info!(pr_number, finding_id = %item.finding.id, "polling GitHub to re-fetch review comment");
+    let comments = submission.fetch_pr_comments(pr_number)?;
     let fresh_body = comments
         .iter()
         .find(|c| c.body.contains(REVIEW_MARKER))
@@ -215,13 +305,13 @@ async fn apply_fix_and_update_comment(
         .ok_or_else(|| {
             Error::Orchestrator(format!(
                 "review comment disappeared from PR #{}",
-                ctx.pr_number
+                pr_number
             ))
         })?;
 
-    let updated_body = update_comment(fresh_body, &ctx.item.finding.id, &fix_result);
-    info!(ctx.pr_number, finding_id = %ctx.item.finding.id, "updating review comment");
-    submission.upsert_review_comment(ctx.pr_number, &updated_body)?;
+    let updated_body = update_comment(fresh_body, &item.finding.id, &fix_result);
+    info!(pr_number, finding_id = %item.finding.id, "updating review comment");
+    submission.upsert_review_comment(pr_number, &updated_body)?;
 
     Ok(())
 }
@@ -287,16 +377,45 @@ fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
     Ok(())
 }
 
-/// Push fix branch to PR branch: `git push origin <fix-branch>:<pr-branch>`.
-fn push_to_pr_branch(worktree_path: &Path, fix_branch: &str, pr_branch: &str) -> Result<()> {
-    let refspec = format!("{fix_branch}:{pr_branch}");
-    run_git(
-        worktree_path,
-        &["push", "origin", &refspec],
-        &format!("git push origin {refspec}"),
-    )?;
-    info!(refspec, "pushed fix to PR branch");
-    Ok(())
+/// Push fix branch to PR branch with rebase+retry on conflict.
+///
+/// On push failure (likely because another fix pushed first), fetches latest,
+/// rebases, and retries up to [`MAX_PUSH_ATTEMPTS`] times.
+fn push_to_pr_branch_with_retry(
+    worktree_path: &Path,
+    fix_branch: &str,
+    pr_branch: &str,
+) -> Result<()> {
+    for attempt in 1..=MAX_PUSH_ATTEMPTS {
+        // Rebase onto latest remote state before each push attempt
+        rebase_onto(worktree_path, pr_branch)?;
+
+        let refspec = format!("{fix_branch}:{pr_branch}");
+        match git_in_dir(
+            worktree_path,
+            &["push", "origin", &refspec],
+        ) {
+            Ok(_) => {
+                info!(refspec, attempt, "pushed fix to PR branch");
+                return Ok(());
+            }
+            Err(stderr) => {
+                if attempt < MAX_PUSH_ATTEMPTS {
+                    warn!(
+                        attempt,
+                        max = MAX_PUSH_ATTEMPTS,
+                        error = %stderr.trim(),
+                        "push conflict — retrying with fetch+rebase"
+                    );
+                } else {
+                    return Err(Error::Orchestrator(format!(
+                        "git push origin {refspec} failed after {MAX_PUSH_ATTEMPTS} attempts: {stderr}"
+                    )));
+                }
+            }
+        }
+    }
+    unreachable!()
 }
 
 #[cfg(test)]
@@ -416,12 +535,38 @@ mod tests {
         let comment = lines.join("\n");
 
         let items = parse_fix_items(&comment);
-        let eligible = items
+        let eligible: Vec<_> = items
             .iter()
-            .find(|item| item.state == CheckboxState::Checked);
+            .filter(|item| item.state == CheckboxState::Checked)
+            .collect();
 
-        assert!(eligible.is_some());
-        assert_eq!(eligible.unwrap().finding.id, "b");
+        assert_eq!(eligible.len(), 1);
+        assert_eq!(eligible[0].finding.id, "b");
+    }
+
+    #[test]
+    fn test_multiple_eligible_items() {
+        let findings = vec![make_finding("a"), make_finding("b"), make_finding("c")];
+        let comment = render_findings_for_github(&findings, "Summary.");
+
+        // Check "a" and "c"
+        let mut lines: Vec<String> = comment.lines().map(String::from).collect();
+        for line in &mut lines {
+            if line.contains("a description") || line.contains("c description") {
+                *line = line.replace("- [ ] ", "- [x] ");
+            }
+        }
+        let comment = lines.join("\n");
+
+        let items = parse_fix_items(&comment);
+        let eligible: Vec<_> = items
+            .iter()
+            .filter(|item| item.state == CheckboxState::Checked)
+            .collect();
+
+        assert_eq!(eligible.len(), 2);
+        assert!(eligible.iter().any(|i| i.finding.id == "a"));
+        assert!(eligible.iter().any(|i| i.finding.id == "c"));
     }
 
     #[test]
@@ -430,11 +575,12 @@ mod tests {
         let comment = render_findings_for_github(&findings, "Summary.");
 
         let items = parse_fix_items(&comment);
-        let eligible = items
+        let eligible: Vec<_> = items
             .iter()
-            .find(|item| item.state == CheckboxState::Checked);
+            .filter(|item| item.state == CheckboxState::Checked)
+            .collect();
 
-        assert!(eligible.is_none());
+        assert!(eligible.is_empty());
     }
 
     #[test]
@@ -444,10 +590,11 @@ mod tests {
         let comment = comment.replace("- [ ] ", "- ✅ ");
 
         let items = parse_fix_items(&comment);
-        let eligible = items
+        let eligible: Vec<_> = items
             .iter()
-            .find(|item| item.state == CheckboxState::Checked);
+            .filter(|item| item.state == CheckboxState::Checked)
+            .collect();
 
-        assert!(eligible.is_none());
+        assert!(eligible.is_empty());
     }
 }
