@@ -97,7 +97,7 @@ fn make_config() -> Config {
         submission: "github".to_string(),
         label: "rlph".to_string(),
         poll_seconds: 30,
-        worktree_dir: String::new(),
+        worktree_dir: "__test_worktree_dir_not_set__".to_string(),
         base_branch: "main".to_string(),
         max_iterations: None,
         dry_run: false,
