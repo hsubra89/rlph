@@ -363,8 +363,8 @@ impl PollingMockSubmission {
 }
 
 impl SubmissionBackend for PollingMockSubmission {
-    fn submit(&self, a: &str, b: &str, c: &str, d: &str) -> Result<SubmitResult> {
-        self.base.submit(a, b, c, d)
+    fn submit(&self, _: &str, _: &str, _: &str, _: &str) -> Result<SubmitResult> {
+        unimplemented!("submit not needed for fix tests")
     }
 
     fn find_existing_pr_for_issue(&self, issue_number: u64) -> Result<Option<u64>> {
