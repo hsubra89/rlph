@@ -397,9 +397,8 @@ async fn main() {
         repo_root,
     );
 
-    let shutdown_rx = install_sigint_handler(
-        "[rlph] SIGINT received; shutting down after current iteration",
-    );
+    let shutdown_rx =
+        install_sigint_handler("[rlph] SIGINT received; shutting down after current iteration");
 
     if let Err(e) = orchestrator.run_loop(Some(shutdown_rx)).await {
         if matches!(&e, rlph::error::Error::Interrupted) {

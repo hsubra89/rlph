@@ -347,9 +347,7 @@ impl PollingMockSubmission {
             body = body
                 .lines()
                 .map(|line| {
-                    if line.contains(&format!("{id} description"))
-                        && line.contains("- [ ]")
-                    {
+                    if line.contains(&format!("{id} description")) && line.contains("- [ ]") {
                         line.replace("- [ ] ", "- [x] ")
                     } else {
                         line.to_string()
@@ -414,7 +412,10 @@ impl FixLoopFixture {
         let agent_script = create_mock_agent_script(repo_root);
 
         let initial_comment = make_review_comment(findings, checked_ids);
-        let submission = Arc::new(PollingMockSubmission::new(initial_comment, deferred_check_id));
+        let submission = Arc::new(PollingMockSubmission::new(
+            initial_comment,
+            deferred_check_id,
+        ));
         let correction_runner = Arc::new(MockCorrectionRunner);
 
         let wt_dir = tempfile::TempDir::new().unwrap();
@@ -510,11 +511,7 @@ async fn test_fix_loop_picks_up_newly_checked_items() {
 /// Test that already-completed items are not re-processed by the polling loop.
 #[tokio::test]
 async fn test_fix_loop_skips_completed_items() {
-    let mut f = FixLoopFixture::new(
-        &[make_finding("only-one")],
-        &["only-one"],
-        None,
-    );
+    let mut f = FixLoopFixture::new(&[make_finding("only-one")], &["only-one"], None);
 
     let submission = Arc::clone(&f.submission);
     let shutdown_tx = f.take_shutdown_tx();
@@ -549,11 +546,7 @@ async fn test_fix_loop_skips_completed_items() {
 /// then exits cleanly.
 #[tokio::test]
 async fn test_fix_loop_graceful_shutdown() {
-    let mut f = FixLoopFixture::new(
-        &[make_finding("slow-item")],
-        &["slow-item"],
-        None,
-    );
+    let mut f = FixLoopFixture::new(&[make_finding("slow-item")], &["slow-item"], None);
 
     // Override with a slow agent (sleeps 2 seconds before committing)
     let script_path = f.repo_root().join("mock-slow-agent.sh");

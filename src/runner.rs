@@ -190,6 +190,8 @@ impl ClaudeRunner {
         let mut args = base_claude_args(self.model.as_deref(), self.effort.as_deref());
         args.push("--resume".to_string());
         args.push(session_id.to_string());
+        args.push("-p".to_string());
+        args.push("continue".to_string());
         (self.agent_binary.clone(), args)
     }
 }

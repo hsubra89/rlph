@@ -91,16 +91,15 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     for item in &eligible {
         let item = (*item).clone();
 
-        let Some(prepared) = prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine) else {
+        let Some(prepared) = prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine)
+        else {
             skipped += 1;
             continue;
         };
 
         let shared = shared.clone();
 
-        join_set.spawn(async move {
-            acquire_and_run_fix(&shared, prepared, pr_number).await
-        });
+        join_set.spawn(async move { acquire_and_run_fix(&shared, prepared, pr_number).await });
     }
 
     if skipped == eligible.len() {
@@ -193,21 +192,34 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         }
 
         // Drain completed tasks (non-blocking)
-        drain_completed(&mut join_set, &mut task_finding_ids, &mut in_flight, &mut completed, &mut failed);
+        drain_completed(
+            &mut join_set,
+            &mut task_finding_ids,
+            &mut in_flight,
+            &mut completed,
+            &mut failed,
+        );
 
         // Fetch and parse
-        info!(pr_number, cycle, in_flight = in_flight.len(), completed = completed.len(), "polling for newly-checked items");
-        let (items, comment_id) = match fetch_and_parse_items(pr_number, &*shared.submission, cached_comment_id) {
-            Ok(result) => result,
-            Err(e) => {
-                warn!(error = %e, cycle, "failed to fetch review comment, retrying next cycle");
-                cached_comment_id = None;
-                if wait_or_shutdown(poll_duration, &mut shutdown).await {
-                    break;
+        info!(
+            pr_number,
+            cycle,
+            in_flight = in_flight.len(),
+            completed = completed.len(),
+            "polling for newly-checked items"
+        );
+        let (items, comment_id) =
+            match fetch_and_parse_items(pr_number, &*shared.submission, cached_comment_id) {
+                Ok(result) => result,
+                Err(e) => {
+                    warn!(error = %e, cycle, "failed to fetch review comment, retrying next cycle");
+                    cached_comment_id = None;
+                    if wait_or_shutdown(poll_duration, &mut shutdown).await {
+                        break;
+                    }
+                    continue;
                 }
-                continue;
-            }
-        };
+            };
         cached_comment_id = Some(comment_id);
 
         if *shutdown.borrow() {
@@ -240,7 +252,9 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         for item in newly_checked {
             let finding_id = item.finding.id.clone();
 
-            let Some(prepared) = prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine) else {
+            let Some(prepared) =
+                prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine)
+            else {
                 failed.insert(finding_id);
                 skipped += 1;
                 continue;
@@ -271,9 +285,18 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
     // Graceful shutdown: wait for all in-flight tasks to complete
     if !join_set.is_empty() {
-        info!(count = in_flight.len(), "graceful shutdown: waiting for in-flight fix agents");
+        info!(
+            count = in_flight.len(),
+            "graceful shutdown: waiting for in-flight fix agents"
+        );
         while let Some(result) = join_set.join_next().await {
-            handle_join_result(result, &mut task_finding_ids, &mut in_flight, &mut completed, &mut failed);
+            handle_join_result(
+                result,
+                &mut task_finding_ids,
+                &mut in_flight,
+                &mut completed,
+                &mut failed,
+            );
         }
     }
 
@@ -361,10 +384,7 @@ fn handle_join_result(
 
 /// Sleep for the poll duration, but return early if shutdown is requested.
 /// Returns `true` if shutdown was requested.
-async fn wait_or_shutdown(
-    duration: Duration,
-    shutdown: &mut watch::Receiver<bool>,
-) -> bool {
+async fn wait_or_shutdown(duration: Duration, shutdown: &mut watch::Receiver<bool>) -> bool {
     tokio::select! {
         _ = tokio::time::sleep(duration) => false,
         changed = shutdown.changed() => {

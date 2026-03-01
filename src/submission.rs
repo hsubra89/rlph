@@ -1,7 +1,7 @@
 use std::process::Command;
 
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use tracing::info;
 
 use crate::error::{Error, Result};
