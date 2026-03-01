@@ -35,9 +35,9 @@ pub(crate) fn git_in_dir(cwd: &Path, args: &[&str]) -> std::result::Result<Strin
         .map_err(|e| format!("failed to run git: {e}"))?;
 
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+        Err(String::from_utf8_lossy(&output.stderr).into_owned())
     }
 }
 
