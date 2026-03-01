@@ -35,6 +35,9 @@ pub async fn run_fix(
     prompt_engine: &PromptEngine,
     repo_root: &Path,
 ) -> Result<()> {
+    // Validate pr_branch from GitHub API at the trust boundary
+    validate_branch_name(pr_branch)?;
+
     // 1. Fetch review comment and parse checked items
     info!(pr_number, "fetching PR comments");
     let comments = submission.fetch_pr_comments(pr_number)?;
@@ -303,9 +306,6 @@ fn create_fix_worktree(
 /// Rebase current branch onto origin/<pr-branch>.
 fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
     let remote_ref = format!("origin/{pr_branch}");
-
-    // Fetch latest
-    git(worktree_path, &["fetch", "origin", pr_branch])?;
 
     let output = Command::new("git")
         .args(["rebase", &remote_ref])
