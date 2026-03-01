@@ -114,19 +114,8 @@ struct FixContext<'a> {
     worktree_path: &'a Path,
 }
 
-/// Inner function: spawn agent, parse output, rebase/push, update comment.
-#[allow(clippy::too_many_lines)]
-async fn run_fix_agent_and_apply(
-    ctx: &FixContext<'_>,
-    config: &Config,
-    submission: &impl SubmissionBackend,
-    prompt_engine: &PromptEngine,
-    correction_runner: &(impl CorrectionRunner + ?Sized),
-) -> Result<()> {
-    let fix_config = &config.fix;
-    let item = ctx.item;
-
-    // 4. Render prompt and spawn fix agent
+/// Build template variables from a fix item's finding.
+fn build_finding_vars(item: &FixItem) -> HashMap<String, String> {
     let mut vars = HashMap::new();
     vars.insert("finding_id".to_string(), item.finding.id.clone());
     vars.insert("finding_file".to_string(), item.finding.file.clone());
@@ -147,10 +136,24 @@ async fn run_fix_agent_and_apply(
             item.finding.depends_on.join(", ")
         },
     );
+    vars
+}
 
+/// Inner function: spawn agent, parse output, rebase/push, update comment.
+async fn run_fix_agent_and_apply(
+    ctx: &FixContext<'_>,
+    config: &Config,
+    submission: &impl SubmissionBackend,
+    prompt_engine: &PromptEngine,
+    correction_runner: &(impl CorrectionRunner + ?Sized),
+) -> Result<()> {
+    let fix_config = &config.fix;
+
+    // 4. Render prompt and spawn fix agent
+    let vars = build_finding_vars(ctx.item);
     let prompt = prompt_engine.render_phase(&fix_config.prompt, &vars)?;
 
-    info!(finding_id = %item.finding.id, "spawning fix agent");
+    info!(finding_id = %ctx.item.finding.id, "spawning fix agent");
     let runner = build_runner(
         fix_config.runner,
         &fix_config.agent_binary,
@@ -165,23 +168,31 @@ async fn run_fix_agent_and_apply(
     let run_result = runner.run(Phase::Fix, &prompt, ctx.worktree_path).await?;
 
     // 5. Parse FixOutput JSON (with retry on failure)
-    let fix_output =
-        parse_fix_with_retry(&run_result, fix_config, ctx.worktree_path, correction_runner)
-            .await?;
+    let fix_output = parse_fix_with_retry(
+        &run_result,
+        fix_config,
+        ctx.worktree_path,
+        correction_runner,
+    )
+    .await?;
 
-    info!(finding_id = %item.finding.id, ?fix_output, "fix agent completed");
+    info!(finding_id = %ctx.item.finding.id, ?fix_output, "fix agent completed");
 
-    // 6 & 7. Apply result: rebase+push or update comment
-    let fix_result = match &fix_output {
+    // 6 & 7. Apply result and update comment
+    apply_fix_and_update_comment(ctx, &fix_output, submission).await
+}
+
+/// Apply fix result (rebase+push if fixed) and update the review comment.
+async fn apply_fix_and_update_comment(
+    ctx: &FixContext<'_>,
+    fix_output: &StandaloneFixOutput,
+    submission: &impl SubmissionBackend,
+) -> Result<()> {
+    let fix_result = match fix_output {
         StandaloneFixOutput::Fixed { commit_message } => {
             info!(commit_message, "fix applied — rebasing and pushing");
-
-            // Rebase onto origin/<pr-branch>
             rebase_onto(ctx.worktree_path, ctx.pr_branch)?;
-
-            // Push to PR branch: git push origin <fix-branch>:<pr-branch>
             push_to_pr_branch(ctx.worktree_path, ctx.fix_branch, ctx.pr_branch)?;
-
             FixResultKind::Fixed {
                 commit_message: commit_message.clone(),
             }
@@ -212,8 +223,8 @@ async fn run_fix_agent_and_apply(
             ))
         })?;
 
-    let updated_body = update_comment(fresh_body, &item.finding.id, &fix_result);
-    info!(ctx.pr_number, finding_id = %item.finding.id, "updating review comment");
+    let updated_body = update_comment(fresh_body, &ctx.item.finding.id, &fix_result);
+    info!(ctx.pr_number, finding_id = %ctx.item.finding.id, "updating review comment");
     submission.upsert_review_comment(ctx.pr_number, &updated_body)?;
 
     Ok(())
