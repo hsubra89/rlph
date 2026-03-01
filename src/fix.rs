@@ -248,10 +248,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         }
 
         // Build dependency graph once (edges are stable across polls)
-        if finding_deps.is_none() {
-            finding_deps = Some(FindingDeps::build(&items));
-        }
-        let deps = finding_deps.as_ref().unwrap();
+        let deps = finding_deps.get_or_insert_with(|| FindingDeps::build(&items));
         let resolved = resolved_finding_ids(&items);
 
         // Filter: checked AND not already tracked AND deps met
