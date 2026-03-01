@@ -38,7 +38,8 @@ where
         }
     }
 
-    unreachable!()
+    // max_retries == 0: no loop iterations, so make a single attempt
+    f()
 }
 
 /// Task priority (1 = highest, 9 = lowest).
