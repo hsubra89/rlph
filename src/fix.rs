@@ -86,53 +86,33 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let mut skipped: usize = 0;
     for item in &eligible {
         let item = (*item).clone();
+
+        let Some(prepared) = prepare_fix_item(item, pr_number, &fix_config, prompt_engine) else {
+            skipped += 1;
+            continue;
+        };
+
         let fix_config = Arc::clone(&fix_config);
         let worktree_dir = Arc::clone(&worktree_dir);
         let repo_root = Arc::clone(&repo_root);
         let pr_branch = pr_branch.clone();
         let submission = Arc::clone(&submission);
         let correction_runner = Arc::clone(&correction_runner);
-
-        let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
-        if let Err(e) = validate_branch_name(&fix_branch) {
-            warn!(finding_id = %item.finding.id, error = %e, "invalid fix branch name, skipping");
-            skipped += 1;
-            continue;
-        }
-
-        // Pre-render prompt
-        let vars = build_finding_vars(&item);
-        let prompt = match prompt_engine.render_phase(&fix_config.prompt, &vars) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(finding_id = %item.finding.id, error = %e, "failed to render prompt, skipping");
-                skipped += 1;
-                continue;
-            }
-        };
-
-        info!(
-            finding_id = %item.finding.id,
-            file = %item.finding.file,
-            line = item.finding.line,
-            severity = %item.finding.severity.label(),
-            "spawning parallel fix agent"
-        );
-
         let concurrency = Arc::clone(&concurrency);
+
         join_set.spawn(async move {
             let _permit = concurrency
                 .acquire()
                 .await
                 .expect("concurrency semaphore closed unexpectedly");
             let ctx = FixContext {
-                item,
+                item: prepared.item,
                 pr_number,
                 pr_branch: &pr_branch,
-                fix_branch: &fix_branch,
+                fix_branch: &prepared.fix_branch,
                 fix_config: &fix_config,
                 agent_timeout_retries,
-                prompt: &prompt,
+                prompt: &prepared.prompt,
             };
             run_single_fix(
                 ctx,
@@ -276,32 +256,12 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         let mut skipped: usize = 0;
         for item in newly_checked {
             let finding_id = item.finding.id.clone();
-            let fix_branch = format!("rlph-fix-{pr_number}-{finding_id}");
-            if let Err(e) = validate_branch_name(&fix_branch) {
-                warn!(finding_id = %finding_id, error = %e, "invalid fix branch name, skipping");
+
+            let Some(prepared) = prepare_fix_item(item, pr_number, &fix_config, prompt_engine) else {
                 failed.insert(finding_id);
                 skipped += 1;
                 continue;
-            }
-
-            let vars = build_finding_vars(&item);
-            let prompt = match prompt_engine.render_phase(&fix_config.prompt, &vars) {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!(finding_id = %finding_id, error = %e, "failed to render prompt, skipping");
-                    failed.insert(finding_id);
-                    skipped += 1;
-                    continue;
-                }
             };
-
-            info!(
-                finding_id = %finding_id,
-                file = %item.finding.file,
-                line = item.finding.line,
-                severity = %item.finding.severity.label(),
-                "spawning fix agent"
-            );
 
             in_flight.insert(finding_id.clone());
             let finding_id_for_map = finding_id.clone();
@@ -320,13 +280,13 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
                     .await
                     .expect("concurrency semaphore closed unexpectedly");
                 let ctx = FixContext {
-                    item,
+                    item: prepared.item,
                     pr_number,
                     pr_branch: &pr_branch,
-                    fix_branch: &fix_branch,
+                    fix_branch: &prepared.fix_branch,
                     fix_config: &fix_config,
                     agent_timeout_retries,
-                    prompt: &prompt,
+                    prompt: &prepared.prompt,
                 };
                 let result = run_single_fix(
                     ctx,
@@ -526,6 +486,53 @@ fn build_finding_vars(item: &FixItem) -> HashMap<String, String> {
         item.finding.depends_on.join(", "),
     );
     vars
+}
+
+/// Validated and pre-rendered data for spawning a fix agent.
+struct PreparedFixItem {
+    item: FixItem,
+    fix_branch: String,
+    prompt: String,
+}
+
+/// Validate branch name, render the prompt, and log the spawn.
+///
+/// Returns `None` if the item should be skipped (invalid branch name or prompt
+/// rendering failure), with a warning already logged.
+fn prepare_fix_item(
+    item: FixItem,
+    pr_number: u64,
+    fix_config: &ReviewStepConfig,
+    prompt_engine: &PromptEngine,
+) -> Option<PreparedFixItem> {
+    let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
+    if let Err(e) = validate_branch_name(&fix_branch) {
+        warn!(finding_id = %item.finding.id, error = %e, "invalid fix branch name, skipping");
+        return None;
+    }
+
+    let vars = build_finding_vars(&item);
+    let prompt = match prompt_engine.render_phase(&fix_config.prompt, &vars) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(finding_id = %item.finding.id, error = %e, "failed to render prompt, skipping");
+            return None;
+        }
+    };
+
+    info!(
+        finding_id = %item.finding.id,
+        file = %item.finding.file,
+        line = item.finding.line,
+        severity = %item.finding.severity.label(),
+        "spawning fix agent"
+    );
+
+    Some(PreparedFixItem {
+        item,
+        fix_branch,
+        prompt,
+    })
 }
 
 /// Inner function: spawn agent, parse output, rebase/push with retry, update comment.
