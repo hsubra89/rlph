@@ -265,16 +265,19 @@ async fn parse_fix_with_retry(
     }
 }
 
+/// Run a git command in the given directory, mapping failures to [`Error::Orchestrator`].
+fn run_git(cwd: &Path, args: &[&str], label: &str) -> Result<String> {
+    git_in_dir(cwd, args)
+        .map_err(|stderr| Error::Orchestrator(format!("{label} failed: {stderr}")))
+}
+
 /// Rebase current branch onto origin/<pr-branch>.
 fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
-    git_in_dir(worktree_path, &["fetch", "origin", pr_branch]).map_err(|stderr| {
-        Error::Orchestrator(format!("git fetch origin {pr_branch} failed: {stderr}"))
-    })?;
+    run_git(worktree_path, &["fetch", "origin", pr_branch], &format!("git fetch origin {pr_branch}"))?;
 
     let remote_ref = format!("origin/{pr_branch}");
 
     if let Err(stderr) = git_in_dir(worktree_path, &["rebase", &remote_ref]) {
-        // Abort the rebase on failure
         let _ = git_in_dir(worktree_path, &["rebase", "--abort"]);
         return Err(Error::Orchestrator(format!(
             "git rebase onto {remote_ref} failed: {stderr}"
@@ -288,11 +291,7 @@ fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
 /// Push fix branch to PR branch: `git push origin <fix-branch>:<pr-branch>`.
 fn push_to_pr_branch(worktree_path: &Path, fix_branch: &str, pr_branch: &str) -> Result<()> {
     let refspec = format!("{fix_branch}:{pr_branch}");
-
-    git_in_dir(worktree_path, &["push", "origin", &refspec]).map_err(|stderr| {
-        Error::Orchestrator(format!("git push origin {refspec} failed: {stderr}"))
-    })?;
-
+    run_git(worktree_path, &["push", "origin", &refspec], &format!("git push origin {refspec}"))?;
     info!(refspec, "pushed fix to PR branch");
     Ok(())
 }
