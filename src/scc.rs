@@ -4,6 +4,7 @@ use std::hash::Hash;
 /// Result of Tarjan's strongly connected components algorithm.
 pub struct TarjanScc<T> {
     pub components: Vec<Vec<T>>,
+    self_loops: HashSet<T>,
 }
 
 impl<T: Eq + Hash + Clone + Ord> TarjanScc<T> {
@@ -13,8 +14,12 @@ impl<T: Eq + Hash + Clone + Ord> TarjanScc<T> {
     /// deterministic output, then processed with Tarjan's algorithm.
     pub fn compute(edges: &HashMap<T, HashSet<T>>) -> Self {
         let mut all_nodes: HashSet<&T> = HashSet::new();
+        let mut self_loops = HashSet::new();
         for (src, dsts) in edges {
             all_nodes.insert(src);
+            if dsts.contains(src) {
+                self_loops.insert(src.clone());
+            }
             for dst in dsts {
                 all_nodes.insert(dst);
             }
@@ -32,18 +37,20 @@ impl<T: Eq + Hash + Clone + Ord> TarjanScc<T> {
 
         Self {
             components: state.components,
+            self_loops,
         }
     }
 
     /// Return the set of nodes that belong to any non-trivial SCC (size > 1)
     /// or have a self-loop.
-    pub fn cycle_members(&self, edges: &HashMap<T, HashSet<T>>) -> HashSet<T> {
+    pub fn cycle_members(&self) -> HashSet<T> {
         let mut members = HashSet::new();
         for component in &self.components {
-            let has_self_loop = component
-                .iter()
-                .any(|node| edges.get(node).is_some_and(|deps| deps.contains(node)));
-            if component.len() > 1 || has_self_loop {
+            if component.len() > 1
+                || component
+                    .iter()
+                    .any(|node| self.self_loops.contains(node))
+            {
                 members.extend(component.iter().cloned());
             }
         }
@@ -138,21 +145,21 @@ mod tests {
     fn no_edges_no_cycles() {
         let edges: HashMap<String, HashSet<String>> = HashMap::new();
         let scc = TarjanScc::compute(&edges);
-        assert!(scc.cycle_members(&edges).is_empty());
+        assert!(scc.cycle_members().is_empty());
     }
 
     #[test]
     fn linear_chain_no_cycles() {
         let edges = edges_from(&[("a", &["b"]), ("b", &["c"])]);
         let scc = TarjanScc::compute(&edges);
-        assert!(scc.cycle_members(&edges).is_empty());
+        assert!(scc.cycle_members().is_empty());
     }
 
     #[test]
     fn two_node_cycle() {
         let edges = edges_from(&[("a", &["b"]), ("b", &["a"])]);
         let scc = TarjanScc::compute(&edges);
-        let members = scc.cycle_members(&edges);
+        let members = scc.cycle_members();
         assert_eq!(members.len(), 2);
         assert!(members.contains("a"));
         assert!(members.contains("b"));
@@ -162,7 +169,7 @@ mod tests {
     fn three_node_cycle() {
         let edges = edges_from(&[("a", &["b"]), ("b", &["c"]), ("c", &["a"])]);
         let scc = TarjanScc::compute(&edges);
-        let members = scc.cycle_members(&edges);
+        let members = scc.cycle_members();
         assert_eq!(members.len(), 3);
         assert!(members.contains("a"));
         assert!(members.contains("b"));
@@ -173,7 +180,7 @@ mod tests {
     fn self_loop() {
         let edges = edges_from(&[("a", &["a"])]);
         let scc = TarjanScc::compute(&edges);
-        let members = scc.cycle_members(&edges);
+        let members = scc.cycle_members();
         assert_eq!(members.len(), 1);
         assert!(members.contains("a"));
     }
@@ -187,7 +194,7 @@ mod tests {
             ("d", &["c"]),
         ]);
         let scc = TarjanScc::compute(&edges);
-        let members = scc.cycle_members(&edges);
+        let members = scc.cycle_members();
         assert_eq!(members.len(), 2);
         assert!(members.contains("a"));
         assert!(members.contains("b"));
@@ -202,7 +209,7 @@ mod tests {
             ("y", &["x"]),
         ]);
         let scc = TarjanScc::compute(&edges);
-        let members = scc.cycle_members(&edges);
+        let members = scc.cycle_members();
         assert_eq!(members.len(), 4);
         assert!(members.contains("a"));
         assert!(members.contains("b"));
@@ -216,7 +223,7 @@ mod tests {
         edges.insert(1, [2].into_iter().collect());
         edges.insert(2, [1].into_iter().collect());
         let scc = TarjanScc::compute(&edges);
-        let members = scc.cycle_members(&edges);
+        let members = scc.cycle_members();
         assert_eq!(members.len(), 2);
         assert!(members.contains(&1));
         assert!(members.contains(&2));

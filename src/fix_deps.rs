@@ -40,7 +40,7 @@ impl FindingDeps {
             }
         }
 
-        let cycle_members = TarjanScc::compute(&edges).cycle_members(&edges);
+        let cycle_members = TarjanScc::compute(&edges).cycle_members();
         if !cycle_members.is_empty() {
             let mut sorted: Vec<&str> = cycle_members.iter().map(|s| s.as_str()).collect();
             sorted.sort();
