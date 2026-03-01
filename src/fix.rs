@@ -76,7 +76,10 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
         return Ok(());
     }
 
-    info!(count = eligible.len(), "found checked items for parallel fix");
+    info!(
+        count = eligible.len(),
+        "found checked items for parallel fix"
+    );
 
     // 3. Pre-compute per-item data and spawn into JoinSet
     let fix_config = config.fix.clone();
@@ -315,10 +318,7 @@ async fn run_fix_agent_and_apply(
         .find(|c| c.body.contains(REVIEW_MARKER))
         .map(|c| c.body.as_str())
         .ok_or_else(|| {
-            Error::Orchestrator(format!(
-                "review comment disappeared from PR #{}",
-                pr_number
-            ))
+            Error::Orchestrator(format!("review comment disappeared from PR #{}", pr_number))
         })?;
 
     let updated_body = update_comment(fresh_body, &item.finding.id, &fix_result);

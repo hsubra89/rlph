@@ -42,7 +42,6 @@ fn init_temp_repo() -> TempDir {
     dir
 }
 
-
 fn create_remote_branch(repo: &TempDir, branch: &str) {
     run_git(repo.path(), &["checkout", "-b", branch]);
     std::fs::write(repo.path().join("branch.txt"), branch).unwrap();

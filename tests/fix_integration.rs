@@ -26,12 +26,7 @@ fn setup_git_repo() -> (tempfile::TempDir, tempfile::TempDir) {
     run_git(repo_dir.path(), &["branch", "-M", "main"]);
     run_git(
         repo_dir.path(),
-        &[
-            "remote",
-            "add",
-            "origin",
-            bare_dir.path().to_str().unwrap(),
-        ],
+        &["remote", "add", "origin", bare_dir.path().to_str().unwrap()],
     );
     run_git(repo_dir.path(), &["push", "-u", "origin", "main"]);
 
@@ -64,7 +59,10 @@ fn make_finding(id: &str) -> ReviewFinding {
 
 /// Build a review comment with specific findings checked, including the rlph marker.
 fn make_review_comment(findings: &[ReviewFinding], checked_ids: &[&str]) -> String {
-    let mut body = format!("{REVIEW_MARKER}\n{}", render_findings_for_github(findings, "Test review summary."));
+    let mut body = format!(
+        "{REVIEW_MARKER}\n{}",
+        render_findings_for_github(findings, "Test review summary.")
+    );
     for id in checked_ids {
         let lines: Vec<String> = body
             .lines()
@@ -226,8 +224,7 @@ async fn test_parallel_fix_multiple_checked_items() {
         make_finding("bug-beta"),
         make_finding("bug-gamma"),
     ];
-    let review_comment =
-        make_review_comment(&findings, &["bug-alpha", "bug-beta", "bug-gamma"]);
+    let review_comment = make_review_comment(&findings, &["bug-alpha", "bug-beta", "bug-gamma"]);
 
     let submission = Arc::new(MockFixSubmission::new(review_comment));
     let correction_runner = Arc::new(NoOpCorrectionRunner);
@@ -358,9 +355,6 @@ async fn test_parallel_fix_worktrees_cleaned_up() {
     assert!(
         wt_entries.is_empty(),
         "expected all fix worktrees to be cleaned up, found: {:?}",
-        wt_entries
-            .iter()
-            .map(|e| e.file_name())
-            .collect::<Vec<_>>()
+        wt_entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
     );
 }
