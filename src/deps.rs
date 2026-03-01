@@ -67,14 +67,7 @@ impl DependencyGraph {
         let mut cycle_peers: HashMap<u64, HashSet<u64>> = HashMap::new();
         let mut cycles_for_log = Vec::new();
 
-        for component in &scc.components {
-            let has_self_loop = component
-                .iter()
-                .any(|node| self.edges.get(node).is_some_and(|deps| deps.contains(node)));
-            if component.len() <= 1 && !has_self_loop {
-                continue;
-            }
-
+        for component in scc.cycle_components() {
             let component_set: HashSet<u64> = component.iter().copied().collect();
             let mut component_sorted: Vec<u64> = component_set.iter().copied().collect();
             component_sorted.sort_unstable();

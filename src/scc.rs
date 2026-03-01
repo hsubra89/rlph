@@ -41,20 +41,19 @@ impl<T: Eq + Hash + Clone + Ord> TarjanScc<T> {
         }
     }
 
+    /// Return only non-trivial SCCs (size > 1 or containing a self-loop).
+    pub fn cycle_components(&self) -> impl Iterator<Item = &Vec<T>> {
+        self.components.iter().filter(|component| {
+            component.len() > 1 || component.iter().any(|node| self.self_loops.contains(node))
+        })
+    }
+
     /// Return the set of nodes that belong to any non-trivial SCC (size > 1)
     /// or have a self-loop.
     pub fn cycle_members(&self) -> HashSet<T> {
-        let mut members = HashSet::new();
-        for component in &self.components {
-            if component.len() > 1
-                || component
-                    .iter()
-                    .any(|node| self.self_loops.contains(node))
-            {
-                members.extend(component.iter().cloned());
-            }
-        }
-        members
+        self.cycle_components()
+            .flat_map(|c| c.iter().cloned())
+            .collect()
     }
 }
 
