@@ -245,7 +245,10 @@ const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 /// + output_tokens) / context_window * 100.
 fn extract_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f64> {
     let usage = val.pointer("/message/usage")?;
-    let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let input = usage
+        .get("input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let cache_create = usage
         .get("cache_creation_input_tokens")
         .and_then(|v| v.as_u64())
@@ -254,7 +257,10 @@ fn extract_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f
         .get("cache_read_input_tokens")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let total = input + cache_create + cache_read + output;
     let pct = total as f64 / context_window as f64 * 100.0;
     Some(pct.min(100.0))
@@ -283,9 +289,7 @@ fn format_claude_line(
     }
     // Compute possibly-updated context usage percentage from this event.
     let context_pct = extract_context_pct(&val, DEFAULT_CONTEXT_WINDOW).or(context_pct);
-    let pct_tag = context_pct
-        .map(|p| format!(" {p:.0}%"))
-        .unwrap_or_default();
+    let pct_tag = context_pct.map(|p| format!(" {p:.0}%")).unwrap_or_default();
     let Some(content) = val.pointer("/message/content").and_then(|v| v.as_array()) else {
         return (false, context_pct);
     };
