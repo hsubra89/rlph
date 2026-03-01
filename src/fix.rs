@@ -16,7 +16,7 @@ const MAX_PUSH_ATTEMPTS: u32 = 3;
 const MAX_FETCH_ATTEMPTS: u32 = 3;
 
 /// Maximum number of fix agents running concurrently.
-const MAX_CONCURRENT_FIXES: usize = 3;
+const MAX_CONCURRENT_FIXES: usize = 2;
 
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
