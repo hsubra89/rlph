@@ -544,7 +544,8 @@ impl<
 
         match result {
             Ok(()) => {
-                // 12. Mark done
+                // 12. Mark done — no explicit source.mark_done() call; GitHub auto-closes
+                //     the issue when the PR merges
                 self.state_mgr.complete_current_task()?;
                 let _ = self.state_mgr.remove_worktree_mapping(&task_id);
 
