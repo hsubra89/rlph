@@ -99,27 +99,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
         let shared = shared.clone();
 
         join_set.spawn(async move {
-            let _permit = shared.concurrency
-                .acquire()
-                .await
-                .expect("concurrency semaphore closed unexpectedly");
-            let ctx = FixContext {
-                item: prepared.item,
-                pr_number,
-                pr_branch: &shared.pr_branch,
-                fix_branch: &prepared.fix_branch,
-                fix_config: &shared.fix_config,
-                agent_timeout_retries: shared.agent_timeout_retries,
-                prompt: &prepared.prompt,
-            };
-            run_single_fix(
-                ctx,
-                &shared.worktree_dir,
-                &shared.repo_root,
-                &*shared.submission,
-                &*shared.correction_runner,
-            )
-            .await
+            acquire_and_run_fix(&shared, prepared, pr_number).await
         });
     }
 
@@ -272,27 +252,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             let shared = shared.clone();
 
             let abort_handle = join_set.spawn(async move {
-                let _permit = shared.concurrency
-                    .acquire()
-                    .await
-                    .expect("concurrency semaphore closed unexpectedly");
-                let ctx = FixContext {
-                    item: prepared.item,
-                    pr_number,
-                    pr_branch: &shared.pr_branch,
-                    fix_branch: &prepared.fix_branch,
-                    fix_config: &shared.fix_config,
-                    agent_timeout_retries: shared.agent_timeout_retries,
-                    prompt: &prepared.prompt,
-                };
-                let result = run_single_fix(
-                    ctx,
-                    &shared.worktree_dir,
-                    &shared.repo_root,
-                    &*shared.submission,
-                    &*shared.correction_runner,
-                )
-                .await;
+                let result = acquire_and_run_fix(&shared, prepared, pr_number).await;
                 (finding_id, result)
             });
             task_finding_ids.insert(abort_handle.id(), finding_id_for_map);
@@ -563,6 +523,43 @@ fn prepare_fix_item(
         fix_branch,
         prompt,
     })
+}
+
+/// Acquire concurrency permit, build [`FixContext`], and run a single fix.
+///
+/// Shared by both [`run_fix`] (one-shot) and [`run_fix_loop`] (polling) spawn blocks.
+async fn acquire_and_run_fix<S: SubmissionBackend, C: CorrectionRunner>(
+    shared: &SharedFixState<S, C>,
+    prepared: PreparedFixItem,
+    pr_number: u64,
+) -> Result<()> {
+    let _permit = shared
+        .concurrency
+        .acquire()
+        .await
+        .expect("concurrency semaphore closed unexpectedly");
+    let PreparedFixItem {
+        item,
+        fix_branch,
+        prompt,
+    } = prepared;
+    let ctx = FixContext {
+        item,
+        pr_number,
+        pr_branch: &shared.pr_branch,
+        fix_branch: &fix_branch,
+        fix_config: &shared.fix_config,
+        agent_timeout_retries: shared.agent_timeout_retries,
+        prompt: &prompt,
+    };
+    run_single_fix(
+        ctx,
+        &shared.worktree_dir,
+        &shared.repo_root,
+        &*shared.submission,
+        &*shared.correction_runner,
+    )
+    .await
 }
 
 /// Inner function: spawn agent, parse output, rebase/push with retry, update comment.
