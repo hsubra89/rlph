@@ -221,6 +221,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             Ok(result) => result,
             Err(e) => {
                 warn!(error = %e, cycle, "failed to fetch review comment, retrying next cycle");
+                cached_comment_id = None;
                 if wait_or_shutdown(poll_duration, &mut shutdown).await {
                     break;
                 }
