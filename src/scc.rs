@@ -186,12 +186,7 @@ mod tests {
 
     #[test]
     fn mixed_cycle_and_non_cycle() {
-        let edges = edges_from(&[
-            ("a", &["b"]),
-            ("b", &["a"]),
-            ("c", &[]),
-            ("d", &["c"]),
-        ]);
+        let edges = edges_from(&[("a", &["b"]), ("b", &["a"]), ("c", &[]), ("d", &["c"])]);
         let scc = TarjanScc::compute(&edges);
         let members = scc.cycle_members();
         assert_eq!(members.len(), 2);
@@ -201,12 +196,7 @@ mod tests {
 
     #[test]
     fn disjoint_cycles() {
-        let edges = edges_from(&[
-            ("a", &["b"]),
-            ("b", &["a"]),
-            ("x", &["y"]),
-            ("y", &["x"]),
-        ]);
+        let edges = edges_from(&[("a", &["b"]), ("b", &["a"]), ("x", &["y"]), ("y", &["x"])]);
         let scc = TarjanScc::compute(&edges);
         let members = scc.cycle_members();
         assert_eq!(members.len(), 4);
