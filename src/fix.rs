@@ -3,7 +3,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
+
+/// Serializes comment re-fetch + update to prevent concurrent fix agents from racing.
+static COMMENT_UPDATE_LOCK: Semaphore = Semaphore::const_new(1);
 
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
@@ -82,7 +86,6 @@ pub async fn run_fix(
         pr_branch,
         fix_branch: &fix_branch,
         worktree_path: &worktree_path,
-        comment_body: &review_comment.body,
     };
     let result = run_fix_agent_and_apply(&ctx, config, submission, prompt_engine).await;
 
@@ -100,7 +103,6 @@ struct FixContext<'a> {
     pr_branch: &'a str,
     fix_branch: &'a str,
     worktree_path: &'a Path,
-    comment_body: &'a str,
 }
 
 /// Inner function: spawn agent, parse output, rebase/push, update comment.
@@ -180,8 +182,25 @@ async fn run_fix_agent_and_apply(
         }
     };
 
-    // Update review comment
-    let updated_body = update_comment(ctx.comment_body, &item.finding.id, &fix_result);
+    // Re-fetch and update review comment under lock to avoid racing with concurrent fix agents
+    let _permit = COMMENT_UPDATE_LOCK
+        .acquire()
+        .await
+        .expect("comment update semaphore closed unexpectedly");
+
+    let comments = submission.fetch_pr_comments(ctx.pr_number)?;
+    let fresh_body = comments
+        .iter()
+        .find(|c| c.body.contains(REVIEW_MARKER))
+        .map(|c| c.body.as_str())
+        .ok_or_else(|| {
+            Error::Orchestrator(format!(
+                "review comment disappeared from PR #{}",
+                ctx.pr_number
+            ))
+        })?;
+
+    let updated_body = update_comment(fresh_body, &item.finding.id, &fix_result);
     info!(ctx.pr_number, finding_id = %item.finding.id, "updating review comment");
     submission.upsert_review_comment(ctx.pr_number, &updated_body)?;
 
