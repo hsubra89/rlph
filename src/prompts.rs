@@ -14,28 +14,6 @@ const DEFAULT_REVIEW_FIX: &str = include_str!("default_prompts/review-fix-issue.
 const DEFAULT_PRD: &str = include_str!("default_prompts/prd.md");
 const FINDINGS_SCHEMA: &str = include_str!("default_prompts/_findings-schema.md");
 
-/// Known template variable names for validation of user overrides.
-const KNOWN_VARIABLES: &[&str] = &[
-    "issue_title",
-    "issue_body",
-    "issue_number",
-    "issue_url",
-    "repo_path",
-    "branch_name",
-    "worktree_path",
-    "issues_json",
-    "submission_instructions",
-    "review_outputs",
-    "review_phase_name",
-    "fix_instructions",
-    "pr_comments",
-    "pr_number",
-    "pr_branch",
-    "base_branch",
-    "has_pr_comments",
-    "findings_schema",
-];
-
 fn default_template(phase: &str) -> Option<&'static str> {
     match phase {
         "choose" => Some(DEFAULT_CHOOSE),
@@ -80,7 +58,9 @@ impl PromptEngine {
                         path.display()
                     ))
                 })?;
-                validate_user_template(&content)?;
+                // No pre-render validation — upon's own render errors include
+                // line/column and the offending snippet, which is clearer than
+                // anything we could produce with regex-based checks.
                 return Ok(content);
             }
         }
@@ -120,20 +100,6 @@ pub fn render_template(template: &str, vars: &HashMap<String, String>) -> Result
         )
         .to_string()
         .map_err(|e| Error::Prompt(format!("template render error: {e}")))
-}
-
-/// Validate that a user-override template only references known variables.
-fn validate_user_template(template: &str) -> Result<()> {
-    let re = regex::Regex::new(r"\{\{[\s]*([a-z_]+)[\s]*\}\}").expect("valid regex");
-    for cap in re.captures_iter(template) {
-        let var_name = &cap[1];
-        if !KNOWN_VARIABLES.contains(&var_name) {
-            return Err(Error::Prompt(format!(
-                "unknown template variable in override: {var_name}"
-            )));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -394,30 +360,19 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_user_template_accepts_known_vars() {
-        assert!(validate_user_template("Hello {{issue_title}} world").is_ok());
-    }
-
-    #[test]
-    fn test_validate_user_template_rejects_unknown_vars() {
-        let err = validate_user_template("Hello {{bad_var}} world").unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("unknown template variable in override")
-        );
-    }
-
-    #[test]
-    fn test_override_with_unknown_var_rejected() {
+    fn test_override_with_unknown_var_loads_but_fails_at_render() {
         let dir = TempDir::new().unwrap();
         let override_path = dir.path().join("choose-issue.md");
         fs::write(&override_path, "Custom: {{bad_var}}").unwrap();
 
         let engine = PromptEngine::new(Some(dir.path().to_string_lossy().to_string()));
-        let err = engine.load_template("choose").unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("unknown template variable in override")
-        );
+        // load_template succeeds — validation deferred to render time
+        let template = engine.load_template("choose").unwrap();
+        assert_eq!(template, "Custom: {{bad_var}}");
+
+        // render fails with upon's clear error
+        let vars = HashMap::new();
+        let err = render_template(&template, &vars).unwrap_err();
+        assert!(err.to_string().contains("render error"), "got: {err}");
     }
 }
