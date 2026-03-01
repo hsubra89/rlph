@@ -74,52 +74,50 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     );
 
     // 3. Pre-compute per-item data and spawn into JoinSet
-    let fix_config = Arc::new(config.fix.clone());
-    let worktree_dir: Arc<str> = Arc::from(config.worktree_dir.as_str());
-    let agent_timeout_retries = config.agent_timeout_retries;
-    let repo_root: Arc<Path> = Arc::from(repo_root);
-    let pr_branch = pr_branch.to_string();
+    let shared = SharedFixState {
+        fix_config: Arc::new(config.fix.clone()),
+        worktree_dir: Arc::from(config.worktree_dir.as_str()),
+        repo_root: Arc::from(repo_root),
+        pr_branch: Arc::from(pr_branch),
+        submission: Arc::clone(&submission),
+        correction_runner: Arc::clone(&correction_runner),
+        concurrency: Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES)),
+        agent_timeout_retries: config.agent_timeout_retries,
+    };
 
     let mut join_set = tokio::task::JoinSet::new();
-    let concurrency = Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES));
 
     let mut skipped: usize = 0;
     for item in &eligible {
         let item = (*item).clone();
 
-        let Some(prepared) = prepare_fix_item(item, pr_number, &fix_config, prompt_engine) else {
+        let Some(prepared) = prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine) else {
             skipped += 1;
             continue;
         };
 
-        let fix_config = Arc::clone(&fix_config);
-        let worktree_dir = Arc::clone(&worktree_dir);
-        let repo_root = Arc::clone(&repo_root);
-        let pr_branch = pr_branch.clone();
-        let submission = Arc::clone(&submission);
-        let correction_runner = Arc::clone(&correction_runner);
-        let concurrency = Arc::clone(&concurrency);
+        let shared = shared.clone();
 
         join_set.spawn(async move {
-            let _permit = concurrency
+            let _permit = shared.concurrency
                 .acquire()
                 .await
                 .expect("concurrency semaphore closed unexpectedly");
             let ctx = FixContext {
                 item: prepared.item,
                 pr_number,
-                pr_branch: &pr_branch,
+                pr_branch: &shared.pr_branch,
                 fix_branch: &prepared.fix_branch,
-                fix_config: &fix_config,
-                agent_timeout_retries,
+                fix_config: &shared.fix_config,
+                agent_timeout_retries: shared.agent_timeout_retries,
                 prompt: &prepared.prompt,
             };
             run_single_fix(
                 ctx,
-                &worktree_dir,
-                &repo_root,
-                &*submission,
-                &*correction_runner,
+                &shared.worktree_dir,
+                &shared.repo_root,
+                &*shared.submission,
+                &*shared.correction_runner,
             )
             .await
         });
@@ -186,13 +184,17 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 ) -> Result<()> {
     validate_branch_name(pr_branch)?;
 
-    let fix_config = Arc::new(config.fix.clone());
-    let worktree_dir: Arc<str> = Arc::from(config.worktree_dir.as_str());
-    let agent_timeout_retries = config.agent_timeout_retries;
-    let repo_root: Arc<Path> = Arc::from(repo_root);
-    let pr_branch_owned: Arc<str> = Arc::from(pr_branch);
+    let shared = SharedFixState {
+        fix_config: Arc::new(config.fix.clone()),
+        worktree_dir: Arc::from(config.worktree_dir.as_str()),
+        repo_root: Arc::from(repo_root),
+        pr_branch: Arc::from(pr_branch),
+        submission: Arc::clone(&submission),
+        correction_runner: Arc::clone(&correction_runner),
+        concurrency: Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES)),
+        agent_timeout_retries: config.agent_timeout_retries,
+    };
     let poll_duration = Duration::from_secs(config.poll_seconds);
-    let concurrency = Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES));
 
     let mut join_set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
     let mut task_finding_ids: HashMap<tokio::task::Id, String> = HashMap::new();
@@ -215,7 +217,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
         // Fetch and parse
         info!(pr_number, cycle, in_flight = in_flight.len(), completed = completed.len(), "polling for newly-checked items");
-        let (items, comment_id) = match fetch_and_parse_items(pr_number, &*submission, cached_comment_id) {
+        let (items, comment_id) = match fetch_and_parse_items(pr_number, &*shared.submission, cached_comment_id) {
             Ok(result) => result,
             Err(e) => {
                 warn!(error = %e, cycle, "failed to fetch review comment, retrying next cycle");
@@ -257,7 +259,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         for item in newly_checked {
             let finding_id = item.finding.id.clone();
 
-            let Some(prepared) = prepare_fix_item(item, pr_number, &fix_config, prompt_engine) else {
+            let Some(prepared) = prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine) else {
                 failed.insert(finding_id);
                 skipped += 1;
                 continue;
@@ -266,34 +268,28 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             in_flight.insert(finding_id.clone());
             let finding_id_for_map = finding_id.clone();
 
-            let fix_config = Arc::clone(&fix_config);
-            let worktree_dir = Arc::clone(&worktree_dir);
-            let repo_root = Arc::clone(&repo_root);
-            let pr_branch = Arc::clone(&pr_branch_owned);
-            let submission = Arc::clone(&submission);
-            let correction_runner = Arc::clone(&correction_runner);
-            let concurrency = Arc::clone(&concurrency);
+            let shared = shared.clone();
 
             let abort_handle = join_set.spawn(async move {
-                let _permit = concurrency
+                let _permit = shared.concurrency
                     .acquire()
                     .await
                     .expect("concurrency semaphore closed unexpectedly");
                 let ctx = FixContext {
                     item: prepared.item,
                     pr_number,
-                    pr_branch: &pr_branch,
+                    pr_branch: &shared.pr_branch,
                     fix_branch: &prepared.fix_branch,
-                    fix_config: &fix_config,
-                    agent_timeout_retries,
+                    fix_config: &shared.fix_config,
+                    agent_timeout_retries: shared.agent_timeout_retries,
                     prompt: &prepared.prompt,
                 };
                 let result = run_single_fix(
                     ctx,
-                    &worktree_dir,
-                    &repo_root,
-                    &*submission,
-                    &*correction_runner,
+                    &shared.worktree_dir,
+                    &shared.repo_root,
+                    &*shared.submission,
+                    &*shared.correction_runner,
                 )
                 .await;
                 (finding_id, result)
@@ -465,6 +461,37 @@ struct FixContext<'a> {
     fix_config: &'a ReviewStepConfig,
     agent_timeout_retries: u32,
     prompt: &'a str,
+}
+
+/// Shared state cloned into each spawned fix task.
+///
+/// Groups the Arc-wrapped values that both `run_fix` and `run_fix_loop` need
+/// to clone per spawned task, replacing individual `Arc::clone` lines with
+/// a single `shared.clone()`.
+struct SharedFixState<S, C> {
+    fix_config: Arc<ReviewStepConfig>,
+    worktree_dir: Arc<str>,
+    repo_root: Arc<Path>,
+    pr_branch: Arc<str>,
+    submission: Arc<S>,
+    correction_runner: Arc<C>,
+    concurrency: Arc<Semaphore>,
+    agent_timeout_retries: u32,
+}
+
+impl<S, C> Clone for SharedFixState<S, C> {
+    fn clone(&self) -> Self {
+        Self {
+            fix_config: Arc::clone(&self.fix_config),
+            worktree_dir: Arc::clone(&self.worktree_dir),
+            repo_root: Arc::clone(&self.repo_root),
+            pr_branch: Arc::clone(&self.pr_branch),
+            submission: Arc::clone(&self.submission),
+            correction_runner: Arc::clone(&self.correction_runner),
+            concurrency: Arc::clone(&self.concurrency),
+            agent_timeout_retries: self.agent_timeout_retries,
+        }
+    }
 }
 
 /// Build template variables from a fix item's finding.
