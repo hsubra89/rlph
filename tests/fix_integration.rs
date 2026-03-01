@@ -153,9 +153,9 @@ impl SubmissionBackend for MockFixSubmission {
 }
 
 /// No-op correction runner for tests.
-struct NoOpCorrectionRunner;
+struct MockCorrectionRunner;
 
-impl CorrectionRunner for NoOpCorrectionRunner {
+impl CorrectionRunner for MockCorrectionRunner {
     async fn resume(
         &self,
         _runner_type: RunnerKind,
@@ -216,7 +216,7 @@ async fn test_parallel_fix_multiple_checked_items() {
     let review_comment = make_review_comment(&findings, &["bug-alpha", "bug-beta", "bug-gamma"]);
 
     let submission = Arc::new(MockFixSubmission::new(review_comment));
-    let correction_runner = Arc::new(NoOpCorrectionRunner);
+    let correction_runner = Arc::new(MockCorrectionRunner);
 
     let wt_dir = tempfile::TempDir::new().unwrap();
     let mut config = make_config();
@@ -269,7 +269,7 @@ async fn test_fix_no_checked_items() {
     let review_comment = make_review_comment(&findings, &[]); // none checked
 
     let submission = Arc::new(MockFixSubmission::new(review_comment));
-    let correction_runner = Arc::new(NoOpCorrectionRunner);
+    let correction_runner = Arc::new(MockCorrectionRunner);
 
     let config = make_config();
 
@@ -302,7 +302,7 @@ async fn test_parallel_fix_worktrees_cleaned_up() {
     let review_comment = make_review_comment(&findings, &["clean-a", "clean-b"]);
 
     let submission = Arc::new(MockFixSubmission::new(review_comment));
-    let correction_runner = Arc::new(NoOpCorrectionRunner);
+    let correction_runner = Arc::new(MockCorrectionRunner);
 
     let wt_dir = tempfile::TempDir::new().unwrap();
     let mut config = make_config();
