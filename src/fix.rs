@@ -42,9 +42,7 @@ pub async fn run_fix(
         .iter()
         .find(|c| c.body.contains(REVIEW_MARKER))
         .ok_or_else(|| {
-            Error::Orchestrator(format!(
-                "no rlph review comment found on PR #{pr_number}"
-            ))
+            Error::Orchestrator(format!("no rlph review comment found on PR #{pr_number}"))
         })?;
 
     let items = parse_fix_items(&review_comment.body);
@@ -248,11 +246,7 @@ async fn parse_with_retry(
 }
 
 /// Create a worktree for the fix branch, branching off origin/<pr-branch>.
-fn create_fix_worktree(
-    repo_root: &Path,
-    pr_branch: &str,
-    fix_branch: &str,
-) -> Result<PathBuf> {
+fn create_fix_worktree(repo_root: &Path, pr_branch: &str, fix_branch: &str) -> Result<PathBuf> {
     // Fetch latest PR branch
     info!(pr_branch, "fetching latest PR branch from origin");
     git(repo_root, &["fetch", "origin", pr_branch])?;
@@ -272,7 +266,15 @@ fn create_fix_worktree(
     // Clean up if path already exists (stale worktree)
     if worktree_path.exists() {
         debug!(path = %worktree_path.display(), "removing stale fix worktree");
-        let _ = git(repo_root, &["worktree", "remove", "--force", &worktree_path.to_string_lossy()]);
+        let _ = git(
+            repo_root,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                &worktree_path.to_string_lossy(),
+            ],
+        );
     }
 
     // Delete stale local branch if it exists
@@ -288,9 +290,7 @@ fn create_fix_worktree(
         &["worktree", "add", "-b", fix_branch, &path_str, &remote_ref],
     )?;
 
-    let canonical = worktree_path
-        .canonicalize()
-        .unwrap_or(worktree_path);
+    let canonical = worktree_path.canonicalize().unwrap_or(worktree_path);
     Ok(canonical)
 }
 
@@ -433,10 +433,7 @@ mod tests {
             "finding_description".to_string(),
             "Null dereference".to_string(),
         );
-        vars.insert(
-            "finding_depends_on".to_string(),
-            "null-check".to_string(),
-        );
+        vars.insert("finding_depends_on".to_string(), "null-check".to_string());
 
         let result = engine.render_phase("fix", &vars).unwrap();
         assert!(result.contains("null-check"));
@@ -481,11 +478,7 @@ mod tests {
 
     #[test]
     fn test_eligible_item_selection() {
-        let findings = vec![
-            make_finding("a"),
-            make_finding("b"),
-            make_finding("c"),
-        ];
+        let findings = vec![make_finding("a"), make_finding("b"), make_finding("c")];
         let comment = render_findings_for_github(&findings, "Summary.");
 
         // Check only "b"

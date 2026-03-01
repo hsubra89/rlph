@@ -1076,8 +1076,7 @@ mod tests {
 
     #[test]
     fn test_parse_standalone_fix_output_fenced() {
-        let input =
-            "```json\n{\"status\": \"fixed\", \"commit_message\": \"fix: done\"}\n```";
+        let input = "```json\n{\"status\": \"fixed\", \"commit_message\": \"fix: done\"}\n```";
         let output = parse_standalone_fix_output(input).unwrap();
         assert_eq!(
             output,
