@@ -451,19 +451,8 @@ fn push_to_pr_branch_with_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review_schema::{ReviewFinding, Severity, render_findings_for_github};
-
-    fn make_finding(id: &str) -> ReviewFinding {
-        ReviewFinding {
-            id: id.to_string(),
-            file: "src/main.rs".to_string(),
-            line: 42,
-            severity: Severity::Critical,
-            description: format!("{id} description"),
-            category: Some("correctness".to_string()),
-            depends_on: vec![],
-        }
-    }
+    use crate::review_schema::render_findings_for_github;
+    use crate::test_helpers::make_finding;
 
     #[test]
     fn test_fix_branch_name_is_valid() {

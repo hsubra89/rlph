@@ -7,7 +7,8 @@ use rlph::config::{Config, ReviewStepConfig, default_review_phases, default_revi
 use rlph::error::{Error, Result};
 use rlph::fix::run_fix;
 use rlph::orchestrator::CorrectionRunner;
-use rlph::review_schema::{ReviewFinding, Severity, render_findings_for_github};
+use rlph::review_schema::{ReviewFinding, render_findings_for_github};
+use rlph::test_helpers::make_finding;
 use rlph::runner::{RunResult, RunnerKind};
 use rlph::submission::{PrComment, REVIEW_MARKER, SubmissionBackend, SubmitResult};
 
@@ -44,18 +45,6 @@ fn create_pr_branch(repo: &Path, branch: &str) {
 }
 
 // --- Mocks ---
-
-fn make_finding(id: &str) -> ReviewFinding {
-    ReviewFinding {
-        id: id.to_string(),
-        file: "src/main.rs".to_string(),
-        line: 42,
-        severity: Severity::Warning,
-        description: format!("{id} description"),
-        category: Some("correctness".to_string()),
-        depends_on: vec![],
-    }
-}
 
 /// Build a review comment with specific findings checked, including the rlph marker.
 fn make_review_comment(findings: &[ReviewFinding], checked_ids: &[&str]) -> String {

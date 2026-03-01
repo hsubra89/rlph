@@ -14,3 +14,6 @@ pub mod sources;
 pub mod state;
 pub mod submission;
 pub mod worktree;
+
+#[doc(hidden)]
+pub mod test_helpers;
