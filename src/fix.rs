@@ -416,8 +416,10 @@ fn push_to_pr_branch_with_retry(
 ) -> Result<()> {
     let refspec = format!("{fix_branch}:{pr_branch}");
     for attempt in 1..=MAX_PUSH_ATTEMPTS {
-        // Rebase onto latest remote state before each push attempt
-        rebase_onto(worktree_path, pr_branch)?;
+        // Skip rebase on first attempt: worktree was just created from origin/<pr-branch>
+        if attempt > 1 {
+            rebase_onto(worktree_path, pr_branch)?;
+        }
 
         match git_in_dir(worktree_path, &["push", "origin", &refspec]) {
             Ok(_) => {
