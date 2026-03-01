@@ -814,7 +814,9 @@ mod tests {
             depends_on: vec![],
         }];
         let result = render_findings_for_github(&findings, "Issues found.");
-        let json = serde_json::to_string(&findings[0]).unwrap();
+        let json = serde_json::to_string(&findings[0])
+            .unwrap()
+            .replace("--", r"\u002d\u002d");
         let expected = format!(
             "Issues found.\n\n### Correctness\n- [ ] **CRITICAL** `src/main.rs` L42: SQL injection <!-- rlph-finding:{json} -->"
         );
@@ -906,6 +908,14 @@ mod tests {
         assert!(result.contains("### General"));
     }
 
+    /// Extract the first `<!-- rlph-finding:{json} -->` payload from rendered output.
+    fn extract_embedded_json(rendered: &str) -> &str {
+        let marker = "<!-- rlph-finding:";
+        let start = rendered.find(marker).expect("marker present") + marker.len();
+        let end = rendered[start..].find(" -->").expect("closing comment") + start;
+        &rendered[start..end]
+    }
+
     #[test]
     fn test_github_render_embedded_json_is_valid() {
         let findings = vec![ReviewFinding {
@@ -919,12 +929,7 @@ mod tests {
         }];
         let result = render_findings_for_github(&findings, "Review.");
 
-        // Extract JSON from the HTML comment
-        let marker = "<!-- rlph-finding:";
-        let start = result.find(marker).expect("marker present") + marker.len();
-        let end = result[start..].find(" -->").expect("closing comment") + start;
-        let json_str = &result[start..end];
-
+        let json_str = extract_embedded_json(&result);
         let parsed: ReviewFinding = serde_json::from_str(json_str).expect("embedded JSON is valid");
         assert_eq!(parsed, findings[0]);
     }
@@ -967,10 +972,7 @@ mod tests {
         }];
         let result = render_findings_for_github(&findings, "S.");
 
-        let marker = "<!-- rlph-finding:";
-        let start = result.find(marker).unwrap() + marker.len();
-        let end = result[start..].find(" -->").unwrap() + start;
-        let parsed: ReviewFinding = serde_json::from_str(&result[start..end]).unwrap();
+        let parsed: ReviewFinding = serde_json::from_str(extract_embedded_json(&result)).unwrap();
         assert_eq!(parsed.category, None);
         assert!(parsed.depends_on.is_empty());
     }
@@ -989,10 +991,7 @@ mod tests {
         let result = render_findings_for_github(&findings, "Review.");
 
         // The raw HTML must not contain bare -- inside the comment
-        let marker = "<!-- rlph-finding:";
-        let start = result.find(marker).unwrap() + marker.len();
-        let end = result[start..].find(" -->").unwrap() + start;
-        let json_str = &result[start..end];
+        let json_str = extract_embedded_json(&result);
         assert!(
             !json_str.contains("--"),
             "bare -- found in embedded JSON: {json_str}"
