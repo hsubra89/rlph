@@ -37,7 +37,7 @@ pub async fn run_fix(
     submission: &impl SubmissionBackend,
     prompt_engine: &PromptEngine,
     repo_root: &Path,
-    correction_runner: &(dyn CorrectionRunner),
+    correction_runner: &(impl CorrectionRunner + ?Sized),
 ) -> Result<()> {
     // Validate pr_branch from GitHub API at the trust boundary
     validate_branch_name(pr_branch)?;
@@ -121,7 +121,7 @@ async fn run_fix_agent_and_apply(
     config: &Config,
     submission: &impl SubmissionBackend,
     prompt_engine: &PromptEngine,
-    correction_runner: &(dyn CorrectionRunner),
+    correction_runner: &(impl CorrectionRunner + ?Sized),
 ) -> Result<()> {
     let fix_config = &config.fix;
     let item = ctx.item;
@@ -224,7 +224,7 @@ async fn parse_fix_with_retry(
     run_result: &RunResult,
     fix_config: &ReviewStepConfig,
     working_dir: &Path,
-    correction_runner: &(dyn CorrectionRunner),
+    correction_runner: &(impl CorrectionRunner + ?Sized),
 ) -> Result<StandaloneFixOutput> {
     match parse_standalone_fix_output(&run_result.stdout) {
         Ok(output) => Ok(output),

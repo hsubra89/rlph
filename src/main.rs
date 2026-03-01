@@ -10,7 +10,7 @@ use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
 use rlph::fix;
 use rlph::fix_comment::{format_fix_items_for_display, parse_fix_items};
-use rlph::orchestrator::{Orchestrator, ReviewInvocation, build_task_vars};
+use rlph::orchestrator::{DefaultCorrectionRunner, Orchestrator, ReviewInvocation, build_task_vars};
 use rlph::prd;
 use rlph::prompts::PromptEngine;
 use rlph::runner::build_runner;
@@ -251,6 +251,7 @@ async fn main() {
                 &submission,
                 &prompt_engine,
                 &repo_root,
+                &DefaultCorrectionRunner,
             )
             .await
             {
