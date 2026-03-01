@@ -235,7 +235,7 @@ struct FixContext<'a> {
 
 /// Build template variables from a fix item's finding.
 fn build_finding_vars(item: &FixItem) -> HashMap<String, String> {
-    let mut vars = HashMap::new();
+    let mut vars = HashMap::with_capacity(6);
     vars.insert("finding_id".to_string(), item.finding.id.clone());
     vars.insert("finding_file".to_string(), item.finding.file.clone());
     vars.insert("finding_line".to_string(), item.finding.line.to_string());
