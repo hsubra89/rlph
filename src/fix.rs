@@ -223,6 +223,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
     let concurrency = Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES));
 
     let mut join_set: tokio::task::JoinSet<(String, Result<()>)> = tokio::task::JoinSet::new();
+    let mut task_finding_ids: HashMap<tokio::task::Id, String> = HashMap::new();
     let mut in_flight: HashSet<String> = HashSet::new();
     let mut completed: HashSet<String> = HashSet::new();
     let mut failed: HashSet<String> = HashSet::new();
@@ -238,7 +239,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         }
 
         // Drain completed tasks (non-blocking)
-        drain_completed(&mut join_set, &mut in_flight, &mut completed, &mut failed);
+        drain_completed(&mut join_set, &mut task_finding_ids, &mut in_flight, &mut completed, &mut failed);
 
         // Fetch and parse
         info!(pr_number, cycle, in_flight = in_flight.len(), completed = completed.len(), "polling for newly-checked items");
@@ -311,6 +312,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             );
 
             in_flight.insert(finding_id.clone());
+            let finding_id_for_map = finding_id.clone();
 
             let fix_config = Arc::clone(&fix_config);
             let worktree_dir = Arc::clone(&worktree_dir);
@@ -320,7 +322,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             let correction_runner = Arc::clone(&correction_runner);
             let concurrency = Arc::clone(&concurrency);
 
-            join_set.spawn(async move {
+            let abort_handle = join_set.spawn(async move {
                 let _permit = concurrency
                     .acquire()
                     .await
@@ -344,6 +346,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
                 .await;
                 (finding_id, result)
             });
+            task_finding_ids.insert(abort_handle.id(), finding_id_for_map);
         }
 
         if skipped > 0 {
@@ -373,7 +376,14 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
                     failed.insert(finding_id);
                 }
                 Err(e) => {
-                    warn!(error = %e, "fix task panicked during shutdown");
+                    let finding_id = task_finding_ids.remove(&e.id());
+                    if let Some(ref id) = finding_id {
+                        warn!(finding_id = id, error = %e, "fix task panicked during shutdown");
+                        in_flight.remove(id);
+                        failed.insert(id.clone());
+                    } else {
+                        warn!(error = %e, "fix task panicked during shutdown (unknown finding_id)");
+                    }
                 }
             }
         }
@@ -417,6 +427,7 @@ fn fetch_and_parse_items(
 /// Drain completed tasks from the JoinSet without blocking.
 fn drain_completed(
     join_set: &mut tokio::task::JoinSet<(String, Result<()>)>,
+    task_finding_ids: &mut HashMap<tokio::task::Id, String>,
     in_flight: &mut HashSet<String>,
     completed: &mut HashSet<String>,
     failed: &mut HashSet<String>,
@@ -434,7 +445,14 @@ fn drain_completed(
                 failed.insert(finding_id);
             }
             Err(e) => {
-                warn!(error = %e, "fix task panicked");
+                let finding_id = task_finding_ids.remove(&e.id());
+                if let Some(ref id) = finding_id {
+                    warn!(finding_id = id, error = %e, "fix task panicked");
+                    in_flight.remove(id);
+                    failed.insert(id.clone());
+                } else {
+                    warn!(error = %e, "fix task panicked (unknown finding_id)");
+                }
             }
         }
     }
