@@ -75,11 +75,10 @@ impl DependencyGraph {
                 continue;
             }
 
-            let mut component_sorted = component.clone();
+            let component_set: HashSet<u64> = component.iter().copied().collect();
+            let mut component_sorted: Vec<u64> = component_set.iter().copied().collect();
             component_sorted.sort_unstable();
             cycles_for_log.push(component_sorted);
-
-            let component_set: HashSet<u64> = component.iter().copied().collect();
             for &node in &component_set {
                 cycle_peers
                     .entry(node)
