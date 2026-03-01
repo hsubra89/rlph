@@ -564,7 +564,7 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit
     let mut config = make_config();
     config.fix = make_fix_step_config(script_path.to_str().unwrap().to_string());
     config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
-    config.poll_seconds = 5; // Short poll to avoid long hangs if agent errors before shutdown
+    config.poll_seconds = 5; // Longer than the 2s agent sleep so shutdown is processed before next poll
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
