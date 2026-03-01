@@ -412,21 +412,13 @@ mod tests {
         assert!(!deps.deps_met("c", &resolved));
 
         // After a is fixed
-        let items2 = vec![
-            fixed("a", &[]),
-            checked("b", &["a"]),
-            checked("c", &["b"]),
-        ];
+        let items2 = vec![fixed("a", &[]), checked("b", &["a"]), checked("c", &["b"])];
         let resolved2 = resolved_finding_ids(&items2);
         assert!(deps.deps_met("b", &resolved2));
         assert!(!deps.deps_met("c", &resolved2));
 
         // After b is also fixed
-        let items3 = vec![
-            fixed("a", &[]),
-            fixed("b", &["a"]),
-            checked("c", &["b"]),
-        ];
+        let items3 = vec![fixed("a", &[]), fixed("b", &["a"]), checked("c", &["b"])];
         let resolved3 = resolved_finding_ids(&items3);
         assert!(deps.deps_met("c", &resolved3));
     }

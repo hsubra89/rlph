@@ -69,7 +69,10 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     );
 
     if dep_blocked > 0 {
-        info!(count = dep_blocked, "items held back waiting for dependencies");
+        info!(
+            count = dep_blocked,
+            "items held back waiting for dependencies"
+        );
     }
 
     if eligible.is_empty() {
@@ -255,7 +258,10 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         let newly_checked: Vec<FixItem> = eligible_refs.into_iter().cloned().collect();
 
         if dep_blocked > 0 {
-            info!(count = dep_blocked, "items held back waiting for dependencies");
+            info!(
+                count = dep_blocked,
+                "items held back waiting for dependencies"
+            );
         }
 
         info!(
@@ -1024,10 +1030,7 @@ mod tests {
 
     #[test]
     fn test_dependent_item_blocked_when_dep_unchecked() {
-        let findings = vec![
-            make_finding("a"),
-            make_finding_with_deps("b", &["a"]),
-        ];
+        let findings = vec![make_finding("a"), make_finding_with_deps("b", &["a"])];
         let comment = render_and_parse(&findings);
         // Check both a and b
         let comment = comment.replace("- [ ] ", "- [x] ");
@@ -1044,10 +1047,7 @@ mod tests {
 
     #[test]
     fn test_dependent_item_unblocked_when_dep_fixed() {
-        let findings = vec![
-            make_finding("a"),
-            make_finding_with_deps("b", &["a"]),
-        ];
+        let findings = vec![make_finding("a"), make_finding_with_deps("b", &["a"])];
         let comment = render_and_parse(&findings);
         // a is fixed, b is checked
         let comment = set_state(&comment, "a", "- [ ] ", "- ✅ ");
@@ -1062,10 +1062,7 @@ mod tests {
 
     #[test]
     fn test_dependent_item_unblocked_when_dep_wontfix() {
-        let findings = vec![
-            make_finding("a"),
-            make_finding_with_deps("b", &["a"]),
-        ];
+        let findings = vec![make_finding("a"), make_finding_with_deps("b", &["a"])];
         let comment = render_and_parse(&findings);
         // a is wontfix, b is checked
         let comment = set_state(&comment, "a", "- [ ] ", "- \u{1F635} ");
@@ -1113,12 +1110,7 @@ mod tests {
         assert!(!deps.deps_met("c", &resolved));
 
         // After a is fixed: b eligible, c still blocked
-        let comment2 = set_state(
-            &render_and_parse(&findings),
-            "a",
-            "- [ ] ",
-            "- ✅ ",
-        );
+        let comment2 = set_state(&render_and_parse(&findings), "a", "- [ ] ", "- ✅ ");
         let comment2 = set_state(&comment2, "b", "- [ ] ", "- [x] ");
         let comment2 = set_state(&comment2, "c", "- [ ] ", "- [x] ");
         let items2 = parse_fix_items(&comment2);
