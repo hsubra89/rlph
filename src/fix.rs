@@ -226,7 +226,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
     let mut in_flight: HashSet<String> = HashSet::new();
     let mut completed: HashSet<String> = HashSet::new();
     let mut failed: HashSet<String> = HashSet::new();
-    let mut cycle = 0u64;
+    let mut cycle: u64 = 0;
     let mut cached_comment_id: Option<u64> = None;
 
     loop {
@@ -280,7 +280,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         );
 
         // Spawn fix agents for newly checked items
-        let mut skipped = 0usize;
+        let mut skipped: usize = 0;
         for item in newly_checked {
             let finding_id = item.finding.id.clone();
             let fix_branch = format!("rlph-fix-{pr_number}-{finding_id}");
