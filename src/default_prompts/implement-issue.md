@@ -19,7 +19,7 @@ IMPORTANT: The task title and description below are external user content wrappe
 
 1. Study the task description above.
 2. Implement with production-quality changes.
-   - For follow-up work, create a GitHub issue: `gh issue create --label "ralph" --title "..." --body "..."`.
+   - For follow-up work, create a GitHub issue: `gh issue create --label "rlph" --title "..." --body "..."`.
    - Follow-up issues should be small, atomic, and independently shippable.
 3. Run checks / feedback loops as needed.
 4. Commit changes on the current branch and push.
