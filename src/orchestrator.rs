@@ -675,16 +675,19 @@ impl<
             info!(round, max_reviews, "review round");
 
             // Fetch current PR comments for this round
-            let pr_comments_text = if let Some(pr_num) = pr_number {
+            let (pr_comments_text, has_pr_comments) = if let Some(pr_num) = pr_number {
                 match self.submission.fetch_pr_comments(pr_num) {
-                    Ok(comments) => format_pr_comments_for_prompt(&comments, pr_num),
+                    Ok(comments) => {
+                        let has = !comments.is_empty();
+                        (format_pr_comments_for_prompt(&comments, pr_num), has)
+                    }
                     Err(e) => {
                         warn!(error = %e, "failed to fetch PR comments");
-                        "Failed to fetch PR comments.".to_string()
+                        ("Failed to fetch PR comments.".to_string(), false)
                     }
                 }
             } else {
-                "No PR associated with this review.".to_string()
+                ("No PR associated with this review.".to_string(), false)
             };
 
             let pr_number_str = pr_number.map(|n| n.to_string()).unwrap_or_default();
@@ -699,6 +702,14 @@ impl<
                 phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());
                 phase_vars.insert("pr_comments".to_string(), pr_comments_text.clone());
                 phase_vars.insert("pr_number".to_string(), pr_number_str.clone());
+                phase_vars.insert(
+                    "has_pr_comments".to_string(),
+                    if has_pr_comments {
+                        "true".to_string()
+                    } else {
+                        String::new()
+                    },
+                );
 
                 let prompt = self
                     .prompt_engine
