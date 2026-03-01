@@ -1056,7 +1056,10 @@ pub async fn retry_with_correction<T>(
     parser: impl Fn(&str) -> Result<T>,
 ) -> Option<T> {
     const MAX_RETRIES: u32 = 2;
-    let session_id = session_id?;
+    let Some(session_id) = session_id else {
+        warn!("no session_id available, skipping correction retry");
+        return None;
+    };
     let mut last_error = initial_error.to_string();
 
     for attempt in 1..=MAX_RETRIES {

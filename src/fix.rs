@@ -12,7 +12,7 @@ static COMMENT_UPDATE_LOCK: Semaphore = Semaphore::const_new(1);
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
 use crate::fix_comment::{CheckboxState, FixItem, FixResultKind, parse_fix_items, update_comment};
-use crate::orchestrator::{DefaultCorrectionRunner, retry_with_correction};
+use crate::orchestrator::{CorrectionRunner, retry_with_correction};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{SchemaName, StandaloneFixOutput, parse_standalone_fix_output};
 use crate::runner::{AgentRunner, Phase, RunResult, build_runner};
@@ -37,6 +37,7 @@ pub async fn run_fix(
     submission: &impl SubmissionBackend,
     prompt_engine: &PromptEngine,
     repo_root: &Path,
+    correction_runner: &(dyn CorrectionRunner),
 ) -> Result<()> {
     // Validate pr_branch from GitHub API at the trust boundary
     validate_branch_name(pr_branch)?;
@@ -92,7 +93,8 @@ pub async fn run_fix(
         fix_branch: &fix_branch,
         worktree_path: &worktree_path,
     };
-    let result = run_fix_agent_and_apply(&ctx, config, submission, prompt_engine).await;
+    let result =
+        run_fix_agent_and_apply(&ctx, config, submission, prompt_engine, correction_runner).await;
 
     // 8. Clean up worktree (always, even on error)
     info!(path = %worktree_path.display(), "cleaning up fix worktree");
@@ -119,6 +121,7 @@ async fn run_fix_agent_and_apply(
     config: &Config,
     submission: &impl SubmissionBackend,
     prompt_engine: &PromptEngine,
+    correction_runner: &(dyn CorrectionRunner),
 ) -> Result<()> {
     let fix_config = &config.fix;
     let item = ctx.item;
@@ -162,7 +165,9 @@ async fn run_fix_agent_and_apply(
     let run_result = runner.run(Phase::Fix, &prompt, ctx.worktree_path).await?;
 
     // 5. Parse FixOutput JSON (with retry on failure)
-    let fix_output = parse_fix_with_retry(&run_result, fix_config, ctx.worktree_path).await?;
+    let fix_output =
+        parse_fix_with_retry(&run_result, fix_config, ctx.worktree_path, correction_runner)
+            .await?;
 
     info!(finding_id = %item.finding.id, ?fix_output, "fix agent completed");
 
@@ -219,13 +224,14 @@ async fn parse_fix_with_retry(
     run_result: &RunResult,
     fix_config: &ReviewStepConfig,
     working_dir: &Path,
+    correction_runner: &(dyn CorrectionRunner),
 ) -> Result<StandaloneFixOutput> {
     match parse_standalone_fix_output(&run_result.stdout) {
         Ok(output) => Ok(output),
         Err(initial_err) => {
             let err_str = initial_err.to_string();
             retry_with_correction(
-                &DefaultCorrectionRunner,
+                correction_runner,
                 run_result.session_id.as_deref(),
                 fix_config.runner,
                 &fix_config.agent_binary,
@@ -241,7 +247,7 @@ async fn parse_fix_with_retry(
             .await
             .ok_or_else(|| {
                 Error::Orchestrator(format!(
-                    "fix agent JSON parse failed and correction exhausted: {initial_err}"
+                    "fix agent JSON parse failed and correction unsuccessful: {initial_err}"
                 ))
             })
         }
