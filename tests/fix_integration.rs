@@ -79,6 +79,18 @@ fn make_pr_comment(body: &str) -> PrComment {
     serde_json::from_value(json).unwrap()
 }
 
+fn make_fix_step_config(agent_binary: String) -> ReviewStepConfig {
+    ReviewStepConfig {
+        prompt: "fix".to_string(),
+        runner: RunnerKind::Claude,
+        agent_binary,
+        agent_model: None,
+        agent_effort: None,
+        agent_variant: None,
+        agent_timeout: Some(30),
+    }
+}
+
 fn make_config() -> Config {
     Config {
         source: "github".to_string(),
@@ -220,15 +232,7 @@ async fn test_parallel_fix_multiple_checked_items() {
 
     let wt_dir = tempfile::TempDir::new().unwrap();
     let mut config = make_config();
-    config.fix = ReviewStepConfig {
-        prompt: "fix".to_string(),
-        runner: RunnerKind::Claude,
-        agent_binary: agent_script,
-        agent_model: None,
-        agent_effort: None,
-        agent_variant: None,
-        agent_timeout: Some(30),
-    };
+    config.fix = make_fix_step_config(agent_script);
     config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
 
     let result = run_fix(
@@ -306,15 +310,7 @@ async fn test_parallel_fix_worktrees_cleaned_up() {
 
     let wt_dir = tempfile::TempDir::new().unwrap();
     let mut config = make_config();
-    config.fix = ReviewStepConfig {
-        prompt: "fix".to_string(),
-        runner: RunnerKind::Claude,
-        agent_binary: agent_script,
-        agent_model: None,
-        agent_effort: None,
-        agent_variant: None,
-        agent_timeout: Some(30),
-    };
+    config.fix = make_fix_step_config(agent_script);
     config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
 
     let result = run_fix(
