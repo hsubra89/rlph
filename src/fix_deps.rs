@@ -217,7 +217,7 @@ mod tests {
     // --- FindingDeps::build ---
 
     #[test]
-    fn build_no_deps() {
+    fn test_build_no_deps() {
         let items = vec![checked("a", &[]), checked("b", &[])];
         let deps = FindingDeps::build(&items);
         assert!(!deps.has_any_deps());
@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn build_with_deps() {
+    fn test_build_with_deps() {
         let items = vec![checked("a", &[]), checked("b", &["a"])];
         let deps = FindingDeps::build(&items);
         assert!(deps.has_any_deps());
@@ -234,14 +234,14 @@ mod tests {
     }
 
     #[test]
-    fn build_ignores_unknown_deps() {
+    fn test_build_ignores_unknown_deps() {
         let items = vec![checked("a", &["nonexistent"])];
         let deps = FindingDeps::build(&items);
         assert!(!deps.has_any_deps());
     }
 
     #[test]
-    fn build_partial_unknown_deps() {
+    fn test_build_partial_unknown_deps() {
         let items = vec![checked("a", &[]), checked("b", &["a", "nonexistent"])];
         let deps = FindingDeps::build(&items);
         assert!(deps.has_any_deps());
@@ -252,7 +252,7 @@ mod tests {
     // --- Cycle detection ---
 
     #[test]
-    fn no_cycle() {
+    fn test_no_cycle() {
         let items = vec![checked("a", &[]), checked("b", &["a"])];
         let deps = FindingDeps::build(&items);
         assert!(!deps.in_cycle("a"));
@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn simple_cycle() {
+    fn test_simple_cycle() {
         let items = vec![checked("a", &["b"]), checked("b", &["a"])];
         let deps = FindingDeps::build(&items);
         assert!(deps.in_cycle("a"));
@@ -268,14 +268,14 @@ mod tests {
     }
 
     #[test]
-    fn self_loop() {
+    fn test_self_loop() {
         let items = vec![checked("a", &["a"])];
         let deps = FindingDeps::build(&items);
         assert!(deps.in_cycle("a"));
     }
 
     #[test]
-    fn three_node_cycle() {
+    fn test_three_node_cycle() {
         let items = vec![
             checked("a", &["c"]),
             checked("b", &["a"]),
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn cycle_does_not_affect_non_cycle_items() {
+    fn test_cycle_does_not_affect_non_cycle_items() {
         let items = vec![
             checked("a", &["b"]),
             checked("b", &["a"]),
@@ -305,7 +305,7 @@ mod tests {
     // --- deps_met ---
 
     #[test]
-    fn deps_met_no_deps() {
+    fn test_deps_met_no_deps() {
         let items = vec![checked("a", &[])];
         let deps = FindingDeps::build(&items);
         let resolved = HashSet::new();
@@ -313,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn deps_met_with_fixed_dep() {
+    fn test_deps_met_with_fixed_dep() {
         let items = vec![fixed("a", &[]), checked("b", &["a"])];
         let deps = FindingDeps::build(&items);
         let resolved = resolved_finding_ids(&items);
@@ -321,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn deps_met_with_wontfix_dep() {
+    fn test_deps_met_with_wontfix_dep() {
         let items = vec![wontfix("a", &[]), checked("b", &["a"])];
         let deps = FindingDeps::build(&items);
         let resolved = resolved_finding_ids(&items);
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn deps_not_met_unchecked_dep() {
+    fn test_deps_not_met_unchecked_dep() {
         let items = vec![unchecked("a", &[]), checked("b", &["a"])];
         let deps = FindingDeps::build(&items);
         let resolved = resolved_finding_ids(&items);
@@ -337,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn deps_not_met_checked_dep() {
+    fn test_deps_not_met_checked_dep() {
         let items = vec![checked("a", &[]), checked("b", &["a"])];
         let deps = FindingDeps::build(&items);
         let resolved = resolved_finding_ids(&items);
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn deps_partially_met() {
+    fn test_deps_partially_met() {
         let items = vec![
             fixed("a", &[]),
             checked("b", &[]),
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn deps_all_met() {
+    fn test_deps_all_met() {
         let items = vec![
             fixed("a", &[]),
             wontfix("b", &[]),
@@ -371,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn deps_met_unknown_finding_id() {
+    fn test_deps_met_unknown_finding_id() {
         let items = vec![checked("a", &[])];
         let deps = FindingDeps::build(&items);
         let resolved = HashSet::new();
@@ -382,14 +382,14 @@ mod tests {
     // --- resolved_finding_ids ---
 
     #[test]
-    fn resolved_ids_empty() {
+    fn test_resolved_ids_empty() {
         let items = vec![checked("a", &[]), unchecked("b", &[])];
         let resolved = resolved_finding_ids(&items);
         assert!(resolved.is_empty());
     }
 
     #[test]
-    fn resolved_ids_fixed_and_wontfix() {
+    fn test_resolved_ids_fixed_and_wontfix() {
         let items = vec![
             fixed("a", &[]),
             wontfix("b", &[]),
@@ -405,7 +405,7 @@ mod tests {
     // --- Integration scenarios ---
 
     #[test]
-    fn chain_dependency_a_then_b_then_c() {
+    fn test_chain_dependency_a_then_b_then_c() {
         // a → b → c: only a is eligible initially
         let items = vec![
             checked("a", &[]),
@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn diamond_dependency() {
+    fn test_diamond_dependency() {
         // d depends on b and c, both depend on a
         let items = vec![
             checked("a", &[]),
@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn wontfix_unblocks_dependent() {
+    fn test_wontfix_unblocks_dependent() {
         let items = vec![wontfix("a", &[]), checked("b", &["a"])];
         let deps = FindingDeps::build(&items);
         let resolved = resolved_finding_ids(&items);
@@ -488,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn cycle_members_skipped_non_cycle_proceed() {
+    fn test_cycle_members_skipped_non_cycle_proceed() {
         let items = vec![
             checked("a", &["b"]),
             checked("b", &["a"]),
