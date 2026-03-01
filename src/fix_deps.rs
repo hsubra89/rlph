@@ -13,6 +13,8 @@ pub struct FindingDeps {
     edges: HashMap<String, HashSet<String>>,
     /// Finding IDs that are part of a dependency cycle.
     cycle_members: HashSet<String>,
+    /// Number of items when the graph was built (for staleness detection).
+    item_count: usize,
 }
 
 impl FindingDeps {
@@ -54,7 +56,18 @@ impl FindingDeps {
         Self {
             edges,
             cycle_members,
+            item_count: items.len(),
         }
+    }
+
+    /// Returns the item count the graph was built from.
+    pub fn item_count(&self) -> usize {
+        self.item_count
+    }
+
+    /// Returns `true` if the item count has changed since the graph was built.
+    pub fn is_stale(&self, current_count: usize) -> bool {
+        self.item_count != current_count
     }
 
     /// Returns `true` if this finding is part of a dependency cycle.
@@ -473,6 +486,24 @@ mod tests {
         let deps = FindingDeps::build(&items);
         let resolved = resolved_finding_ids(&items);
         assert!(deps.deps_met("b", &resolved));
+    }
+
+    // --- Staleness detection ---
+
+    #[test]
+    fn test_is_stale_same_count() {
+        let items = vec![checked("a", &[]), checked("b", &["a"])];
+        let deps = FindingDeps::build(&items);
+        assert!(!deps.is_stale(2));
+        assert_eq!(deps.item_count(), 2);
+    }
+
+    #[test]
+    fn test_is_stale_different_count() {
+        let items = vec![checked("a", &[]), checked("b", &["a"])];
+        let deps = FindingDeps::build(&items);
+        assert!(deps.is_stale(3));
+        assert!(deps.is_stale(1));
     }
 
     #[test]

@@ -240,8 +240,19 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             break;
         }
 
-        // Build dependency graph once (edges are stable across polls)
-        let deps = finding_deps.get_or_insert_with(|| FindingDeps::build(&items));
+        // Build dependency graph, rebuilding if item count changed (e.g. comment edited mid-loop)
+        let deps = match &finding_deps {
+            Some(existing) if !existing.is_stale(items.len()) => finding_deps.as_ref().unwrap(),
+            Some(_) => {
+                warn!(
+                    old_count = finding_deps.as_ref().unwrap().item_count(),
+                    new_count = items.len(),
+                    "review comment edited: item count changed, rebuilding dependency graph"
+                );
+                finding_deps.insert(FindingDeps::build(&items))
+            }
+            None => finding_deps.insert(FindingDeps::build(&items)),
+        };
         let resolved = resolved_finding_ids(&items);
 
         // Filter: checked AND not already tracked AND deps met
