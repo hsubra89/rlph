@@ -15,6 +15,11 @@ pub fn validate_branch_name(name: &str) -> Result<()> {
             "branch name must not start with 'refs/': {name}"
         )));
     }
+    if name.contains("..") {
+        return Err(Error::Worktree(format!(
+            "branch name must not contain '..': {name}"
+        )));
+    }
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '/' || c == '_' || c == '.' || c == '-')
@@ -579,6 +584,13 @@ mod tests {
     fn test_validate_branch_name_refs_prefix() {
         assert!(validate_branch_name("refs/heads/main").is_err());
         assert!(validate_branch_name("refs/remotes/origin/main").is_err());
+    }
+
+    #[test]
+    fn test_validate_branch_name_dotdot() {
+        assert!(validate_branch_name("feature/..").is_err());
+        assert!(validate_branch_name("../escape").is_err());
+        assert!(validate_branch_name("a..b").is_err());
     }
 
     #[test]
