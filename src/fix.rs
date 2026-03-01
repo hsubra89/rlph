@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn test_fix_branch_name_is_valid() {
         let branch = "rlph-fix-42-sql-injection";
-        assert!(validate_branch_name(&branch).is_ok());
+        assert!(validate_branch_name(branch).is_ok());
     }
 
     #[test]
