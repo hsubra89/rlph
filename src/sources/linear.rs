@@ -13,8 +13,7 @@ use super::{Priority, Task, TaskSource};
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 const LINEAR_CLI_CREDENTIALS: &str = ".config/linear/credentials.toml";
-const MAX_RETRIES: u32 = 3;
-const INITIAL_BACKOFF_MS: u64 = 500;
+use super::{INITIAL_BACKOFF_MS, MAX_RETRIES};
 
 /// Resolve the Linear API key: env var first, then Linear CLI credentials file.
 fn resolve_api_key(api_key_env: &str) -> Result<String> {
@@ -739,37 +738,6 @@ fn write_linear_config(team_key: &str, dir: &std::path::Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Retry with exponential backoff
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-fn retry_with_backoff_ms<F, T>(f: F, initial_backoff_ms: u64, max_retries: u32) -> Result<T>
-where
-    F: Fn() -> Result<T>,
-{
-    let mut backoff_ms = initial_backoff_ms;
-
-    for attempt in 1..=max_retries {
-        match f() {
-            Ok(val) => return Ok(val),
-            Err(e) if attempt < max_retries => {
-                warn!(
-                    attempt,
-                    error = %e,
-                    backoff_ms,
-                    "retrying Linear API after transient error"
-                );
-                thread::sleep(Duration::from_millis(backoff_ms));
-                backoff_ms *= 2;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-
-    unreachable!()
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -961,33 +929,6 @@ mod tests {
         let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
         let err = source.fetch_eligible_tasks().unwrap_err();
         assert!(err.to_string().contains("connection refused"));
-    }
-
-    #[test]
-    fn test_retry_succeeds_after_transient_failure() {
-        let attempts = RefCell::new(0);
-        let result = retry_with_backoff_ms(
-            || {
-                let mut a = attempts.borrow_mut();
-                *a += 1;
-                if *a < 3 {
-                    Err(Error::TaskSource("transient".to_string()))
-                } else {
-                    Ok("success".to_string())
-                }
-            },
-            1,
-            3,
-        );
-        assert_eq!(result.unwrap(), "success");
-        assert_eq!(*attempts.borrow(), 3);
-    }
-
-    #[test]
-    fn test_retry_fails_after_max_attempts() {
-        let result: Result<String> =
-            retry_with_backoff_ms(|| Err(Error::TaskSource("permanent".to_string())), 1, 3);
-        assert!(result.is_err());
     }
 
     #[test]

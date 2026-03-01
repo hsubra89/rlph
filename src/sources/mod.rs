@@ -1,11 +1,45 @@
 pub mod github;
 pub mod linear;
 
-use serde::Serialize;
-
 use std::collections::HashSet;
+use std::thread;
+use std::time::Duration;
+
+use serde::Serialize;
+use tracing::warn;
 
 use crate::error::Result;
+
+const MAX_RETRIES: u32 = 3;
+const INITIAL_BACKOFF_MS: u64 = 500;
+
+pub(crate) fn retry_with_backoff<F, T>(f: F) -> Result<T>
+where
+    F: Fn() -> Result<T>,
+{
+    retry_with_backoff_ms(f, INITIAL_BACKOFF_MS, MAX_RETRIES)
+}
+
+pub(crate) fn retry_with_backoff_ms<F, T>(f: F, initial_backoff_ms: u64, max_retries: u32) -> Result<T>
+where
+    F: Fn() -> Result<T>,
+{
+    let mut backoff_ms = initial_backoff_ms;
+
+    for attempt in 1..=max_retries {
+        match f() {
+            Ok(val) => return Ok(val),
+            Err(e) if attempt < max_retries => {
+                warn!(attempt, error = %e, backoff_ms, "retrying after transient error");
+                thread::sleep(Duration::from_millis(backoff_ms));
+                backoff_ms *= 2;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    unreachable!()
+}
 
 /// Task priority (1 = highest, 9 = lowest).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -102,6 +136,36 @@ impl TaskSource for AnySource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    use crate::error::Error;
+
+    #[test]
+    fn test_retry_succeeds_after_transient_failure() {
+        let attempts = RefCell::new(0);
+        let result = retry_with_backoff_ms(
+            || {
+                let mut a = attempts.borrow_mut();
+                *a += 1;
+                if *a < 3 {
+                    Err(Error::TaskSource("transient".to_string()))
+                } else {
+                    Ok("success".to_string())
+                }
+            },
+            1,
+            3,
+        );
+        assert_eq!(result.unwrap(), "success");
+        assert_eq!(*attempts.borrow(), 3);
+    }
+
+    #[test]
+    fn test_retry_fails_after_max_attempts() {
+        let result: Result<String> =
+            retry_with_backoff_ms(|| Err(Error::TaskSource("permanent".to_string())), 1, 3);
+        assert!(result.is_err());
+    }
 
     #[test]
     fn test_priority_from_numeric_labels() {
