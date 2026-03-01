@@ -598,7 +598,7 @@ impl<
         worktree_info: &WorktreeInfo,
         existing_pr_number: Option<u64>,
     ) -> Result<()> {
-        let mut vars = self.build_task_vars(task, worktree_info);
+        let mut vars = self.initial_task_vars(task, worktree_info);
 
         // 7. Implement phase
         self.reporter.implement_started();
@@ -675,16 +675,19 @@ impl<
             info!(round, max_reviews, "review round");
 
             // Fetch current PR comments for this round
-            let pr_comments_text = if let Some(pr_num) = pr_number {
+            let (pr_comments_text, has_pr_comments) = if let Some(pr_num) = pr_number {
                 match self.submission.fetch_pr_comments(pr_num) {
-                    Ok(comments) => format_pr_comments_for_prompt(&comments, pr_num),
+                    Ok(comments) => {
+                        let has = !comments.is_empty();
+                        (format_pr_comments_for_prompt(&comments, pr_num), has)
+                    }
                     Err(e) => {
                         warn!(error = %e, "failed to fetch PR comments");
-                        "Failed to fetch PR comments.".to_string()
+                        ("Failed to fetch PR comments.".to_string(), false)
                     }
                 }
             } else {
-                "No PR associated with this review.".to_string()
+                ("No PR associated with this review.".to_string(), false)
             };
 
             let pr_number_str = pr_number.map(|n| n.to_string()).unwrap_or_default();
@@ -699,6 +702,15 @@ impl<
                 phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());
                 phase_vars.insert("pr_comments".to_string(), pr_comments_text.clone());
                 phase_vars.insert("pr_number".to_string(), pr_number_str.clone());
+                // upon templates treat empty strings as falsy in {% if has_pr_comments %}
+                phase_vars.insert(
+                    "has_pr_comments".to_string(),
+                    if has_pr_comments {
+                        "true".to_string()
+                    } else {
+                        String::new()
+                    },
+                );
 
                 let prompt = self
                     .prompt_engine
@@ -729,7 +741,7 @@ impl<
             let mut phase_parse_failed = false;
             for o in &review_outputs {
                 let rendered = match parse_phase_output(&o.stdout) {
-                    Ok(phase) => render_findings_for_prompt(&phase.findings),
+                    Ok(phase) => render_findings_for_prompt(&phase.findings, Some(&o.name)),
                     Err(e) => {
                         // Try correction via session resume
                         let phase_config =
@@ -753,7 +765,9 @@ impl<
                             None
                         };
                         match recovered {
-                            Some(phase) => render_findings_for_prompt(&phase.findings),
+                            Some(phase) => {
+                                render_findings_for_prompt(&phase.findings, Some(&o.name))
+                            }
                             None => {
                                 warn!(phase = %o.name, error = %e, "phase JSON correction exhausted — retrying round");
                                 last_json_failure =
@@ -1030,20 +1044,13 @@ impl<
         Ok(selection.id)
     }
 
-    fn build_task_vars(&self, task: &Task, worktree: &WorktreeInfo) -> HashMap<String, String> {
-        let mut vars = HashMap::new();
-        vars.insert("issue_title".to_string(), task.title.clone());
-        vars.insert("issue_body".to_string(), task.body.clone());
-        vars.insert("issue_number".to_string(), task.id.clone());
-        vars.insert("issue_url".to_string(), task.url.clone());
-        vars.insert(
-            "repo_path".to_string(),
-            self.repo_root.display().to_string(),
-        );
-        vars.insert("branch_name".to_string(), worktree.branch.clone());
-        vars.insert(
-            "worktree_path".to_string(),
-            worktree.path.display().to_string(),
+    fn initial_task_vars(&self, task: &Task, worktree: &WorktreeInfo) -> HashMap<String, String> {
+        let mut vars = build_task_vars(
+            task,
+            &self.repo_root,
+            &worktree.branch,
+            &worktree.path,
+            &self.config.base_branch,
         );
         vars.insert("pr_number".to_string(), String::new());
         vars.insert("pr_branch".to_string(), String::new());
@@ -1085,6 +1092,32 @@ impl<
         info!(branch = worktree.branch, remote_branch, "pushed branch");
         Ok(())
     }
+}
+
+/// Build the base set of template variables for a task.
+///
+/// Used by the orchestrator internally and available for tests to avoid
+/// duplicating the variable map.
+pub fn build_task_vars(
+    task: &Task,
+    repo_path: &Path,
+    branch: &str,
+    worktree_path: &Path,
+    base_branch: &str,
+) -> HashMap<String, String> {
+    HashMap::from([
+        ("issue_title".to_string(), task.title.clone()),
+        ("issue_body".to_string(), task.body.clone()),
+        ("issue_number".to_string(), task.id.clone()),
+        ("issue_url".to_string(), task.url.clone()),
+        ("repo_path".to_string(), repo_path.display().to_string()),
+        ("branch_name".to_string(), branch.to_string()),
+        (
+            "worktree_path".to_string(),
+            worktree_path.display().to_string(),
+        ),
+        ("base_branch".to_string(), base_branch.to_string()),
+    ])
 }
 
 /// Extract the issue number from a task ID like "gh-42".
@@ -1133,7 +1166,7 @@ mod tests {
     fn test_parse_aggregator_needs_fix_json() {
         use crate::review_schema::{Verdict, parse_aggregator_output};
 
-        let json = r#"{"verdict":"needs_fix","comment":"Issues found.","findings":[{"file":"src/main.rs","line":42,"severity":"critical","description":"bug"}],"fix_instructions":"Fix the bug."}"#;
+        let json = r#"{"verdict":"needs_fix","comment":"Issues found.","findings":[{"id":"bug-main","file":"src/main.rs","line":42,"severity":"critical","description":"bug"}],"fix_instructions":"Fix the bug."}"#;
         let output = parse_aggregator_output(json).unwrap();
         assert_eq!(output.verdict, Verdict::NeedsFix);
         assert_eq!(output.fix_instructions.as_deref(), Some("Fix the bug."));

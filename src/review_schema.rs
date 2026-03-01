@@ -1,6 +1,22 @@
-use serde::Deserialize;
+use std::fmt::Write;
+
+use serde::{Deserialize, Deserializer};
 
 use crate::error::{Error, Result};
+
+/// Deserialize a `Vec<String>` that tolerates both absent keys and explicit `null`.
+///
+/// `#[serde(default)]` handles a missing key, but an explicit `"depends_on": null` from
+/// an LLM would fail deserialization. This function accepts `null` and returns an empty vec.
+fn deserialize_null_as_empty_vec<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt: Option<Vec<String>> = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -20,10 +36,14 @@ pub enum Verdict {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ReviewFinding {
+    pub id: String,
     pub file: String,
     pub line: u32,
     pub severity: Severity,
     pub description: String,
+    pub category: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -48,26 +68,42 @@ pub fn parse_phase_output(raw: &str) -> Result<PhaseOutput> {
 }
 
 /// Render findings as human-readable markdown for injection into the aggregator prompt.
-pub fn render_findings_for_prompt(findings: &[ReviewFinding]) -> String {
+///
+/// If a finding has a `category` set, it is used. Otherwise `default_category` is used.
+pub fn render_findings_for_prompt(
+    findings: &[ReviewFinding],
+    default_category: Option<&str>,
+) -> String {
     if findings.is_empty() {
         return "No issues found.".to_string();
     }
 
-    findings
-        .iter()
-        .map(|f| {
-            let severity = match f.severity {
-                Severity::Critical => "CRITICAL",
-                Severity::Warning => "WARNING",
-                Severity::Info => "INFO",
-            };
-            format!(
-                "- **{}** `{}` L{}: {}",
-                severity, f.file, f.line, f.description
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut result = String::new();
+    for (i, f) in findings.iter().enumerate() {
+        if i > 0 {
+            result.push('\n');
+        }
+        let severity = match f.severity {
+            Severity::Critical => "CRITICAL",
+            Severity::Warning => "WARNING",
+            Severity::Info => "INFO",
+        };
+        let category = f
+            .category
+            .as_deref()
+            .or(default_category)
+            .unwrap_or("general");
+        write!(
+            result,
+            "- ({}) **{}** [{}] `{}` L{}: {}",
+            f.id, severity, category, f.file, f.line, f.description
+        )
+        .unwrap();
+        if !f.depends_on.is_empty() {
+            write!(result, " (depends on: {})", f.depends_on.join(", ")).unwrap();
+        }
+    }
+    result
 }
 
 /// Strip markdown code fences (` ```json ... ``` `) that Claude sometimes wraps output in,
@@ -114,10 +150,10 @@ impl SchemaName {
     pub fn example_json(&self) -> &'static str {
         match self {
             SchemaName::Phase => {
-                r#"{"findings": [{"file": "src/main.rs", "line": 42, "severity": "critical", "description": "issue description"}]}"#
+                r#"{"findings": [{"id": "example-issue", "file": "src/main.rs", "line": 42, "severity": "critical", "description": "issue description", "category": "style", "depends_on": []}]}"#
             }
             SchemaName::Aggregator => {
-                r#"{"verdict": "approved", "comment": "summary", "findings": [{"file": "src/main.rs", "line": 1, "severity": "warning", "description": "issue"}], "fix_instructions": null}"#
+                r#"{"verdict": "approved", "comment": "summary", "findings": [{"id": "example-issue", "file": "src/main.rs", "line": 1, "severity": "warning", "description": "issue", "category": "style", "depends_on": []}], "fix_instructions": null}"#
             }
             SchemaName::Fix => {
                 r#"{"status": "fixed", "summary": "what was done", "files_changed": ["src/main.rs"]}"#
@@ -190,12 +226,14 @@ mod tests {
             "comment": "Issues found.",
             "findings": [
                 {
+                    "id": "sql-injection",
                     "file": "src/main.rs",
                     "line": 42,
                     "severity": "critical",
                     "description": "SQL injection vulnerability"
                 },
                 {
+                    "id": "unused-import",
                     "file": "src/lib.rs",
                     "line": 10,
                     "severity": "warning",
@@ -277,7 +315,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_fenced_json() {
-        let fenced = "```json\n{\n  \"verdict\": \"needs_fix\",\n  \"comment\": \"Fix it.\",\n  \"findings\": [{\"file\": \"a.rs\", \"line\": 1, \"severity\": \"info\", \"description\": \"nit\"}],\n  \"fix_instructions\": \"do the thing\"\n}\n```";
+        let fenced = "```json\n{\n  \"verdict\": \"needs_fix\",\n  \"comment\": \"Fix it.\",\n  \"findings\": [{\"id\": \"nit-issue\", \"file\": \"a.rs\", \"line\": 1, \"severity\": \"info\", \"description\": \"nit\"}],\n  \"fix_instructions\": \"do the thing\"\n}\n```";
         let output = parse_aggregator_output(fenced).unwrap();
         assert_eq!(output.verdict, Verdict::NeedsFix);
         assert_eq!(output.findings.len(), 1);
@@ -329,12 +367,14 @@ mod tests {
         let json = r#"{
             "findings": [
                 {
+                    "id": "null-ptr-deref",
                     "file": "src/main.rs",
                     "line": 10,
                     "severity": "critical",
                     "description": "Null pointer dereference"
                 },
                 {
+                    "id": "use-constant",
                     "file": "src/lib.rs",
                     "line": 25,
                     "severity": "info",
@@ -360,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_parse_phase_output_fenced_json() {
-        let input = "```json\n{\"findings\": [{\"file\": \"a.rs\", \"line\": 1, \"severity\": \"warning\", \"description\": \"nit\"}]}\n```";
+        let input = "```json\n{\"findings\": [{\"id\": \"nit-issue\", \"file\": \"a.rs\", \"line\": 1, \"severity\": \"warning\", \"description\": \"nit\"}]}\n```";
         let output = parse_phase_output(input).unwrap();
         assert_eq!(output.findings.len(), 1);
         assert_eq!(output.findings[0].severity, Severity::Warning);
@@ -375,21 +415,24 @@ mod tests {
 
     #[test]
     fn test_render_findings_empty() {
-        assert_eq!(render_findings_for_prompt(&[]), "No issues found.");
+        assert_eq!(render_findings_for_prompt(&[], None), "No issues found.");
     }
 
     #[test]
     fn test_render_findings_single() {
         let findings = vec![ReviewFinding {
+            id: "sql-injection".to_string(),
             file: "src/main.rs".to_string(),
             line: 42,
             severity: Severity::Critical,
             description: "SQL injection vulnerability".to_string(),
+            category: None,
+            depends_on: vec![],
         }];
-        let rendered = render_findings_for_prompt(&findings);
+        let rendered = render_findings_for_prompt(&findings, Some("security"));
         assert_eq!(
             rendered,
-            "- **CRITICAL** `src/main.rs` L42: SQL injection vulnerability"
+            "- (sql-injection) **CRITICAL** [security] `src/main.rs` L42: SQL injection vulnerability"
         );
     }
 
@@ -397,30 +440,57 @@ mod tests {
     fn test_render_findings_multiple() {
         let findings = vec![
             ReviewFinding {
+                id: "bug-main".to_string(),
                 file: "src/main.rs".to_string(),
                 line: 42,
                 severity: Severity::Critical,
                 description: "Bug".to_string(),
+                category: Some("correctness".to_string()),
+                depends_on: vec![],
             },
             ReviewFinding {
+                id: "unused-import".to_string(),
                 file: "src/lib.rs".to_string(),
                 line: 10,
                 severity: Severity::Warning,
                 description: "Unused import".to_string(),
+                category: None,
+                depends_on: vec![],
             },
             ReviewFinding {
+                id: "nit-util".to_string(),
                 file: "src/util.rs".to_string(),
                 line: 5,
                 severity: Severity::Info,
                 description: "Nit".to_string(),
+                category: None,
+                depends_on: vec![],
             },
         ];
-        let rendered = render_findings_for_prompt(&findings);
+        let rendered = render_findings_for_prompt(&findings, Some("style"));
         let expected = "\
-- **CRITICAL** `src/main.rs` L42: Bug
-- **WARNING** `src/lib.rs` L10: Unused import
-- **INFO** `src/util.rs` L5: Nit";
+- (bug-main) **CRITICAL** [correctness] `src/main.rs` L42: Bug
+- (unused-import) **WARNING** [style] `src/lib.rs` L10: Unused import
+- (nit-util) **INFO** [style] `src/util.rs` L5: Nit";
         assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn test_render_findings_no_default_category() {
+        let findings = vec![ReviewFinding {
+            id: "nit-main".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 1,
+            severity: Severity::Info,
+            description: "nit".to_string(),
+            category: None,
+            depends_on: vec![],
+        }];
+        let rendered = render_findings_for_prompt(&findings, None);
+        assert_eq!(
+            rendered,
+            "- (nit-main) **INFO** [general] `src/main.rs` L1: nit"
+        );
     }
 
     // ---- FixOutput tests ----
@@ -494,6 +564,90 @@ mod tests {
     #[test]
     fn test_parse_fix_output_invalid_json_errors() {
         assert!(parse_fix_output("not json").is_err());
+    }
+
+    // ---- id and depends_on tests ----
+
+    #[test]
+    fn test_parse_depends_on_null_deserializes_as_empty() {
+        let json = r#"{
+            "findings": [
+                {
+                    "id": "null-depends",
+                    "file": "src/main.rs",
+                    "line": 1,
+                    "severity": "info",
+                    "description": "test",
+                    "depends_on": null
+                }
+            ]
+        }"#;
+        let output = parse_phase_output(json).unwrap();
+        assert!(output.findings[0].depends_on.is_empty());
+    }
+
+    #[test]
+    fn test_parse_phase_output_with_depends_on() {
+        let json = r#"{
+            "findings": [
+                {
+                    "id": "null-check-missing",
+                    "file": "src/main.rs",
+                    "line": 10,
+                    "severity": "critical",
+                    "description": "Missing null check"
+                },
+                {
+                    "id": "null-ptr-deref",
+                    "file": "src/main.rs",
+                    "line": 15,
+                    "severity": "critical",
+                    "description": "Null pointer dereference",
+                    "depends_on": ["null-check-missing"]
+                }
+            ]
+        }"#;
+        let output = parse_phase_output(json).unwrap();
+        assert_eq!(output.findings[0].id, "null-check-missing");
+        assert!(output.findings[0].depends_on.is_empty());
+        assert_eq!(output.findings[1].id, "null-ptr-deref");
+        assert_eq!(output.findings[1].depends_on, vec!["null-check-missing"]);
+    }
+
+    #[test]
+    fn test_render_findings_shows_id() {
+        let findings = vec![ReviewFinding {
+            id: "redundant-clone-in-loop".to_string(),
+            file: "src/lib.rs".to_string(),
+            line: 99,
+            severity: Severity::Warning,
+            description: "Redundant clone inside loop".to_string(),
+            category: Some("efficiency".to_string()),
+            depends_on: vec![],
+        }];
+        let rendered = render_findings_for_prompt(&findings, None);
+        assert_eq!(
+            rendered,
+            "- (redundant-clone-in-loop) **WARNING** [efficiency] `src/lib.rs` L99: Redundant clone inside loop"
+        );
+    }
+
+    #[test]
+    fn test_render_findings_with_depends_on() {
+        let findings = vec![ReviewFinding {
+            id: "null-ptr-deref".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 15,
+            severity: Severity::Critical,
+            description: "Null pointer dereference".to_string(),
+            category: Some("correctness".to_string()),
+            depends_on: vec!["null-check-missing".to_string()],
+        }];
+        let rendered = render_findings_for_prompt(&findings, None);
+        assert_eq!(
+            rendered,
+            "- (null-ptr-deref) **CRITICAL** [correctness] `src/main.rs` L15: Null pointer dereference (depends on: null-check-missing)"
+        );
     }
 
     // ---- correction_prompt tests ----

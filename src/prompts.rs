@@ -8,29 +8,11 @@ const DEFAULT_IMPLEMENT: &str = include_str!("default_prompts/implement-issue.md
 const DEFAULT_CORRECTNESS_REVIEW: &str =
     include_str!("default_prompts/correctness-review-issue.md");
 const DEFAULT_SECURITY_REVIEW: &str = include_str!("default_prompts/security-review-issue.md");
-const DEFAULT_STYLE_REVIEW: &str = include_str!("default_prompts/style-review-issue.md");
+const DEFAULT_HYGIENE_REVIEW: &str = include_str!("default_prompts/hygiene-review-issue.md");
 const DEFAULT_REVIEW_AGGREGATE: &str = include_str!("default_prompts/review-aggregate-issue.md");
 const DEFAULT_REVIEW_FIX: &str = include_str!("default_prompts/review-fix-issue.md");
 const DEFAULT_PRD: &str = include_str!("default_prompts/prd.md");
-
-/// Known template variable names for validation.
-const KNOWN_VARIABLES: &[&str] = &[
-    "issue_title",
-    "issue_body",
-    "issue_number",
-    "issue_url",
-    "repo_path",
-    "branch_name",
-    "worktree_path",
-    "issues_json",
-    "submission_instructions",
-    "review_outputs",
-    "review_phase_name",
-    "fix_instructions",
-    "pr_comments",
-    "pr_number",
-    "pr_branch",
-];
+const FINDINGS_SCHEMA: &str = include_str!("default_prompts/_findings-schema.md");
 
 fn default_template(phase: &str) -> Option<&'static str> {
     match phase {
@@ -38,7 +20,7 @@ fn default_template(phase: &str) -> Option<&'static str> {
         "implement" => Some(DEFAULT_IMPLEMENT),
         "correctness-review" => Some(DEFAULT_CORRECTNESS_REVIEW),
         "security-review" => Some(DEFAULT_SECURITY_REVIEW),
-        "style-review" => Some(DEFAULT_STYLE_REVIEW),
+        "hygiene-review" => Some(DEFAULT_HYGIENE_REVIEW),
         "review-aggregate" => Some(DEFAULT_REVIEW_AGGREGATE),
         "review-fix" => Some(DEFAULT_REVIEW_FIX),
         "prd" => Some(DEFAULT_PRD),
@@ -70,12 +52,16 @@ impl PromptEngine {
         if let Some(ref dir) = self.override_dir {
             let path = Path::new(dir).join(template_filename(phase));
             if path.exists() {
-                return std::fs::read_to_string(&path).map_err(|e| {
+                let content = std::fs::read_to_string(&path).map_err(|e| {
                     Error::Prompt(format!(
                         "failed to read override template {}: {e}",
                         path.display()
                     ))
-                });
+                })?;
+                // No pre-render validation — upon's own render errors include
+                // line/column and the offending snippet, which is clearer than
+                // anything we could produce with regex-based checks.
+                return Ok(content);
             }
         }
 
@@ -86,60 +72,34 @@ impl PromptEngine {
     }
 
     /// Load a template and render it with the given variables.
+    ///
+    /// Built-in variables like `findings_schema` are auto-injected when not
+    /// already present in `vars`, so templates can reference them without
+    /// callers having to supply them.
     pub fn render_phase(&self, phase: &str, vars: &HashMap<String, String>) -> Result<String> {
         let template = self.load_template(phase)?;
-        render_template(&template, vars)
+        let mut all_vars = vars.clone();
+        all_vars
+            .entry("findings_schema".to_string())
+            .or_insert_with(|| FINDINGS_SCHEMA.to_string());
+        render_template(&template, &all_vars)
     }
 }
 
-/// Render a template string by substituting `{{variable}}` placeholders.
-/// Errors on unknown variables (strict mode).
+/// Render a template string using the `upon` template engine.
+/// Supports `{{ var }}`, `{% if %}`, and `{% for %}` syntax.
 pub fn render_template(template: &str, vars: &HashMap<String, String>) -> Result<String> {
-    let mut result = String::with_capacity(template.len());
-    let mut chars = template.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '{' && chars.peek() == Some(&'{') {
-            chars.next(); // consume second {
-            let mut var_name = String::new();
-            let mut found_close = false;
-
-            while let Some(c2) = chars.next() {
-                if c2 == '}' && chars.peek() == Some(&'}') {
-                    chars.next(); // consume second }
-                    found_close = true;
-                    break;
-                }
-                var_name.push(c2);
-            }
-
-            if !found_close {
-                return Err(Error::Prompt(format!(
-                    "unclosed template variable: {{{{{var_name}"
-                )));
-            }
-
-            let var_name = var_name.trim();
-            if !KNOWN_VARIABLES.contains(&var_name) {
-                return Err(Error::Prompt(format!(
-                    "unknown template variable: {var_name}"
-                )));
-            }
-
-            match vars.get(var_name) {
-                Some(value) => result.push_str(value),
-                None => {
-                    return Err(Error::Prompt(format!(
-                        "missing value for template variable: {var_name}"
-                    )));
-                }
-            }
-        } else {
-            result.push(c);
-        }
-    }
-
-    Ok(result)
+    let engine = upon::Engine::new();
+    let compiled = engine
+        .compile(template)
+        .map_err(|e| Error::Prompt(format!("template compile error: {e}")))?;
+    compiled
+        .render(
+            &engine,
+            upon::to_value(vars).map_err(|e| Error::Prompt(e.to_string()))?,
+        )
+        .to_string()
+        .map_err(|e| Error::Prompt(format!("template render error: {e}")))
 }
 
 #[cfg(test)]
@@ -171,6 +131,7 @@ mod tests {
         assert!(template.contains("Correctness Review Agent"));
         assert!(template.contains("{{issue_title}}"));
         assert!(template.contains("{{review_phase_name}}"));
+        assert!(template.contains("{{base_branch}}"));
     }
 
     #[test]
@@ -178,13 +139,15 @@ mod tests {
         let engine = PromptEngine::new(None);
         let template = engine.load_template("security-review").unwrap();
         assert!(template.contains("Security Review Agent"));
+        assert!(template.contains("{{base_branch}}"));
     }
 
     #[test]
-    fn test_load_default_style_review() {
+    fn test_load_default_hygiene_review() {
         let engine = PromptEngine::new(None);
-        let template = engine.load_template("style-review").unwrap();
-        assert!(template.contains("Style Review Agent"));
+        let template = engine.load_template("hygiene-review").unwrap();
+        assert!(template.contains("Hygiene Review Coordinator"));
+        assert!(template.contains("{{base_branch}}"));
     }
 
     #[test]
@@ -254,21 +217,65 @@ mod tests {
     fn test_render_unknown_variable_errors() {
         let vars = HashMap::new();
         let err = render_template("{{unknown_var}}", &vars).unwrap_err();
-        assert!(err.to_string().contains("unknown template variable"));
+        assert!(
+            err.to_string().contains("render error"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
     fn test_render_missing_value_errors() {
         let vars = HashMap::new();
         let err = render_template("{{issue_title}}", &vars).unwrap_err();
-        assert!(err.to_string().contains("missing value"));
+        assert!(
+            err.to_string().contains("render error"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
     fn test_render_unclosed_variable() {
         let vars = HashMap::new();
         let err = render_template("{{issue_title", &vars).unwrap_err();
-        assert!(err.to_string().contains("unclosed template variable"));
+        assert!(
+            err.to_string().contains("compile error"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_render_if_conditional() {
+        let mut vars = HashMap::new();
+        vars.insert("pr_number".to_string(), "42".to_string());
+        let template = "{% if pr_number %}PR #{{ pr_number }}{% endif %}";
+        let result = render_template(template, &vars).unwrap();
+        assert_eq!(result, "PR #42");
+    }
+
+    #[test]
+    fn test_render_if_conditional_falsy_empty_string() {
+        let mut vars = HashMap::new();
+        vars.insert("pr_number".to_string(), String::new());
+        let template = "{% if pr_number %}PR #{{ pr_number }}{% endif %}";
+        let result = render_template(template, &vars).unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_render_for_loop() {
+        let mut vars = HashMap::new();
+        vars.insert("items".to_string(), "unused".to_string());
+        // upon for loops work on iterables; with HashMap<String,String> we can
+        // only test that the engine compiles and renders for syntax correctly.
+        // A simple for-in-value list isn't possible with flat string maps, so
+        // we just verify the engine doesn't choke on the syntax.
+        let engine = upon::Engine::new();
+        let compiled = engine
+            .compile("{% for x in items %}{{ x }}{% endfor %}")
+            .unwrap();
+        let val = upon::value! { items: ["a", "b", "c"] };
+        let result = compiled.render(&engine, val).to_string().unwrap();
+        assert_eq!(result, "abc");
     }
 
     #[test]
@@ -296,9 +303,14 @@ mod tests {
         vars.insert("branch_name".to_string(), "main".to_string());
         vars.insert("worktree_path".to_string(), "/wt".to_string());
 
-        let template = "{{issue_title}} {{issue_body}} {{issue_number}} {{issue_url}} {{repo_path}} {{branch_name}} {{worktree_path}}";
+        vars.insert("base_branch".to_string(), "main".to_string());
+
+        let template = "{{issue_title}} {{issue_body}} {{issue_number}} {{issue_url}} {{repo_path}} {{branch_name}} {{worktree_path}} {{base_branch}}";
         let result = render_template(template, &vars).unwrap();
-        assert_eq!(result, "title body 1 https://example.com /repo main /wt");
+        assert_eq!(
+            result,
+            "title body 1 https://example.com /repo main /wt main"
+        );
     }
 
     #[test]
@@ -345,5 +357,22 @@ mod tests {
         let result = engine.render_phase("prd", &vars).unwrap();
         assert!(result.contains("Create a GitHub issue using `gh issue create`"));
         assert!(!result.contains("{{submission_instructions}}"));
+    }
+
+    #[test]
+    fn test_override_with_unknown_var_loads_but_fails_at_render() {
+        let dir = TempDir::new().unwrap();
+        let override_path = dir.path().join("choose-issue.md");
+        fs::write(&override_path, "Custom: {{bad_var}}").unwrap();
+
+        let engine = PromptEngine::new(Some(dir.path().to_string_lossy().to_string()));
+        // load_template succeeds — validation deferred to render time
+        let template = engine.load_template("choose").unwrap();
+        assert_eq!(template, "Custom: {{bad_var}}");
+
+        // render fails with upon's clear error
+        let vars = HashMap::new();
+        let err = render_template(&template, &vars).unwrap_err();
+        assert!(err.to_string().contains("render error"), "got: {err}");
     }
 }

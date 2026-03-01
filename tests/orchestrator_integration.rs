@@ -11,6 +11,7 @@ use rlph::config::{
 use rlph::error::{Error, Result};
 use rlph::orchestrator::{
     CorrectionRunner, Orchestrator, ProgressReporter, ReviewInvocation, ReviewRunnerFactory,
+    build_task_vars,
 };
 use rlph::prompts::PromptEngine;
 use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult, RunnerKind};
@@ -19,6 +20,11 @@ use rlph::state::StateManager;
 use rlph::submission::{SubmissionBackend, SubmitResult};
 use rlph::worktree::WorktreeManager;
 use tokio::sync::watch;
+
+// --- Shared test JSON literals ---
+
+const APPROVED_AGGREGATOR_JSON: &str =
+    r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#;
 
 // --- Shared tracking state ---
 
@@ -134,7 +140,7 @@ impl AgentRunner for MockRunner {
             }),
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
-                stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
+                stdout: APPROVED_AGGREGATOR_JSON.into(),
                 stderr: String::new(),
                 session_id: None,
             }),
@@ -272,7 +278,7 @@ impl AgentRunner for CountingRunner {
             }
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
-                stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
+                stdout: APPROVED_AGGREGATOR_JSON.into(),
                 stderr: String::new(),
                 session_id: None,
             }),
@@ -328,7 +334,7 @@ impl AgentRunner for FailAtPhaseRunner {
             }),
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
-                stdout: r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#.into(),
+                stdout: APPROVED_AGGREGATOR_JSON.into(),
                 stderr: String::new(),
                 session_id: None,
             }),
@@ -458,7 +464,7 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
             Box::pin(async {
                 Ok(RunResult {
                     exit_code: 0,
-                    stdout: r#"{"findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"issues found"}]}"#.into(),
+                    stdout: r#"{"findings":[{"id":"issues-found","file":"src/main.rs","line":1,"severity":"warning","description":"issues found"}]}"#.into(),
                     stderr: String::new(),
                     session_id: None,
                 })
@@ -476,7 +482,7 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
             Box::pin(async move {
                 let stdout = match phase {
                     Phase::ReviewAggregate => {
-                        r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"issue"}],"fix_instructions":"fix everything"}"#.to_string()
+                        r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"id":"issue-found","file":"src/main.rs","line":1,"severity":"warning","description":"issue"}],"fix_instructions":"fix everything"}"#.to_string()
                     }
                     Phase::ReviewFix => r#"{"status":"fixed","summary":"attempted fixes","files_changed":["src/main.rs"]}"#.to_string(),
                     _ => String::new(),
@@ -682,22 +688,12 @@ fn make_review_vars(
     branch: &str,
     worktree_path: &Path,
 ) -> HashMap<String, String> {
-    HashMap::from([
-        ("issue_title".to_string(), task.title.clone()),
-        ("issue_body".to_string(), task.body.clone()),
-        ("issue_number".to_string(), task.id.clone()),
-        ("issue_url".to_string(), task.url.clone()),
-        ("repo_path".to_string(), repo_path.display().to_string()),
-        ("branch_name".to_string(), branch.to_string()),
-        (
-            "worktree_path".to_string(),
-            worktree_path.display().to_string(),
-        ),
-        (
-            "pr_url".to_string(),
-            format!("https://github.com/test/repo/pull/{}", task.id),
-        ),
-    ])
+    let mut vars = build_task_vars(task, repo_path, branch, worktree_path, "main");
+    vars.insert(
+        "pr_url".to_string(),
+        format!("https://github.com/test/repo/pull/{}", task.id),
+    );
+    vars
 }
 
 /// Set up a git repo with a bare remote for testing.
@@ -1532,7 +1528,7 @@ async fn test_review_reports_phases_started() {
             assert_eq!(*count, 3);
             assert!(names.contains(&"correctness".to_string()));
             assert!(names.contains(&"security".to_string()));
-            assert!(names.contains(&"style".to_string()));
+            assert!(names.contains(&"hygiene".to_string()));
         }
         _ => unreachable!(),
     }
@@ -1572,7 +1568,7 @@ async fn test_review_reports_phase_completions() {
     let completion_set: HashSet<_> = completions.into_iter().collect();
     assert!(completion_set.contains("correctness"));
     assert!(completion_set.contains("security"));
-    assert!(completion_set.contains("style"));
+    assert!(completion_set.contains("hygiene"));
 }
 
 #[tokio::test]
@@ -2160,7 +2156,7 @@ async fn test_phase_malformed_json_correction_succeeds() {
     let valid_phase = || {
         Ok(RunResult {
         exit_code: 0,
-        stdout: r#"{"findings":[{"file":"src/main.rs","line":1,"severity":"warning","description":"corrected finding"}]}"#.into(),
+        stdout: r#"{"findings":[{"id":"corrected-finding","file":"src/main.rs","line":1,"severity":"warning","description":"corrected finding"}]}"#.into(),
         stderr: String::new(),
         session_id: Some("sess-phase-123".into()),
     })

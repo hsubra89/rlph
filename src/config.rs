@@ -159,8 +159,8 @@ pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {
             agent_timeout: None,
         },
         ReviewPhaseConfig {
-            name: "style".to_string(),
-            prompt: "style-review".to_string(),
+            name: "hygiene".to_string(),
+            prompt: "hygiene-review".to_string(),
             runner: RunnerKind::Claude,
             agent_binary: "claude".to_string(),
             agent_model: None,
@@ -981,7 +981,7 @@ prompt = "my-fix"
         assert_eq!(config.review_phases.len(), 3);
         assert_eq!(config.review_phases[0].name, "correctness");
         assert_eq!(config.review_phases[1].name, "security");
-        assert_eq!(config.review_phases[2].name, "style");
+        assert_eq!(config.review_phases[2].name, "hygiene");
     }
 
     #[test]
