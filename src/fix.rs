@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tracing::{debug, info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
 use crate::fix_comment::{CheckboxState, FixItem, FixResultKind, parse_fix_items, update_comment};
 use crate::prompts::PromptEngine;
@@ -192,7 +192,7 @@ async fn run_fix_agent_and_apply(
 /// Parse fix output with up to 2 retries via session resume.
 async fn parse_with_retry(
     run_result: &RunResult,
-    fix_config: &crate::config::ReviewStepConfig,
+    fix_config: &ReviewStepConfig,
     working_dir: &Path,
 ) -> Result<StandaloneFixOutput> {
     match parse_standalone_fix_output(&run_result.stdout) {
