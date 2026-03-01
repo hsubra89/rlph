@@ -358,12 +358,12 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         while let Some(result) = join_set.join_next().await {
             match result {
                 Ok((finding_id, Ok(()))) => {
-                    info!(finding_id, "fix completed during shutdown");
+                    info!(%finding_id, "fix completed during shutdown");
                     in_flight.remove(&finding_id);
                     completed.insert(finding_id);
                 }
                 Ok((finding_id, Err(e))) => {
-                    warn!(finding_id, error = %e, "fix failed during shutdown");
+                    warn!(%finding_id, error = %e, "fix failed during shutdown");
                     in_flight.remove(&finding_id);
                     failed.insert(finding_id);
                 }
@@ -427,12 +427,12 @@ fn drain_completed(
     while let Some(result) = join_set.try_join_next() {
         match result {
             Ok((finding_id, Ok(()))) => {
-                info!(finding_id, "fix completed successfully");
+                info!(%finding_id, "fix completed successfully");
                 in_flight.remove(&finding_id);
                 completed.insert(finding_id);
             }
             Ok((finding_id, Err(e))) => {
-                warn!(finding_id, error = %e, "fix agent failed");
+                warn!(%finding_id, error = %e, "fix agent failed");
                 in_flight.remove(&finding_id);
                 failed.insert(finding_id);
             }
