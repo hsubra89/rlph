@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
 use tokio::sync::Semaphore;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Serializes comment re-fetch + update to prevent concurrent fix agents from racing.
 static COMMENT_UPDATE_LOCK: Semaphore = Semaphore::const_new(1);
@@ -17,7 +17,7 @@ use crate::prompts::PromptEngine;
 use crate::review_schema::{SchemaName, StandaloneFixOutput, parse_standalone_fix_output};
 use crate::runner::{AgentRunner, Phase, RunResult, build_runner};
 use crate::submission::{REVIEW_MARKER, SubmissionBackend};
-use crate::worktree::validate_branch_name;
+use crate::worktree::{WorktreeManager, validate_branch_name};
 
 /// Run the standalone fix flow for a single checked finding on a PR.
 ///
@@ -76,8 +76,12 @@ pub async fn run_fix(
     let fix_branch = format!("rlph-fix-{pr_number}-{id}");
     validate_branch_name(&fix_branch)?;
 
-    let worktree_path =
-        create_fix_worktree(repo_root, &config.worktree_dir, pr_branch, &fix_branch)?;
+    let wm = WorktreeManager::new(
+        repo_root.to_path_buf(),
+        repo_root.join(&config.worktree_dir),
+        pr_branch.to_string(),
+    );
+    let worktree_path = wm.create_fresh(&fix_branch, pr_branch)?.path;
     info!(path = %worktree_path.display(), branch = %fix_branch, "created fix worktree");
 
     // Run the fix agent and handle results, ensuring worktree cleanup
@@ -92,7 +96,9 @@ pub async fn run_fix(
 
     // 8. Clean up worktree (always, even on error)
     info!(path = %worktree_path.display(), "cleaning up fix worktree");
-    cleanup_worktree(repo_root, &worktree_path, &fix_branch);
+    if let Err(e) = wm.remove(&worktree_path) {
+        warn!(error = %e, "failed to clean up fix worktree");
+    }
 
     result
 }
@@ -242,60 +248,6 @@ async fn parse_fix_with_retry(
     }
 }
 
-/// Create a worktree for the fix branch, branching off origin/<pr-branch>.
-fn create_fix_worktree(
-    repo_root: &Path,
-    worktree_dir: &str,
-    pr_branch: &str,
-    fix_branch: &str,
-) -> Result<PathBuf> {
-    // Fetch latest PR branch
-    info!(pr_branch, "fetching latest PR branch from origin");
-    git(repo_root, &["fetch", "origin", pr_branch])?;
-
-    let remote_ref = format!("origin/{pr_branch}");
-
-    // Determine worktree path
-    let worktree_dir = repo_root.join(worktree_dir);
-    std::fs::create_dir_all(&worktree_dir).map_err(|e| {
-        Error::Worktree(format!(
-            "failed to create worktree dir {}: {e}",
-            worktree_dir.display()
-        ))
-    })?;
-    let worktree_path = worktree_dir.join(fix_branch);
-
-    // Clean up if path already exists (stale worktree)
-    if worktree_path.exists() {
-        debug!(path = %worktree_path.display(), "removing stale fix worktree");
-        let _ = git(
-            repo_root,
-            &[
-                "worktree",
-                "remove",
-                "--force",
-                &worktree_path.to_string_lossy(),
-            ],
-        );
-    }
-
-    // Delete stale local branch if it exists
-    let local_ref = format!("refs/heads/{fix_branch}");
-    if git(repo_root, &["show-ref", "--verify", "--quiet", &local_ref]).is_ok() {
-        let _ = git(repo_root, &["branch", "-D", fix_branch]);
-    }
-
-    // Create worktree with new branch from remote ref
-    let path_str = worktree_path.to_string_lossy();
-    git(
-        repo_root,
-        &["worktree", "add", "-b", fix_branch, &path_str, &remote_ref],
-    )?;
-
-    let canonical = worktree_path.canonicalize().unwrap_or(worktree_path);
-    Ok(canonical)
-}
-
 /// Rebase current branch onto origin/<pr-branch>.
 fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
     let remote_ref = format!("origin/{pr_branch}");
@@ -340,37 +292,6 @@ fn push_to_pr_branch(worktree_path: &Path, fix_branch: &str, pr_branch: &str) ->
 
     info!(refspec, "pushed fix to PR branch");
     Ok(())
-}
-
-/// Clean up worktree and its branch.
-fn cleanup_worktree(repo_root: &Path, worktree_path: &Path, fix_branch: &str) {
-    let path_str = worktree_path.to_string_lossy();
-    if let Err(e) = git(repo_root, &["worktree", "remove", "--force", &path_str]) {
-        warn!(error = %e, "failed to remove fix worktree");
-    }
-    if let Err(e) = git(repo_root, &["branch", "-D", fix_branch]) {
-        debug!(error = %e, "failed to delete fix branch (may already be gone)");
-    }
-}
-
-/// Run a git command and return stdout on success, or an error message on failure.
-fn git(cwd: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .map_err(|e| Error::Orchestrator(format!("failed to run git {}: {e}", args.join(" "))))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(Error::Orchestrator(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            stderr.trim()
-        )))
-    }
 }
 
 #[cfg(test)]

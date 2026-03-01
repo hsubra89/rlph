@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
 
@@ -264,6 +264,50 @@ impl WorktreeManager {
         Ok(WorktreeInfo {
             path: canonical_path,
             branch: local_branch,
+        })
+    }
+
+    /// Create a fresh worktree with a new branch from a remote branch.
+    ///
+    /// Removes any stale worktree or local branch with the same name first.
+    pub fn create_fresh(&self, branch_name: &str, remote_branch: &str) -> Result<WorktreeInfo> {
+        validate_branch_name(branch_name)?;
+
+        // Fetch latest remote branch
+        self.fetch_with_retry(remote_branch, 3)?;
+
+        std::fs::create_dir_all(&self.base_dir).map_err(|e| {
+            Error::Worktree(format!(
+                "failed to create base dir {}: {e}",
+                self.base_dir.display()
+            ))
+        })?;
+
+        let path = self.base_dir.join(branch_name);
+
+        // Clean up stale worktree at path if it exists
+        if path.exists() {
+            debug!(path = %path.display(), "removing stale worktree");
+            let _ = self.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
+        }
+
+        // Delete stale local branch if it exists
+        let local_ref = format!("refs/heads/{branch_name}");
+        if self
+            .git(&["show-ref", "--verify", "--quiet", &local_ref])
+            .is_ok()
+        {
+            let _ = self.git(&["branch", "-D", branch_name]);
+        }
+
+        // Create worktree with new branch from remote ref
+        let remote_ref = format!("origin/{remote_branch}");
+        self.git_worktree_add(&path, branch_name, true, Some(&remote_ref))?;
+
+        let canonical = path.canonicalize().unwrap_or(path);
+        Ok(WorktreeInfo {
+            path: canonical,
+            branch: branch_name.to_string(),
         })
     }
 
