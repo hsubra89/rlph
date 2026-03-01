@@ -493,7 +493,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
     }
   ],
   \"verdict\": \"approved\" | \"needs_fix\",
-  \"comment\": \"<markdown PR comment — list issues as `- [ ] ...`>\",
+  \"comment\": \"<brief one-sentence summary of the review outcome>\",
   \"fix_instructions\": \"<concise fix instructions, or null if approved>\"
 }
 ```
