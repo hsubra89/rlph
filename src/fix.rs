@@ -252,6 +252,11 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             }
         };
 
+        if *shutdown.borrow() {
+            info!("shutdown requested after fetch, stopping poll loop");
+            break;
+        }
+
         // Filter: checked AND not already tracked
         let newly_checked: Vec<FixItem> = items
             .into_iter()
