@@ -387,7 +387,7 @@ fn handle_join_result(
         Err(e) => {
             let finding_id = task_finding_ids.remove(&e.id());
             if let Some(ref id) = finding_id {
-                warn!(finding_id = id, error = %e, "fix task panicked");
+                warn!(finding_id = %id, error = %e, "fix task panicked");
                 in_flight.remove(id);
                 failed.insert(id.clone());
             } else {
