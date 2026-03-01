@@ -54,15 +54,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 
     // 1. Fetch review comment and parse checked items
     info!(pr_number, "polling GitHub for PR comments");
-    let comments = submission.fetch_pr_comments(pr_number)?;
-    let review_comment = comments
-        .iter()
-        .find(|c| c.body.contains(REVIEW_MARKER))
-        .ok_or_else(|| {
-            Error::Orchestrator(format!("no rlph review comment found on PR #{pr_number}"))
-        })?;
-
-    let items = parse_fix_items(&review_comment.body);
+    let (items, _comment_id) = fetch_and_parse_items(pr_number, &*submission, None)?;
     info!(total = items.len(), "parsed fix items from review comment");
 
     // 2. Collect ALL eligible checked items
