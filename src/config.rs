@@ -165,10 +165,10 @@ fn detect_default_branch() -> String {
 
     // 2. Fallback (network): gh api repos/{owner}/{repo}
     if let Ok(repo_info) = run_gh_api::<GhRepoInfo>("repos/{owner}/{repo}") {
-        let branch = repo_info.default_branch.trim().to_string();
+        let branch = repo_info.default_branch.trim();
         if !branch.is_empty() {
             debug!(branch, "detected default branch from gh api");
-            return branch;
+            return branch.to_string();
         }
     }
 
