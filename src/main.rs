@@ -45,15 +45,18 @@ fn parse_pr_ref_or_exit(s: &str) -> u64 {
     })
 }
 
-fn build_worktree_manager(config: &Config, repo_root: &Path) -> WorktreeManager {
+fn build_worktree_manager(
+    config: &Config,
+    repo_root: &Path,
+) -> rlph::error::Result<WorktreeManager> {
     let worktree_base = PathBuf::from(&config.worktree_dir);
-    let setup_script = resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root);
-    WorktreeManager::new(
+    let setup_script = resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?;
+    Ok(WorktreeManager::new(
         repo_root.to_path_buf(),
         worktree_base,
         config.base_branch.clone(),
     )
-    .with_setup_script(setup_script)
+    .with_setup_script(setup_script))
 }
 
 /// Install a double-SIGINT handler: first signal sends `true` on the channel
@@ -135,7 +138,13 @@ async fn main() {
                 }
             };
 
-            let worktree_mgr = build_worktree_manager(&config, &repo_root);
+            let worktree_mgr = match build_worktree_manager(&config, &repo_root) {
+                Ok(wm) => wm,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
             let worktree_info =
                 match worktree_mgr.create_for_branch(pr_context.number, &pr_context.head_branch) {
                     Ok(w) => w,
@@ -389,7 +398,13 @@ async fn main() {
     )
     .with_stream_prefix("implement".to_string());
     let submission = GitHubSubmission::new();
-    let worktree_mgr = build_worktree_manager(&config, &repo_root);
+    let worktree_mgr = match build_worktree_manager(&config, &repo_root) {
+        Ok(wm) => wm,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
     let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
     let prompt_engine = PromptEngine::new(None);
 

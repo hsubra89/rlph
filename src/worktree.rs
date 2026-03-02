@@ -12,9 +12,15 @@ const CONVENTION_SETUP_SCRIPT: &str = ".rlph/worktree-setup.sh";
 ///
 /// Resolution order: config field (if set and non-empty) > convention file (if exists) > None.
 /// An empty config string explicitly disables the script.
-pub fn resolve_setup_script(config_value: Option<&str>, repo_root: &Path) -> Option<PathBuf> {
+///
+/// Returns an error if the user explicitly configured a script path that does not exist
+/// (e.g. a typo). Convention-file absence is silently ignored.
+pub fn resolve_setup_script(
+    config_value: Option<&str>,
+    repo_root: &Path,
+) -> Result<Option<PathBuf>> {
     match config_value {
-        Some("") => None,
+        Some("") => Ok(None),
         Some(s) => {
             let path = Path::new(s);
             if path.is_absolute()
@@ -26,16 +32,24 @@ pub fn resolve_setup_script(config_value: Option<&str>, repo_root: &Path) -> Opt
                     path = s,
                     "setup script path must be relative and within the repo, ignoring"
                 );
-                return None;
+                return Ok(None);
             }
-            Some(repo_root.join(s))
+            let resolved = repo_root.join(s);
+            if !resolved.exists() {
+                return Err(Error::ConfigValidation(format!(
+                    "worktree_setup_script '{}' not found at {}",
+                    s,
+                    resolved.display()
+                )));
+            }
+            Ok(Some(resolved))
         }
         None => {
             let convention = repo_root.join(CONVENTION_SETUP_SCRIPT);
             if convention.exists() {
-                Some(convention)
+                Ok(Some(convention))
             } else {
-                None
+                Ok(None)
             }
         }
     }
@@ -801,8 +815,24 @@ mod tests {
     #[test]
     fn test_resolve_setup_script_config_override() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = resolve_setup_script(Some("scripts/setup.sh"), tmp.path());
+        let script = tmp.path().join("scripts/setup.sh");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+
+        let result = resolve_setup_script(Some("scripts/setup.sh"), tmp.path()).unwrap();
         assert_eq!(result, Some(tmp.path().join("scripts/setup.sh")));
+    }
+
+    #[test]
+    fn test_resolve_setup_script_errors_on_missing_configured_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_setup_script(Some("scripts/setup.sh"), tmp.path());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("scripts/setup.sh"),
+            "error should mention the configured path: {msg}"
+        );
     }
 
     #[test]
@@ -813,7 +843,7 @@ mod tests {
         std::fs::create_dir_all(convention.parent().unwrap()).unwrap();
         std::fs::write(&convention, "#!/bin/sh\n").unwrap();
 
-        let result = resolve_setup_script(Some(""), tmp.path());
+        let result = resolve_setup_script(Some(""), tmp.path()).unwrap();
         assert_eq!(result, None);
     }
 
@@ -824,31 +854,31 @@ mod tests {
         std::fs::create_dir_all(convention.parent().unwrap()).unwrap();
         std::fs::write(&convention, "#!/bin/sh\n").unwrap();
 
-        let result = resolve_setup_script(None, tmp.path());
+        let result = resolve_setup_script(None, tmp.path()).unwrap();
         assert_eq!(result, Some(convention));
     }
 
     #[test]
     fn test_resolve_setup_script_no_convention_no_config() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = resolve_setup_script(None, tmp.path());
+        let result = resolve_setup_script(None, tmp.path()).unwrap();
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_resolve_setup_script_rejects_absolute_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = resolve_setup_script(Some("/etc/evil.sh"), tmp.path());
+        let result = resolve_setup_script(Some("/etc/evil.sh"), tmp.path()).unwrap();
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_resolve_setup_script_rejects_parent_traversal() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = resolve_setup_script(Some("../escape.sh"), tmp.path());
+        let result = resolve_setup_script(Some("../escape.sh"), tmp.path()).unwrap();
         assert_eq!(result, None);
 
-        let result = resolve_setup_script(Some("scripts/../../escape.sh"), tmp.path());
+        let result = resolve_setup_script(Some("scripts/../../escape.sh"), tmp.path()).unwrap();
         assert_eq!(result, None);
     }
 }

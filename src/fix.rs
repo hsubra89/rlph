@@ -79,7 +79,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     );
 
     // 3. Pre-compute per-item data and spawn into JoinSet
-    let setup_script = resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root);
+    let setup_script = resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?;
     let shared = SharedFixState {
         fix_config: Arc::new(config.fix.clone()),
         worktree_dir: Arc::from(config.worktree_dir.as_str()),
@@ -170,7 +170,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 ) -> Result<()> {
     validate_branch_name(pr_branch)?;
 
-    let setup_script = resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root);
+    let setup_script = resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?;
     let shared = SharedFixState {
         fix_config: Arc::new(config.fix.clone()),
         worktree_dir: Arc::from(config.worktree_dir.as_str()),
