@@ -1,13 +1,11 @@
 use std::path::Path;
-use std::process::Command;
 
 use serde::Deserialize;
-use tracing::debug;
 
 use crate::cli::Cli;
 use crate::error::{Error, Result};
 use crate::runner::RunnerKind;
-use crate::submission::run_gh_api;
+use crate::submission::detect_default_branch;
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -143,39 +141,6 @@ pub struct InitConfig {
 }
 
 const DEFAULT_CONFIG_FILE: &str = ".rlph/config.toml";
-
-fn detect_default_branch() -> String {
-    #[derive(Deserialize)]
-    struct GhRepoInfo {
-        default_branch: String,
-    }
-
-    // 1. Fast, local: git symbolic-ref refs/remotes/origin/HEAD
-    if let Ok(output) = Command::new("git")
-        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
-        .output()
-        && output.status.success()
-    {
-        let raw = String::from_utf8_lossy(&output.stdout);
-        if let Some(branch) = raw.trim().strip_prefix("refs/remotes/origin/") {
-            debug!(branch, "detected default branch from git symbolic-ref");
-            return branch.to_string();
-        }
-    }
-
-    // 2. Fallback (network): gh api repos/{owner}/{repo}
-    if let Ok(repo_info) = run_gh_api::<GhRepoInfo>("repos/{owner}/{repo}") {
-        let branch = repo_info.default_branch.trim();
-        if !branch.is_empty() {
-            debug!(branch, "detected default branch from gh api");
-            return branch.to_string();
-        }
-    }
-
-    // 3. Ultimate fallback
-    debug!("could not detect default branch, falling back to 'main'");
-    "main".to_string()
-}
 
 /// Default review phases for use in tests and when no config is provided.
 pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {

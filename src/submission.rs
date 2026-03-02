@@ -2,7 +2,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::error::{Error, Result};
 
@@ -335,6 +335,39 @@ impl SubmissionBackend for GitHubSubmission {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}");
         run_gh_api(&endpoint)
     }
+}
+
+pub(crate) fn detect_default_branch() -> String {
+    #[derive(Deserialize)]
+    struct GhRepoInfo {
+        default_branch: String,
+    }
+
+    // 1. Fast, local: git symbolic-ref refs/remotes/origin/HEAD
+    if let Ok(output) = Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .output()
+        && output.status.success()
+    {
+        let raw = String::from_utf8_lossy(&output.stdout);
+        if let Some(branch) = raw.trim().strip_prefix("refs/remotes/origin/") {
+            debug!(branch, "detected default branch from git symbolic-ref");
+            return branch.to_string();
+        }
+    }
+
+    // 2. Fallback (network): gh api repos/{owner}/{repo}
+    if let Ok(repo_info) = run_gh_api::<GhRepoInfo>("repos/{owner}/{repo}") {
+        let branch = repo_info.default_branch.trim();
+        if !branch.is_empty() {
+            debug!(branch, "detected default branch from gh api");
+            return branch.to_string();
+        }
+    }
+
+    // 3. Ultimate fallback
+    debug!("could not detect default branch, falling back to 'main'");
+    "main".to_string()
 }
 
 pub(crate) fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
