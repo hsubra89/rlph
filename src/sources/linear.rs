@@ -1,15 +1,13 @@
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
-use std::thread;
-use std::time::Duration;
 
 use serde::Deserialize;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
 
-use super::{INITIAL_BACKOFF_MS, MAX_RETRIES, Priority, Task, TaskSource};
+use super::{Priority, Task, TaskSource, retry_with_backoff};
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 const LINEAR_CLI_CREDENTIALS: &str = ".config/linear/credentials.toml";
@@ -60,51 +58,24 @@ impl LinearClient for DefaultLinearClient {
             "variables": variables,
         });
 
-        let mut backoff_ms = INITIAL_BACKOFF_MS;
-        for attempt in 1..=MAX_RETRIES {
-            // Linear API uses raw API key, not "Bearer <key>"
-            match ureq::post(LINEAR_API_URL)
+        // Linear API uses raw API key, not "Bearer <key>"
+        let json: serde_json::Value = retry_with_backoff(|| {
+            ureq::post(LINEAR_API_URL)
                 .set("Authorization", &self.api_key)
                 .set("Content-Type", "application/json")
                 .send_json(&body)
-            {
-                Ok(response) => {
-                    let json: serde_json::Value = response.into_json().map_err(|e| {
-                        Error::TaskSource(format!("failed to parse Linear response: {e}"))
-                    })?;
+                .map_err(|e| Error::TaskSource(format!("Linear API request failed: {e}")))?
+                .into_json()
+                .map_err(|e| Error::TaskSource(format!("failed to parse Linear response: {e}")))
+        })?;
 
-                    if let Some(errors) = json.get("errors") {
-                        return Err(Error::TaskSource(format!("Linear API errors: {errors}")));
-                    }
-
-                    return json.get("data").cloned().ok_or_else(|| {
-                        Error::TaskSource("Linear API response missing data".to_string())
-                    });
-                }
-                Err(ref e) if attempt < MAX_RETRIES && is_retryable(e) => {
-                    warn!(
-                        attempt,
-                        error = %e,
-                        backoff_ms,
-                        "retrying Linear API after transient error"
-                    );
-                    thread::sleep(Duration::from_millis(backoff_ms));
-                    backoff_ms *= 2;
-                }
-                Err(e) => {
-                    return Err(Error::TaskSource(format!("Linear API request failed: {e}")));
-                }
-            }
+        if let Some(errors) = json.get("errors") {
+            return Err(Error::TaskSource(format!("Linear API errors: {errors}")));
         }
-        unreachable!()
-    }
-}
 
-/// Only retry rate-limits (429), server errors (5xx), and transport/network errors.
-fn is_retryable(err: &ureq::Error) -> bool {
-    match err {
-        ureq::Error::Status(code, _) => *code == 429 || *code >= 500,
-        ureq::Error::Transport(_) => true,
+        json.get("data")
+            .cloned()
+            .ok_or_else(|| Error::TaskSource("Linear API response missing data".to_string()))
     }
 }
 

@@ -7,7 +7,7 @@ use tracing::{debug, warn};
 use crate::config::Config;
 use crate::error::{Error, Result};
 
-use super::{retry_with_backoff, Priority, Task, TaskSource};
+use super::{Priority, Task, TaskSource, retry_with_backoff};
 
 #[derive(Debug, Deserialize)]
 struct GhLabel {
@@ -346,5 +346,4 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].body, "");
     }
-
 }
