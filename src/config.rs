@@ -5,6 +5,7 @@ use serde::Deserialize;
 use crate::cli::Cli;
 use crate::error::{Error, Result};
 use crate::runner::RunnerKind;
+use crate::submission::detect_default_branch;
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -441,7 +442,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .base_branch
             .clone()
             .or(file.base_branch)
-            .unwrap_or_else(|| "main".to_string()),
+            .unwrap_or_else(detect_default_branch),
         max_iterations: cli.max_iterations.or(file.max_iterations),
         dry_run: cli.dry_run || file.dry_run.unwrap_or(false),
         once: cli.once,

@@ -2,7 +2,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::error::{Error, Result};
 
@@ -55,6 +55,7 @@ pub struct PrContext {
     pub body: String,
     pub url: String,
     pub head_branch: String,
+    pub base_branch: String,
     pub linked_issue_number: Option<u64>,
 }
 
@@ -201,7 +202,7 @@ impl GitHubSubmission {
                 "view",
                 &number_str,
                 "--json",
-                "number,title,body,url,headRefName",
+                "number,title,body,url,headRefName,baseRefName",
             ])
             .output()
             .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
@@ -336,7 +337,40 @@ impl SubmissionBackend for GitHubSubmission {
     }
 }
 
-fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
+pub(crate) fn detect_default_branch() -> String {
+    #[derive(Deserialize)]
+    struct GhRepoInfo {
+        default_branch: String,
+    }
+
+    // 1. Fast, local: git symbolic-ref refs/remotes/origin/HEAD
+    if let Ok(output) = Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .output()
+        && output.status.success()
+    {
+        let raw = String::from_utf8_lossy(&output.stdout);
+        if let Some(branch) = raw.trim().strip_prefix("refs/remotes/origin/") {
+            debug!(branch, "detected default branch from git symbolic-ref");
+            return branch.to_string();
+        }
+    }
+
+    // 2. Fallback (network): gh api repos/{owner}/{repo}
+    if let Ok(repo_info) = run_gh_api::<GhRepoInfo>("repos/{owner}/{repo}") {
+        let branch = repo_info.default_branch.trim();
+        if !branch.is_empty() {
+            debug!(branch, "detected default branch from gh api");
+            return branch.to_string();
+        }
+    }
+
+    // 3. Ultimate fallback
+    debug!("could not detect default branch, falling back to 'main'");
+    "main".to_string()
+}
+
+pub(crate) fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
     let output = Command::new("gh")
         .args(["api", endpoint])
         .output()
@@ -375,6 +409,8 @@ struct GhPrView {
     url: String,
     #[serde(rename = "headRefName")]
     head_ref_name: String,
+    #[serde(rename = "baseRefName")]
+    base_ref_name: String,
 }
 
 fn parse_pr_context_json(json: &str) -> std::result::Result<PrContext, String> {
@@ -383,6 +419,9 @@ fn parse_pr_context_json(json: &str) -> std::result::Result<PrContext, String> {
     if pr.head_ref_name.trim().is_empty() {
         return Err("missing headRefName".to_string());
     }
+    if pr.base_ref_name.trim().is_empty() {
+        return Err("missing baseRefName".to_string());
+    }
 
     Ok(PrContext {
         number: pr.number,
@@ -390,6 +429,7 @@ fn parse_pr_context_json(json: &str) -> std::result::Result<PrContext, String> {
         body: pr.body.clone(),
         url: pr.url,
         head_branch: pr.head_ref_name,
+        base_branch: pr.base_ref_name,
         linked_issue_number: extract_issue_number_reference(&pr.body),
     })
 }
@@ -446,7 +486,8 @@ mod tests {
             "title": "Fix race condition",
             "body": "Resolves #42",
             "url": "https://github.com/o/r/pull/9",
-            "headRefName": "feature/fix-race"
+            "headRefName": "feature/fix-race",
+            "baseRefName": "main"
         }"#;
 
         let ctx = parse_pr_context_json(json).unwrap();
@@ -455,6 +496,7 @@ mod tests {
         assert_eq!(ctx.body, "Resolves #42");
         assert_eq!(ctx.url, "https://github.com/o/r/pull/9");
         assert_eq!(ctx.head_branch, "feature/fix-race");
+        assert_eq!(ctx.base_branch, "main");
         assert_eq!(ctx.linked_issue_number, Some(42));
     }
 
@@ -465,7 +507,8 @@ mod tests {
             "title": "Refactor worker",
             "body": "",
             "url": "https://github.com/o/r/pull/11",
-            "headRefName": "refactor/worker"
+            "headRefName": "refactor/worker",
+            "baseRefName": "develop"
         }"#;
 
         let ctx = parse_pr_context_json(json).unwrap();
@@ -480,11 +523,27 @@ mod tests {
             "title": "Refactor worker",
             "body": "",
             "url": "https://github.com/o/r/pull/11",
-            "headRefName": ""
+            "headRefName": "",
+            "baseRefName": "main"
         }"#;
 
         let err = parse_pr_context_json(json).unwrap_err();
         assert!(err.contains("headRefName"));
+    }
+
+    #[test]
+    fn test_parse_pr_context_json_missing_base_ref_rejected() {
+        let json = r#"{
+            "number": 11,
+            "title": "Refactor worker",
+            "body": "",
+            "url": "https://github.com/o/r/pull/11",
+            "headRefName": "feature/branch",
+            "baseRefName": ""
+        }"#;
+
+        let err = parse_pr_context_json(json).unwrap_err();
+        assert!(err.contains("baseRefName"));
     }
 
     #[test]
