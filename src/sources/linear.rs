@@ -61,11 +61,11 @@ impl LinearClient for DefaultLinearClient {
         // Linear API uses raw API key, not "Bearer <key>"
         let json: serde_json::Value = retry_with_backoff(|| {
             ureq::post(LINEAR_API_URL)
-                .set("Authorization", &self.api_key)
-                .set("Content-Type", "application/json")
+                .header("Authorization", &self.api_key)
                 .send_json(&body)
                 .map_err(|e| Error::TaskSource(format!("Linear API request failed: {e}")))?
-                .into_json()
+                .body_mut()
+                .read_json()
                 .map_err(|e| Error::TaskSource(format!("failed to parse Linear response: {e}")))
         })?;
 
