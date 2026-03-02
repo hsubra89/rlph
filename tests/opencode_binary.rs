@@ -3,10 +3,6 @@ use std::time::Duration;
 
 use rlph::process::{ProcessConfig, spawn_and_stream};
 
-fn integration_enabled() -> bool {
-    std::env::var("RLPH_INTEGRATION").is_ok()
-}
-
 fn working_dir() -> PathBuf {
     std::env::current_dir().unwrap()
 }
@@ -57,10 +53,6 @@ fn config_with_args(args: Vec<String>) -> ProcessConfig {
 
 #[tokio::test]
 async fn test_opencode_emits_session_id() {
-    if !integration_enabled() {
-        return;
-    }
-
     let args = base_args(PROMPT);
 
     let output = spawn_and_stream(config_with_args(args))
@@ -83,10 +75,6 @@ async fn test_opencode_emits_session_id() {
 
 #[tokio::test]
 async fn test_opencode_model_flag() {
-    if !integration_enabled() {
-        return;
-    }
-
     let args = vec![
         "run".to_string(),
         "--format".to_string(),
@@ -109,10 +97,6 @@ async fn test_opencode_model_flag() {
 
 #[tokio::test]
 async fn test_opencode_variant_flag() {
-    if !integration_enabled() {
-        return;
-    }
-
     let args = vec![
         "run".to_string(),
         "--format".to_string(),
@@ -135,10 +119,6 @@ async fn test_opencode_variant_flag() {
 
 #[tokio::test]
 async fn test_opencode_resume_with_prompt() {
-    if !integration_enabled() {
-        return;
-    }
-
     // First invocation: get a sessionID.
     let args1 = base_args("Say hello");
 
