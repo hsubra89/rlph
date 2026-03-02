@@ -15,7 +15,21 @@ const CONVENTION_SETUP_SCRIPT: &str = ".rlph/worktree-setup.sh";
 pub fn resolve_setup_script(config_value: Option<&str>, repo_root: &Path) -> Option<PathBuf> {
     match config_value {
         Some("") => None,
-        Some(s) => Some(repo_root.join(s)),
+        Some(s) => {
+            let path = Path::new(s);
+            if path.is_absolute()
+                || path
+                    .components()
+                    .any(|c| c == std::path::Component::ParentDir)
+            {
+                warn!(
+                    path = s,
+                    "setup script path must be relative and within the repo, ignoring"
+                );
+                return None;
+            }
+            Some(repo_root.join(s))
+        }
         None => {
             let convention = repo_root.join(CONVENTION_SETUP_SCRIPT);
             if convention.exists() {
@@ -809,6 +823,23 @@ mod tests {
     fn test_resolve_setup_script_no_convention_no_config() {
         let tmp = tempfile::tempdir().unwrap();
         let result = resolve_setup_script(None, tmp.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_setup_script_rejects_absolute_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_setup_script(Some("/etc/evil.sh"), tmp.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_setup_script_rejects_parent_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_setup_script(Some("../escape.sh"), tmp.path());
+        assert_eq!(result, None);
+
+        let result = resolve_setup_script(Some("scripts/../../escape.sh"), tmp.path());
         assert_eq!(result, None);
     }
 }
