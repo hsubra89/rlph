@@ -138,6 +138,11 @@ async fn main() {
                 }
             };
 
+            eprintln!(
+                "[rlph] PR #{}: {} \u{2192} {}",
+                pr_context.number, pr_context.head_branch, pr_context.base_branch
+            );
+
             let worktree_mgr = match build_worktree_manager(&config, &repo_root) {
                 Ok(wm) => wm,
                 Err(e) => {
@@ -278,6 +283,11 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
+
+            eprintln!(
+                "[rlph] PR #{}: {} \u{2192} {}",
+                pr_context.number, pr_context.head_branch, pr_context.base_branch
+            );
 
             let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let prompt_engine = PromptEngine::new(None);

@@ -55,6 +55,7 @@ pub struct PrContext {
     pub body: String,
     pub url: String,
     pub head_branch: String,
+    pub base_branch: String,
     pub linked_issue_number: Option<u64>,
 }
 
@@ -201,7 +202,7 @@ impl GitHubSubmission {
                 "view",
                 &number_str,
                 "--json",
-                "number,title,body,url,headRefName",
+                "number,title,body,url,headRefName,baseRefName",
             ])
             .output()
             .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
@@ -375,6 +376,8 @@ struct GhPrView {
     url: String,
     #[serde(rename = "headRefName")]
     head_ref_name: String,
+    #[serde(rename = "baseRefName")]
+    base_ref_name: String,
 }
 
 fn parse_pr_context_json(json: &str) -> std::result::Result<PrContext, String> {
@@ -390,6 +393,7 @@ fn parse_pr_context_json(json: &str) -> std::result::Result<PrContext, String> {
         body: pr.body.clone(),
         url: pr.url,
         head_branch: pr.head_ref_name,
+        base_branch: pr.base_ref_name,
         linked_issue_number: extract_issue_number_reference(&pr.body),
     })
 }
@@ -446,7 +450,8 @@ mod tests {
             "title": "Fix race condition",
             "body": "Resolves #42",
             "url": "https://github.com/o/r/pull/9",
-            "headRefName": "feature/fix-race"
+            "headRefName": "feature/fix-race",
+            "baseRefName": "main"
         }"#;
 
         let ctx = parse_pr_context_json(json).unwrap();
@@ -455,6 +460,7 @@ mod tests {
         assert_eq!(ctx.body, "Resolves #42");
         assert_eq!(ctx.url, "https://github.com/o/r/pull/9");
         assert_eq!(ctx.head_branch, "feature/fix-race");
+        assert_eq!(ctx.base_branch, "main");
         assert_eq!(ctx.linked_issue_number, Some(42));
     }
 
@@ -465,7 +471,8 @@ mod tests {
             "title": "Refactor worker",
             "body": "",
             "url": "https://github.com/o/r/pull/11",
-            "headRefName": "refactor/worker"
+            "headRefName": "refactor/worker",
+            "baseRefName": "develop"
         }"#;
 
         let ctx = parse_pr_context_json(json).unwrap();
@@ -480,7 +487,8 @@ mod tests {
             "title": "Refactor worker",
             "body": "",
             "url": "https://github.com/o/r/pull/11",
-            "headRefName": ""
+            "headRefName": "",
+            "baseRefName": "main"
         }"#;
 
         let err = parse_pr_context_json(json).unwrap_err();
