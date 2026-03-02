@@ -2,7 +2,7 @@
 
 ## Test Organization
 
-- **Unit tests:** In-module `#[cfg(test)] mod tests` blocks. Run with `cargo test`.
+- **Unit tests:** In-module `#[cfg(test)] mod tests` blocks. Run with `cargo nextest run`.
 - **Integration tests:** In `tests/` directory. Most require `RLPH_INTEGRATION=1` env var.
   - `cli_binary.rs` — Full CLI binary tests via `assert_cmd`
   - `orchestrator_integration.rs` — End-to-end with mock runners

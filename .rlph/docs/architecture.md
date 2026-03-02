@@ -1,5 +1,18 @@
 # Architecture
 
+## Key Paths
+
+| What | Where |
+|------|-------|
+| CLI entry + orchestrator setup | `src/main.rs` |
+| Core loop (choose → implement → review) | `src/orchestrator.rs` |
+| Agent process spawning | `src/runner.rs`, `src/process.rs` |
+| GitHub/Linear task sources | `src/sources/` |
+| PR submission | `src/submission.rs` |
+| Prompt templates | `src/default_prompts/` |
+| Config | `src/config.rs`, `.rlph/config.toml` |
+| Local state | `src/state.rs`, `.rlph/state/` |
+
 ## Orchestrator Pipeline
 
 The core loop in `orchestrator.rs` runs this sequence per iteration:
