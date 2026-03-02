@@ -66,7 +66,21 @@ agent_binary = "codex"         # Agent binary name
 agent_model = "gpt-5.3-codex"  # Model for the agent (GPT 5.3)
 agent_timeout = 300            # Agent timeout in seconds
 max_review_rounds = 3          # Max review rounds per task
+worktree_setup_script = ".rlph/worktree-setup.sh"  # Script to run after worktree creation (see below)
 ```
+
+### Worktree Setup Script
+
+After creating a worktree, `rlph` can run a shell script for project-specific setup (installing dependencies, copying `.env` files, etc.).
+
+**Convention:** If `.rlph/worktree-setup.sh` exists in the repo root, it is **automatically executed** after every worktree creation — no configuration required. This follows the same trust model as `Makefile`s and `.github/workflows`: anyone with commit access to the repo can introduce or modify the script.
+
+**Overrides:**
+
+- Set `worktree_setup_script` in `.rlph/config.toml` to use a different path.
+- Set `worktree_setup_script = ""` (empty string) to explicitly disable auto-execution.
+
+The script receives the repo root as its first argument and runs with the new worktree as its working directory. A non-zero exit code aborts worktree creation.
 
 ## CLI Reference
 
