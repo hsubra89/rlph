@@ -245,22 +245,11 @@ const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 /// + output_tokens) / context_window * 100.
 fn extract_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f64> {
     let usage = val.pointer("/message/usage")?;
-    let input = usage
-        .get("input_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let cache_create = usage
-        .get("cache_creation_input_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let cache_read = usage
-        .get("cache_read_input_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let output = usage
-        .get("output_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let tok = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+    let input = tok("input_tokens");
+    let cache_create = tok("cache_creation_input_tokens");
+    let cache_read = tok("cache_read_input_tokens");
+    let output = tok("output_tokens");
     let total = input + cache_create + cache_read + output;
     let pct = total as f64 / context_window as f64 * 100.0;
     Some(pct.min(100.0))
