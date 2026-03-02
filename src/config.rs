@@ -1,6 +1,8 @@
 use std::path::Path;
+use std::process::Command;
 
 use serde::Deserialize;
+use tracing::debug;
 
 use crate::cli::Cli;
 use crate::error::{Error, Result};
@@ -140,6 +142,45 @@ pub struct InitConfig {
 }
 
 const DEFAULT_CONFIG_FILE: &str = ".rlph/config.toml";
+
+fn detect_default_branch() -> String {
+    // 1. Fast, local: git symbolic-ref refs/remotes/origin/HEAD
+    if let Ok(output) = Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .output()
+        && output.status.success()
+    {
+        let raw = String::from_utf8_lossy(&output.stdout);
+        if let Some(branch) = raw.trim().strip_prefix("refs/remotes/origin/") {
+            debug!(branch, "detected default branch from git symbolic-ref");
+            return branch.to_string();
+        }
+    }
+
+    // 2. Fallback (network): gh repo view
+    if let Ok(output) = Command::new("gh")
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "defaultBranchRef",
+            "-q",
+            ".defaultBranchRef.name",
+        ])
+        .output()
+        && output.status.success()
+    {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() {
+            debug!(branch, "detected default branch from gh repo view");
+            return branch;
+        }
+    }
+
+    // 3. Ultimate fallback
+    debug!("could not detect default branch, falling back to 'main'");
+    "main".to_string()
+}
 
 /// Default review phases for use in tests and when no config is provided.
 pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {
@@ -441,7 +482,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .base_branch
             .clone()
             .or(file.base_branch)
-            .unwrap_or_else(|| "main".to_string()),
+            .unwrap_or_else(detect_default_branch),
         max_iterations: cli.max_iterations.or(file.max_iterations),
         dry_run: cli.dry_run || file.dry_run.unwrap_or(false),
         once: cli.once,
