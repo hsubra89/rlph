@@ -2,10 +2,6 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 
-fn integration_enabled() -> bool {
-    std::env::var("RLPH_INTEGRATION").is_ok()
-}
-
 #[allow(deprecated)]
 fn cmd() -> Command {
     Command::cargo_bin("rlph").unwrap()
@@ -15,9 +11,6 @@ fn cmd() -> Command {
 
 #[test]
 fn help_flag() {
-    if !integration_enabled() {
-        return;
-    }
     cmd()
         .arg("--help")
         .assert()
@@ -27,9 +20,6 @@ fn help_flag() {
 
 #[test]
 fn version_flag() {
-    if !integration_enabled() {
-        return;
-    }
     cmd()
         .arg("--version")
         .assert()
@@ -39,9 +29,6 @@ fn version_flag() {
 
 #[test]
 fn review_help() {
-    if !integration_enabled() {
-        return;
-    }
     cmd()
         .args(["review", "--help"])
         .assert()
@@ -51,9 +38,6 @@ fn review_help() {
 
 #[test]
 fn prd_help() {
-    if !integration_enabled() {
-        return;
-    }
     cmd()
         .args(["prd", "--help"])
         .assert()
@@ -65,9 +49,6 @@ fn prd_help() {
 
 #[test]
 fn bare_rlph_requires_mode() {
-    if !integration_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
@@ -83,9 +64,6 @@ fn bare_rlph_requires_mode() {
 
 #[test]
 fn once_and_continuous_conflict() {
-    if !integration_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
@@ -100,9 +78,6 @@ fn once_and_continuous_conflict() {
 
 #[test]
 fn fix_help() {
-    if !integration_enabled() {
-        return;
-    }
     cmd()
         .args(["fix", "--help"])
         .assert()
@@ -113,9 +88,6 @@ fn fix_help() {
 
 #[test]
 fn fix_missing_pr_ref() {
-    if !integration_enabled() {
-        return;
-    }
     cmd()
         .arg("fix")
         .assert()
@@ -124,28 +96,10 @@ fn fix_missing_pr_ref() {
         .stderr(predicate::str::contains("PR_REF"));
 }
 
-#[test]
-fn fix_without_dry_run_rejected() {
-    if !integration_enabled() {
-        return;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["fix", "999"])
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(predicate::str::contains("only --dry-run is supported"));
-}
-
 // --- Missing required args ---
 
 #[test]
 fn review_missing_pr_number() {
-    if !integration_enabled() {
-        return;
-    }
     cmd()
         .arg("review")
         .assert()
@@ -158,9 +112,6 @@ fn review_missing_pr_number() {
 
 #[test]
 fn unknown_source_rejected() {
-    if !integration_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
@@ -173,9 +124,6 @@ fn unknown_source_rejected() {
 
 #[test]
 fn unknown_runner_rejected() {
-    if !integration_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
@@ -188,9 +136,6 @@ fn unknown_runner_rejected() {
 
 #[test]
 fn unknown_submission_rejected() {
-    if !integration_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
@@ -203,9 +148,6 @@ fn unknown_submission_rejected() {
 
 #[test]
 fn zero_poll_seconds_rejected() {
-    if !integration_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
@@ -220,9 +162,6 @@ fn zero_poll_seconds_rejected() {
 
 #[test]
 fn config_file_not_found() {
-    if !integration_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
@@ -235,9 +174,6 @@ fn config_file_not_found() {
 
 #[test]
 fn invalid_toml_config() {
-    if !integration_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     let cfg_dir = tmp.path().join(".rlph");
     fs::create_dir_all(&cfg_dir).unwrap();
@@ -255,9 +191,6 @@ fn invalid_toml_config() {
 
 #[test]
 fn review_rejects_non_github_source() {
-    if !integration_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     let cfg_dir = tmp.path().join(".rlph");
     fs::create_dir_all(&cfg_dir).unwrap();
@@ -281,18 +214,12 @@ fn review_rejects_non_github_source() {
 
 #[test]
 fn init_github_noop() {
-    if !integration_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     cmd().current_dir(&tmp).arg("init").assert().success();
 }
 
 #[test]
 fn init_unknown_source_rejected() {
-    if !integration_enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)

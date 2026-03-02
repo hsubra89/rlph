@@ -7,10 +7,6 @@ use rlph::process::{ProcessConfig, spawn_and_stream};
 use rlph::runner::extract_session_id;
 use serde_json::Value;
 
-fn integration_enabled() -> bool {
-    std::env::var("RLPH_INTEGRATION").is_ok()
-}
-
 fn working_dir() -> PathBuf {
     std::env::current_dir().unwrap()
 }
@@ -92,10 +88,6 @@ fn extract_session_id_from_output(output: &rlph::process::ProcessOutput) -> Opti
 
 #[tokio::test]
 async fn test_claude_emits_session_id() {
-    if !integration_enabled() {
-        return;
-    }
-
     let mut args = base_args();
     args.extend(["-p".to_string(), PROMPT.to_string()]);
 
@@ -122,10 +114,6 @@ async fn test_claude_emits_session_id() {
 
 #[tokio::test]
 async fn test_claude_model_flag() {
-    if !integration_enabled() {
-        return;
-    }
-
     let mut args = base_args();
     args.extend([
         "--model".to_string(),
@@ -147,10 +135,6 @@ async fn test_claude_model_flag() {
 
 #[tokio::test]
 async fn test_claude_effort_flag() {
-    if !integration_enabled() {
-        return;
-    }
-
     let mut args = base_args();
     args.extend([
         "--effort".to_string(),
@@ -172,10 +156,6 @@ async fn test_claude_effort_flag() {
 
 #[tokio::test]
 async fn test_claude_resume_with_prompt() {
-    if !integration_enabled() {
-        return;
-    }
-
     // First invocation: get a session_id.
     let mut args1 = base_args();
     args1.extend(["-p".to_string(), "Say hello".to_string()]);
@@ -480,10 +460,6 @@ fn validate_task_started_event(event: &Value) {
 
 #[tokio::test]
 async fn test_claude_stream_json_text_response_schema() {
-    if !integration_enabled() {
-        return;
-    }
-
     let mut args = base_args();
     args.extend(["-p".to_string(), PROMPT.to_string()]);
 
@@ -548,10 +524,6 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[tokio::test]
 async fn test_claude_stream_json_tool_use_schema() {
-    if !integration_enabled() {
-        return;
-    }
-
     let tmp = tempfile::tempdir().unwrap();
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -711,10 +683,6 @@ const SUBAGENT_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[tokio::test]
 async fn test_claude_stream_json_subagent_schema() {
-    if !integration_enabled() {
-        return;
-    }
-
     let mut args = base_args();
     args.extend([
         "-p".to_string(),

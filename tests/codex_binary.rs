@@ -5,10 +5,6 @@ use rlph::error::Error;
 use rlph::process::{ProcessConfig, ProcessOutput, spawn_and_stream};
 use serde_json::Value;
 
-fn integration_enabled() -> bool {
-    std::env::var("RLPH_INTEGRATION").is_ok()
-}
-
 fn working_dir() -> PathBuf {
     std::env::current_dir().unwrap()
 }
@@ -123,10 +119,6 @@ async fn run_codex_or_skip(args: Vec<String>, stdin_data: Option<String>) -> Opt
 
 #[tokio::test]
 async fn test_codex_emits_thread_id() {
-    if !integration_enabled() {
-        return;
-    }
-
     let mut args = base_args();
     args.push("-".to_string());
 
@@ -153,10 +145,6 @@ async fn test_codex_emits_thread_id() {
 
 #[tokio::test]
 async fn test_codex_model_flag() {
-    if !integration_enabled() {
-        return;
-    }
-
     let mut args = base_args();
     args.extend([
         "--model".to_string(),
@@ -177,10 +165,6 @@ async fn test_codex_model_flag() {
 
 #[tokio::test]
 async fn test_codex_effort_via_config() {
-    if !integration_enabled() {
-        return;
-    }
-
     let mut args = base_args();
     args.extend([
         "--config".to_string(),
@@ -201,10 +185,6 @@ async fn test_codex_effort_via_config() {
 
 #[tokio::test]
 async fn test_codex_resume_with_prompt() {
-    if !integration_enabled() {
-        return;
-    }
-
     // First invocation: get a thread_id.
     let mut args1 = base_args();
     args1.push("-".to_string());
@@ -422,10 +402,6 @@ fn validate_item_command_execution_completed(item: &Value) {
 
 #[tokio::test]
 async fn test_codex_json_text_response_schema() {
-    if !integration_enabled() {
-        return;
-    }
-
     let mut args = base_args();
     args.push("-".to_string());
 
@@ -508,10 +484,6 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[tokio::test]
 async fn test_codex_json_command_execution_schema() {
-    if !integration_enabled() {
-        return;
-    }
-
     let mut args = base_args();
     args.push("-".to_string());
 
@@ -657,10 +629,6 @@ async fn test_codex_json_command_execution_schema() {
 
 #[tokio::test]
 async fn test_codex_json_failed_command_schema() {
-    if !integration_enabled() {
-        return;
-    }
-
     let mut args = base_args();
     args.push("-".to_string());
 

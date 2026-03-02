@@ -1,6 +1,9 @@
 [profile.default]
-# Unit tests: 30s timeout
+default-filter = "not (binary(cli_binary) | binary(claude_binary) | binary(codex_binary) | binary(opencode_binary))"
 slow-timeout = { period = "30s", terminate-after = 2 }
+
+[profile.integration]
+default-filter = "binary(cli_binary) | binary(claude_binary) | binary(codex_binary) | binary(opencode_binary)"
 
 # Integration tests that spawn real binaries get more time
 [[profile.default.overrides]]

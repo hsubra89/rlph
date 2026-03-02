@@ -2,14 +2,18 @@
 
 ## Test Organization
 
-- **Unit tests:** In-module `#[cfg(test)] mod tests` blocks. Run with `cargo test`.
-- **Integration tests:** In `tests/` directory. Most require `RLPH_INTEGRATION=1` env var.
+- **Unit tests:** In-module `#[cfg(test)] mod tests` blocks. Run with `cargo nextest run`.
+- **Integration tests:** In `tests/` directory. Binary tests (`cli_binary`, `claude_binary`, `codex_binary`, `opencode_binary`) are excluded from the default nextest profile and run via `cargo nextest run --profile integration`.
   - `cli_binary.rs` — Full CLI binary tests via `assert_cmd`
+  - `claude_binary.rs` — Claude CLI integration tests
+  - `codex_binary.rs` — Codex CLI integration tests
+  - `opencode_binary.rs` — OpenCode CLI integration tests
   - `orchestrator_integration.rs` — End-to-end with mock runners
   - `worktree_integration.rs` — Real git worktree operations
   - `process_integration.rs` — Signal handling, timeouts
   - `codex_runner_integration.rs` — Codex-specific behavior
   - `prd_integration.rs` — PRD session flow
+- **CI-friendly output:** Use `--reporter default --failure-output immediate --success-output immediate` (or set `CI=true`) to disable the progress bar and print test names as they complete.
 
 ## Mocking Strategy
 

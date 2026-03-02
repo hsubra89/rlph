@@ -1,3 +1,5 @@
 #!/bin/sh
-cargo fmt
-git add -u
+set -e
+# Setup: ln -sf ../../.hooks/pre-commit .git/hooks/pre-commit
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings

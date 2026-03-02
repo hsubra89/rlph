@@ -6,12 +6,6 @@ Single `Error` enum in `error.rs` with `thiserror`. Every module has a variant (
 
 `ProcessTimeout` is the exception: it carries structured data (stdout/stderr lines) for resume logic.
 
-## Edition 2024 Features Used
-
-- `let-else` chains: `let Some(x) = foo else { return Err(...) };`
-- `if-let` chains: `if let Some(x) = foo && let Some(y) = bar { ... }`
-- These are used throughout — follow the existing style.
-
 ## Async
 
 - Tokio runtime (`#[tokio::main]`, `tokio::spawn`, `JoinSet` for parallel review phases).
@@ -24,9 +18,4 @@ CLI flags > config file values > built-in defaults. This is enforced in `config.
 
 ## Dependencies
 
-Minimal dependency policy. Current deps:
-- `clap` (CLI), `tokio` (async), `serde`/`toml`/`serde_json` (serialization)
-- `thiserror` (errors), `tracing` (logging), `regex` (dep parsing)
-- `libc` (flock, signals), `ureq` (HTTP fallback)
-
-Prefer standard library where reasonable. Add new deps only when they replace substantial hand-written code.
+Prefer well-established crates over hand-written code. Only roll your own when no popular crate fits.

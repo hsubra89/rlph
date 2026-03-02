@@ -5,6 +5,7 @@ use serde::Deserialize;
 use crate::cli::Cli;
 use crate::error::{Error, Result};
 use crate::runner::RunnerKind;
+use crate::submission::detect_default_branch;
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -100,6 +101,7 @@ pub struct ConfigFile {
     pub review_aggregate: Option<ReviewStepConfigFile>,
     pub review_fix: Option<ReviewStepConfigFile>,
     pub fix: Option<ReviewStepConfigFile>,
+    pub worktree_setup_script: Option<String>,
     pub linear: Option<LinearConfigFile>,
 }
 
@@ -128,6 +130,7 @@ pub struct Config {
     pub review_aggregate: ReviewStepConfig,
     pub review_fix: ReviewStepConfig,
     pub fix: ReviewStepConfig,
+    pub worktree_setup_script: Option<String>,
     pub linear: Option<LinearConfig>,
 }
 
@@ -439,7 +442,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .base_branch
             .clone()
             .or(file.base_branch)
-            .unwrap_or_else(|| "main".to_string()),
+            .unwrap_or_else(detect_default_branch),
         max_iterations: cli.max_iterations.or(file.max_iterations),
         dry_run: cli.dry_run || file.dry_run.unwrap_or(false),
         once: cli.once,
@@ -462,6 +465,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         review_aggregate,
         review_fix,
         fix,
+        worktree_setup_script: file.worktree_setup_script,
         linear,
     };
     validate(&config)?;
@@ -1427,6 +1431,35 @@ runner = "opencode"
             err.to_string()
                 .contains("review phase 'check': agent_variant is only supported by opencode")
         );
+    }
+
+    #[test]
+    fn test_worktree_setup_script_parsed_from_toml() {
+        let toml = r#"worktree_setup_script = "scripts/setup.sh""#;
+        let config = parse_config(toml).unwrap();
+        assert_eq!(
+            config.worktree_setup_script.as_deref(),
+            Some("scripts/setup.sh")
+        );
+    }
+
+    #[test]
+    fn test_worktree_setup_script_round_trips_through_merge() {
+        let file = ConfigFile {
+            worktree_setup_script: Some("my-setup.sh".to_string()),
+            ..Default::default()
+        };
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = merge(file, &cli).unwrap();
+        assert_eq!(config.worktree_setup_script.as_deref(), Some("my-setup.sh"));
+    }
+
+    #[test]
+    fn test_worktree_setup_script_none_by_default() {
+        let file = ConfigFile::default();
+        let cli = Cli::parse_from(["rlph", "--once"]);
+        let config = merge(file, &cli).unwrap();
+        assert_eq!(config.worktree_setup_script, None);
     }
 
     #[test]
