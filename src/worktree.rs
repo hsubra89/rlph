@@ -401,8 +401,8 @@ impl WorktreeManager {
     /// Run the setup script in the given worktree directory, if configured.
     fn run_setup_script(&self, worktree_path: &Path) -> Result<()> {
         let script = match &self.setup_script {
-            Some(p) if p.exists() => p,
-            _ => return Ok(()),
+            Some(p) => p,
+            None => return Ok(()),
         };
 
         info!(
@@ -759,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn test_run_setup_script_missing_script_is_noop() {
+    fn test_run_setup_script_missing_script_is_error() {
         let tmp = tempfile::tempdir().unwrap();
         let worktree_path = tmp.path().join("wt");
         std::fs::create_dir_all(&worktree_path).unwrap();
@@ -771,8 +771,9 @@ mod tests {
         )
         .with_setup_script(Some(tmp.path().join("nonexistent.sh")));
 
-        // Should succeed silently
-        wm.run_setup_script(&worktree_path).unwrap();
+        // resolve_setup_script guarantees existence; a missing script here is a bug
+        let err = wm.run_setup_script(&worktree_path).unwrap_err();
+        assert!(err.to_string().contains("setup script"));
     }
 
     #[test]
