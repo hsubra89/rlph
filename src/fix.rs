@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -79,7 +79,8 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     );
 
     // 3. Pre-compute per-item data and spawn into JoinSet
-    let setup_script = resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?;
+    let setup_script =
+        resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?.map(Arc::from);
     let shared = SharedFixState {
         fix_config: Arc::new(config.fix.clone()),
         worktree_dir: Arc::from(config.worktree_dir.as_str()),
@@ -170,7 +171,8 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 ) -> Result<()> {
     validate_branch_name(pr_branch)?;
 
-    let setup_script = resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?;
+    let setup_script =
+        resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?.map(Arc::from);
     let shared = SharedFixState {
         fix_config: Arc::new(config.fix.clone()),
         worktree_dir: Arc::from(config.worktree_dir.as_str()),
@@ -524,7 +526,7 @@ struct SharedFixState<S, C> {
     correction_runner: Arc<C>,
     concurrency: Arc<Semaphore>,
     agent_timeout_retries: u32,
-    setup_script: Option<PathBuf>,
+    setup_script: Option<Arc<Path>>,
 }
 
 impl<S, C> Clone for SharedFixState<S, C> {
