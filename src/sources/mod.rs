@@ -20,11 +20,7 @@ where
     retry_with_backoff_ms(f, INITIAL_BACKOFF_MS, MAX_RETRIES)
 }
 
-fn retry_with_backoff_ms<F, T>(
-    f: F,
-    initial_backoff_ms: u64,
-    max_retries: u32,
-) -> Result<T>
+fn retry_with_backoff_ms<F, T>(f: F, initial_backoff_ms: u64, max_retries: u32) -> Result<T>
 where
     F: Fn() -> Result<T>,
 {
