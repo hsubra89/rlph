@@ -7,6 +7,7 @@ use tracing::debug;
 use crate::cli::Cli;
 use crate::error::{Error, Result};
 use crate::runner::RunnerKind;
+use crate::submission::run_gh_api;
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -144,6 +145,11 @@ pub struct InitConfig {
 const DEFAULT_CONFIG_FILE: &str = ".rlph/config.toml";
 
 fn detect_default_branch() -> String {
+    #[derive(Deserialize)]
+    struct GhRepoInfo {
+        default_branch: String,
+    }
+
     // 1. Fast, local: git symbolic-ref refs/remotes/origin/HEAD
     if let Ok(output) = Command::new("git")
         .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
@@ -157,22 +163,11 @@ fn detect_default_branch() -> String {
         }
     }
 
-    // 2. Fallback (network): gh repo view
-    if let Ok(output) = Command::new("gh")
-        .args([
-            "repo",
-            "view",
-            "--json",
-            "defaultBranchRef",
-            "-q",
-            ".defaultBranchRef.name",
-        ])
-        .output()
-        && output.status.success()
-    {
-        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // 2. Fallback (network): gh api repos/{owner}/{repo}
+    if let Ok(repo_info) = run_gh_api::<GhRepoInfo>("repos/{owner}/{repo}") {
+        let branch = repo_info.default_branch.trim().to_string();
         if !branch.is_empty() {
-            debug!(branch, "detected default branch from gh repo view");
+            debug!(branch, "detected default branch from gh api");
             return branch;
         }
     }

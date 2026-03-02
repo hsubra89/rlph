@@ -337,7 +337,7 @@ impl SubmissionBackend for GitHubSubmission {
     }
 }
 
-fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
+pub(crate) fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
     let output = Command::new("gh")
         .args(["api", endpoint])
         .output()
