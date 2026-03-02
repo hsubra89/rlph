@@ -412,11 +412,20 @@ impl WorktreeManager {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut detail = stderr.trim().to_string();
+            if !stdout.trim().is_empty() {
+                if !detail.is_empty() {
+                    detail.push('\n');
+                }
+                detail.push_str("stdout: ");
+                detail.push_str(stdout.trim());
+            }
             return Err(Error::Worktree(format!(
                 "setup script {} exited with {}: {}",
                 script.display(),
                 output.status,
-                stderr.trim()
+                detail
             )));
         }
 
