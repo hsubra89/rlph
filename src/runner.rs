@@ -251,6 +251,9 @@ fn extract_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f
     let cache_read = tok("cache_read_input_tokens");
     let output = tok("output_tokens");
     let total = input + cache_create + cache_read + output;
+    if total == 0 {
+        return None;
+    }
     let pct = total as f64 / context_window as f64 * 100.0;
     Some(pct.min(100.0))
 }
@@ -2021,6 +2024,20 @@ mod tests {
             &[
                 r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":20000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
                 r#"{"type":"assistant","message":{"content":[{"type":"text","text":"b"}]}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 10%] a\n[impl 10%] b\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_context_pct_ignores_zero_total_usage() {
+        // A usage object with all token fields missing/zero should not clobber
+        // an already-known context percentage.
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":20000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"b"}],"usage":{}}}"#,
             ],
         );
         assert_eq!(out, "[impl 10%] a\n[impl 10%] b\n");
