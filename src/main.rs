@@ -198,7 +198,7 @@ async fn main() {
                 &repo_root,
                 &worktree_info.branch,
                 &worktree_info.path,
-                &config.base_branch,
+                &pr_context.base_branch,
             );
             vars.insert("pr_number".to_string(), pr_context.number.to_string());
             vars.insert("pr_branch".to_string(), pr_context.head_branch.clone());
