@@ -1,20 +1,16 @@
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
-use std::thread;
-use std::time::Duration;
 
 use serde::Deserialize;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
 
-use super::{Priority, Task, TaskSource};
+use super::{Priority, Task, TaskSource, retry_with_backoff};
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 const LINEAR_CLI_CREDENTIALS: &str = ".config/linear/credentials.toml";
-const MAX_RETRIES: u32 = 3;
-const INITIAL_BACKOFF_MS: u64 = 500;
 
 /// Resolve the Linear API key: env var first, then Linear CLI credentials file.
 fn resolve_api_key(api_key_env: &str) -> Result<String> {
@@ -62,51 +58,24 @@ impl LinearClient for DefaultLinearClient {
             "variables": variables,
         });
 
-        let mut backoff_ms = INITIAL_BACKOFF_MS;
-        for attempt in 1..=MAX_RETRIES {
-            // Linear API uses raw API key, not "Bearer <key>"
-            match ureq::post(LINEAR_API_URL)
+        // Linear API uses raw API key, not "Bearer <key>"
+        let json: serde_json::Value = retry_with_backoff(|| {
+            ureq::post(LINEAR_API_URL)
                 .set("Authorization", &self.api_key)
                 .set("Content-Type", "application/json")
                 .send_json(&body)
-            {
-                Ok(response) => {
-                    let json: serde_json::Value = response.into_json().map_err(|e| {
-                        Error::TaskSource(format!("failed to parse Linear response: {e}"))
-                    })?;
+                .map_err(|e| Error::TaskSource(format!("Linear API request failed: {e}")))?
+                .into_json()
+                .map_err(|e| Error::TaskSource(format!("failed to parse Linear response: {e}")))
+        })?;
 
-                    if let Some(errors) = json.get("errors") {
-                        return Err(Error::TaskSource(format!("Linear API errors: {errors}")));
-                    }
-
-                    return json.get("data").cloned().ok_or_else(|| {
-                        Error::TaskSource("Linear API response missing data".to_string())
-                    });
-                }
-                Err(ref e) if attempt < MAX_RETRIES && is_retryable(e) => {
-                    warn!(
-                        attempt,
-                        error = %e,
-                        backoff_ms,
-                        "retrying Linear API after transient error"
-                    );
-                    thread::sleep(Duration::from_millis(backoff_ms));
-                    backoff_ms *= 2;
-                }
-                Err(e) => {
-                    return Err(Error::TaskSource(format!("Linear API request failed: {e}")));
-                }
-            }
+        if let Some(errors) = json.get("errors") {
+            return Err(Error::TaskSource(format!("Linear API errors: {errors}")));
         }
-        unreachable!()
-    }
-}
 
-/// Only retry rate-limits (429), server errors (5xx), and transport/network errors.
-fn is_retryable(err: &ureq::Error) -> bool {
-    match err {
-        ureq::Error::Status(code, _) => *code == 429 || *code >= 500,
-        ureq::Error::Transport(_) => true,
+        json.get("data")
+            .cloned()
+            .ok_or_else(|| Error::TaskSource("Linear API response missing data".to_string()))
     }
 }
 
@@ -739,37 +708,6 @@ fn write_linear_config(team_key: &str, dir: &std::path::Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Retry with exponential backoff
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-fn retry_with_backoff_ms<F, T>(f: F, initial_backoff_ms: u64, max_retries: u32) -> Result<T>
-where
-    F: Fn() -> Result<T>,
-{
-    let mut backoff_ms = initial_backoff_ms;
-
-    for attempt in 1..=max_retries {
-        match f() {
-            Ok(val) => return Ok(val),
-            Err(e) if attempt < max_retries => {
-                warn!(
-                    attempt,
-                    error = %e,
-                    backoff_ms,
-                    "retrying Linear API after transient error"
-                );
-                thread::sleep(Duration::from_millis(backoff_ms));
-                backoff_ms *= 2;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-
-    unreachable!()
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -961,33 +899,6 @@ mod tests {
         let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
         let err = source.fetch_eligible_tasks().unwrap_err();
         assert!(err.to_string().contains("connection refused"));
-    }
-
-    #[test]
-    fn test_retry_succeeds_after_transient_failure() {
-        let attempts = RefCell::new(0);
-        let result = retry_with_backoff_ms(
-            || {
-                let mut a = attempts.borrow_mut();
-                *a += 1;
-                if *a < 3 {
-                    Err(Error::TaskSource("transient".to_string()))
-                } else {
-                    Ok("success".to_string())
-                }
-            },
-            1,
-            3,
-        );
-        assert_eq!(result.unwrap(), "success");
-        assert_eq!(*attempts.borrow(), 3);
-    }
-
-    #[test]
-    fn test_retry_fails_after_max_attempts() {
-        let result: Result<String> =
-            retry_with_backoff_ms(|| Err(Error::TaskSource("permanent".to_string())), 1, 3);
-        assert!(result.is_err());
     }
 
     #[test]
