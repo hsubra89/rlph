@@ -22,7 +22,7 @@ use rlph::sources::github::GitHubSource;
 use rlph::sources::linear::LinearSource;
 use rlph::sources::{Task, TaskSource};
 use rlph::state::StateManager;
-use rlph::submission::{GitHubSubmission, REVIEW_MARKER, SubmissionBackend};
+use rlph::submission::{GitHubSubmission, PrContext, REVIEW_MARKER, SubmissionBackend};
 use rlph::worktree::{WorktreeManager, resolve_setup_script};
 
 /// Parse a PR reference that is either a plain number or a GitHub PR URL.
@@ -43,6 +43,13 @@ fn parse_pr_ref_or_exit(s: &str) -> u64 {
         eprintln!("error: {msg}");
         std::process::exit(1);
     })
+}
+
+fn print_pr_banner(pr: &PrContext) {
+    eprintln!(
+        "[rlph] PR #{}: {} \u{2192} {}",
+        pr.number, pr.head_branch, pr.base_branch
+    );
 }
 
 fn build_worktree_manager(
@@ -138,10 +145,7 @@ async fn main() {
                 }
             };
 
-            eprintln!(
-                "[rlph] PR #{}: {} \u{2192} {}",
-                pr_context.number, pr_context.head_branch, pr_context.base_branch
-            );
+            print_pr_banner(&pr_context);
 
             let worktree_mgr = match build_worktree_manager(&config, &repo_root) {
                 Ok(wm) => wm,
@@ -284,10 +288,7 @@ async fn main() {
                 }
             };
 
-            eprintln!(
-                "[rlph] PR #{}: {} \u{2192} {}",
-                pr_context.number, pr_context.head_branch, pr_context.base_branch
-            );
+            print_pr_banner(&pr_context);
 
             let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let prompt_engine = PromptEngine::new(None);
