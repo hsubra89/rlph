@@ -55,13 +55,14 @@ fn print_pr_banner(pr: &PrContext) {
 fn build_worktree_manager(
     config: &Config,
     repo_root: &Path,
+    base_branch: &str,
 ) -> rlph::error::Result<WorktreeManager> {
     let worktree_base = PathBuf::from(&config.worktree_dir);
     let setup_script = resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?;
     Ok(WorktreeManager::new(
         repo_root.to_path_buf(),
         worktree_base,
-        config.base_branch.clone(),
+        base_branch.to_string(),
     )
     .with_setup_script(setup_script))
 }
@@ -147,13 +148,14 @@ async fn main() {
 
             print_pr_banner(&pr_context);
 
-            let worktree_mgr = match build_worktree_manager(&config, &repo_root) {
-                Ok(wm) => wm,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                }
-            };
+            let worktree_mgr =
+                match build_worktree_manager(&config, &repo_root, &pr_context.base_branch) {
+                    Ok(wm) => wm,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    }
+                };
             let worktree_info =
                 match worktree_mgr.create_for_branch(pr_context.number, &pr_context.head_branch) {
                     Ok(w) => w,
@@ -409,7 +411,7 @@ async fn main() {
     )
     .with_stream_prefix("implement".to_string());
     let submission = GitHubSubmission::new();
-    let worktree_mgr = match build_worktree_manager(&config, &repo_root) {
+    let worktree_mgr = match build_worktree_manager(&config, &repo_root, &config.base_branch) {
         Ok(wm) => wm,
         Err(e) => {
             eprintln!("error: {e}");
