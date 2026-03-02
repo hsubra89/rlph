@@ -67,6 +67,7 @@ pub fn default_test_config() -> Config {
         review_aggregate: default_review_step("review-aggregate"),
         review_fix: default_review_step("review-fix"),
         fix: default_review_step("fix"),
+        worktree_setup_script: None,
         linear: None,
     }
 }

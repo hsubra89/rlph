@@ -27,7 +27,7 @@ use crate::prompts::PromptEngine;
 use crate::review_schema::{SchemaName, StandaloneFixOutput, parse_standalone_fix_output};
 use crate::runner::{AgentRunner, Phase, RunResult, build_runner};
 use crate::submission::{REVIEW_MARKER, SubmissionBackend};
-use crate::worktree::{WorktreeManager, git_in_dir, validate_branch_name};
+use crate::worktree::{WorktreeManager, git_in_dir, resolve_setup_script, validate_branch_name};
 
 /// Run the standalone fix flow for ALL checked findings on a PR concurrently.
 ///
@@ -88,6 +88,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
         correction_runner: Arc::clone(&correction_runner),
         concurrency: Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES)),
         agent_timeout_retries: config.agent_timeout_retries,
+        worktree_setup_script: config.worktree_setup_script.clone(),
     };
 
     let mut join_set = tokio::task::JoinSet::new();
@@ -177,6 +178,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         correction_runner: Arc::clone(&correction_runner),
         concurrency: Arc::new(Semaphore::new(MAX_CONCURRENT_FIXES)),
         agent_timeout_retries: config.agent_timeout_retries,
+        worktree_setup_script: config.worktree_setup_script.clone(),
     };
     let poll_duration = Duration::from_secs(config.poll_seconds);
 
@@ -463,12 +465,15 @@ async fn run_single_fix(
     repo_root: &Path,
     submission: &(impl SubmissionBackend + ?Sized),
     correction_runner: &(impl CorrectionRunner + ?Sized),
+    worktree_setup_script: Option<&str>,
 ) -> Result<()> {
+    let setup_script = resolve_setup_script(worktree_setup_script, repo_root);
     let wm = WorktreeManager::new(
         repo_root.to_path_buf(),
         repo_root.join(worktree_dir),
         ctx.pr_branch.to_string(),
-    );
+    )
+    .with_setup_script(setup_script);
     let worktree_path = wm.create_fresh(ctx.fix_branch, ctx.pr_branch)?.path;
     info!(
         finding_id = %ctx.item.finding.id,
@@ -518,6 +523,7 @@ struct SharedFixState<S, C> {
     correction_runner: Arc<C>,
     concurrency: Arc<Semaphore>,
     agent_timeout_retries: u32,
+    worktree_setup_script: Option<String>,
 }
 
 impl<S, C> Clone for SharedFixState<S, C> {
@@ -531,6 +537,7 @@ impl<S, C> Clone for SharedFixState<S, C> {
             correction_runner: Arc::clone(&self.correction_runner),
             concurrency: Arc::clone(&self.concurrency),
             agent_timeout_retries: self.agent_timeout_retries,
+            worktree_setup_script: self.worktree_setup_script.clone(),
         }
     }
 }
@@ -636,6 +643,7 @@ async fn acquire_and_run_fix<S: SubmissionBackend, C: CorrectionRunner>(
         &shared.repo_root,
         &*shared.submission,
         &*shared.correction_runner,
+        shared.worktree_setup_script.as_deref(),
     )
     .await
 }

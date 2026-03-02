@@ -5,6 +5,28 @@ use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
 
+/// Convention path for the worktree setup script.
+const CONVENTION_SETUP_SCRIPT: &str = ".rlph/worktree-setup.sh";
+
+/// Resolve the worktree setup script path.
+///
+/// Resolution order: config field (if set and non-empty) > convention file (if exists) > None.
+/// An empty config string explicitly disables the script.
+pub fn resolve_setup_script(config_value: Option<&str>, repo_root: &Path) -> Option<PathBuf> {
+    match config_value {
+        Some("") => None,
+        Some(s) => Some(repo_root.join(s)),
+        None => {
+            let convention = repo_root.join(CONVENTION_SETUP_SCRIPT);
+            if convention.exists() {
+                Some(convention)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 /// Validate that a branch name is safe: matches `^[a-zA-Z0-9/_.-]+$` and does not start with `refs/`.
 pub fn validate_branch_name(name: &str) -> Result<()> {
     if name.is_empty() {
@@ -57,6 +79,7 @@ pub struct WorktreeManager {
     repo_root: PathBuf,
     base_dir: PathBuf,
     base_branch: String,
+    setup_script: Option<PathBuf>,
 }
 
 impl WorktreeManager {
@@ -65,7 +88,14 @@ impl WorktreeManager {
             repo_root,
             base_dir,
             base_branch,
+            setup_script: None,
         }
+    }
+
+    /// Set an optional setup script to run after worktree creation.
+    pub fn with_setup_script(mut self, script: Option<PathBuf>) -> Self {
+        self.setup_script = script;
+        self
     }
 
     /// Generate the worktree directory name: `rlph-{issue_number}-{slug}`.
@@ -178,6 +208,9 @@ impl WorktreeManager {
             "created worktree from origin/{}",
             self.base_branch
         );
+
+        self.run_setup_script(&canonical_path)?;
+
         Ok(WorktreeInfo {
             path: canonical_path,
             branch,
@@ -281,6 +314,9 @@ impl WorktreeManager {
             commit = %commit_sha,
             "created PR review worktree"
         );
+
+        self.run_setup_script(&canonical_path)?;
+
         Ok(WorktreeInfo {
             path: canonical_path,
             branch: local_branch,
@@ -325,10 +361,53 @@ impl WorktreeManager {
         self.git_worktree_add(&path, branch_name, true, Some(&remote_ref))?;
 
         let canonical = path.canonicalize().unwrap_or(path);
+
+        self.run_setup_script(&canonical)?;
+
         Ok(WorktreeInfo {
             path: canonical,
             branch: branch_name.to_string(),
         })
+    }
+
+    /// Run the setup script in the given worktree directory, if configured.
+    fn run_setup_script(&self, worktree_path: &Path) -> Result<()> {
+        let script = match &self.setup_script {
+            Some(p) if p.exists() => p,
+            _ => return Ok(()),
+        };
+
+        info!(
+            script = %script.display(),
+            worktree = %worktree_path.display(),
+            "running worktree setup script"
+        );
+
+        let repo_root_str = self.repo_root.to_string_lossy();
+        let output = Command::new("sh")
+            .arg(script)
+            .arg(repo_root_str.as_ref())
+            .current_dir(worktree_path)
+            .output()
+            .map_err(|e| {
+                Error::Worktree(format!(
+                    "failed to run setup script {}: {e}",
+                    script.display()
+                ))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Worktree(format!(
+                "setup script {} exited with {}: {}",
+                script.display(),
+                output.status,
+                stderr.trim()
+            )));
+        }
+
+        info!("worktree setup script completed successfully");
+        Ok(())
     }
 
     /// Remove a worktree and delete its branch.
@@ -599,5 +678,137 @@ mod tests {
         assert!(validate_branch_name("branch~1").is_err());
         assert!(validate_branch_name("branch:foo").is_err());
         assert!(validate_branch_name("branch*").is_err());
+    }
+
+    #[test]
+    fn test_run_setup_script_creates_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree_path = tmp.path().join("wt");
+        std::fs::create_dir_all(&worktree_path).unwrap();
+
+        let script_path = tmp.path().join("setup.sh");
+        std::fs::write(&script_path, "touch \"$PWD/marker.txt\"\n").unwrap();
+
+        let wm = WorktreeManager::new(
+            tmp.path().to_path_buf(),
+            tmp.path().join("worktrees"),
+            "main".to_string(),
+        )
+        .with_setup_script(Some(script_path));
+
+        wm.run_setup_script(&worktree_path).unwrap();
+        assert!(worktree_path.join("marker.txt").exists());
+    }
+
+    #[test]
+    fn test_run_setup_script_nonzero_exit_propagates_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree_path = tmp.path().join("wt");
+        std::fs::create_dir_all(&worktree_path).unwrap();
+
+        let script_path = tmp.path().join("bad.sh");
+        std::fs::write(&script_path, "echo 'fail' >&2; exit 1\n").unwrap();
+
+        let wm = WorktreeManager::new(
+            tmp.path().to_path_buf(),
+            tmp.path().join("worktrees"),
+            "main".to_string(),
+        )
+        .with_setup_script(Some(script_path));
+
+        let err = wm.run_setup_script(&worktree_path).unwrap_err();
+        assert!(matches!(err, Error::Worktree(_)));
+        assert!(err.to_string().contains("fail"));
+    }
+
+    #[test]
+    fn test_run_setup_script_missing_script_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree_path = tmp.path().join("wt");
+        std::fs::create_dir_all(&worktree_path).unwrap();
+
+        let wm = WorktreeManager::new(
+            tmp.path().to_path_buf(),
+            tmp.path().join("worktrees"),
+            "main".to_string(),
+        )
+        .with_setup_script(Some(tmp.path().join("nonexistent.sh")));
+
+        // Should succeed silently
+        wm.run_setup_script(&worktree_path).unwrap();
+    }
+
+    #[test]
+    fn test_run_setup_script_none_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree_path = tmp.path().join("wt");
+        std::fs::create_dir_all(&worktree_path).unwrap();
+
+        let wm = WorktreeManager::new(
+            tmp.path().to_path_buf(),
+            tmp.path().join("worktrees"),
+            "main".to_string(),
+        );
+
+        wm.run_setup_script(&worktree_path).unwrap();
+    }
+
+    #[test]
+    fn test_run_setup_script_receives_repo_root_as_arg() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree_path = tmp.path().join("wt");
+        std::fs::create_dir_all(&worktree_path).unwrap();
+
+        let script_path = tmp.path().join("check_arg.sh");
+        std::fs::write(&script_path, "echo \"$1\" > \"$PWD/arg.txt\"\n").unwrap();
+
+        let repo_root = tmp.path().to_path_buf();
+        let wm = WorktreeManager::new(
+            repo_root.clone(),
+            tmp.path().join("worktrees"),
+            "main".to_string(),
+        )
+        .with_setup_script(Some(script_path));
+
+        wm.run_setup_script(&worktree_path).unwrap();
+        let arg = std::fs::read_to_string(worktree_path.join("arg.txt")).unwrap();
+        assert_eq!(arg.trim(), repo_root.to_string_lossy().as_ref());
+    }
+
+    #[test]
+    fn test_resolve_setup_script_config_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_setup_script(Some("scripts/setup.sh"), tmp.path());
+        assert_eq!(result, Some(tmp.path().join("scripts/setup.sh")));
+    }
+
+    #[test]
+    fn test_resolve_setup_script_empty_string_disables() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Even if convention file exists, empty string disables
+        let convention = tmp.path().join(".rlph/worktree-setup.sh");
+        std::fs::create_dir_all(convention.parent().unwrap()).unwrap();
+        std::fs::write(&convention, "#!/bin/sh\n").unwrap();
+
+        let result = resolve_setup_script(Some(""), tmp.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_setup_script_convention_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let convention = tmp.path().join(".rlph/worktree-setup.sh");
+        std::fs::create_dir_all(convention.parent().unwrap()).unwrap();
+        std::fs::write(&convention, "#!/bin/sh\n").unwrap();
+
+        let result = resolve_setup_script(None, tmp.path());
+        assert_eq!(result, Some(convention));
+    }
+
+    #[test]
+    fn test_resolve_setup_script_no_convention_no_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_setup_script(None, tmp.path());
+        assert_eq!(result, None);
     }
 }
