@@ -20,7 +20,7 @@ where
     retry_with_backoff_ms(f, INITIAL_BACKOFF_MS, MAX_RETRIES)
 }
 
-pub(crate) fn retry_with_backoff_ms<F, T>(
+fn retry_with_backoff_ms<F, T>(
     f: F,
     initial_backoff_ms: u64,
     max_retries: u32,
