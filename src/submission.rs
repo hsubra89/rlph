@@ -386,6 +386,9 @@ fn parse_pr_context_json(json: &str) -> std::result::Result<PrContext, String> {
     if pr.head_ref_name.trim().is_empty() {
         return Err("missing headRefName".to_string());
     }
+    if pr.base_ref_name.trim().is_empty() {
+        return Err("missing baseRefName".to_string());
+    }
 
     Ok(PrContext {
         number: pr.number,
@@ -493,6 +496,21 @@ mod tests {
 
         let err = parse_pr_context_json(json).unwrap_err();
         assert!(err.contains("headRefName"));
+    }
+
+    #[test]
+    fn test_parse_pr_context_json_missing_base_ref_rejected() {
+        let json = r#"{
+            "number": 11,
+            "title": "Refactor worker",
+            "body": "",
+            "url": "https://github.com/o/r/pull/11",
+            "headRefName": "feature/branch",
+            "baseRefName": ""
+        }"#;
+
+        let err = parse_pr_context_json(json).unwrap_err();
+        assert!(err.contains("baseRefName"));
     }
 
     #[test]
