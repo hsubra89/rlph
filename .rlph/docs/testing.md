@@ -13,6 +13,7 @@
   - `process_integration.rs` — Signal handling, timeouts
   - `codex_runner_integration.rs` — Codex-specific behavior
   - `prd_integration.rs` — PRD session flow
+- **CI-friendly output:** Use `--reporter default --failure-output immediate --success-output immediate` (or set `CI=true`) to disable the progress bar and print test names as they complete.
 
 ## Mocking Strategy
 

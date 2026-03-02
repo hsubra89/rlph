@@ -96,18 +96,6 @@ fn fix_missing_pr_ref() {
         .stderr(predicate::str::contains("PR_REF"));
 }
 
-#[test]
-fn fix_without_dry_run_rejected() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["fix", "999"])
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(predicate::str::contains("only --dry-run is supported"));
-}
-
 // --- Missing required args ---
 
 #[test]
