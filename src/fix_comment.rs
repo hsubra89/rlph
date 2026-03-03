@@ -203,24 +203,41 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
     let groups = group_by_category(items, |item| item.finding.category.as_deref());
 
     let mut out = String::new();
+    let (mut queued, mut eligible, mut blocked, mut fixed, mut wontfix, mut pending, mut cycle) =
+        (0, 0, 0, 0, 0, 0, 0);
     for (category, group) in &groups {
         out.push_str(&format!("\n{}\n", capitalize_first(category)));
         for item in group {
             let state_icon = match item.state {
-                FindingState::Pending => "  ",
-                FindingState::Queued => "🚀",
-                FindingState::Fixed => "👍",
-                FindingState::WontFix => "😕",
+                FindingState::Pending => {
+                    pending += 1;
+                    "  "
+                }
+                FindingState::Queued => {
+                    queued += 1;
+                    "🚀"
+                }
+                FindingState::Fixed => {
+                    fixed += 1;
+                    "👍"
+                }
+                FindingState::WontFix => {
+                    wontfix += 1;
+                    "😕"
+                }
             };
 
             let dep_status: Cow<'static, str> = if item.state == FindingState::Queued {
                 if deps.in_cycle(&item.finding.id) {
+                    cycle += 1;
                     " [cycle]".into()
                 } else {
                     let unresolved = deps.unresolved_deps(&item.finding.id, &resolved);
                     if unresolved.is_empty() {
+                        eligible += 1;
                         " [eligible]".into()
                     } else {
+                        blocked += 1;
                         format!(" [blocked by: {}]", unresolved.join(", ")).into()
                     }
                 }
@@ -238,27 +255,6 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
                 item.finding.description,
                 dep_status,
             ));
-        }
-    }
-
-    // Summary
-    let (mut queued, mut eligible, mut blocked, mut fixed, mut wontfix, mut pending, mut cycle) =
-        (0, 0, 0, 0, 0, 0, 0);
-    for item in items {
-        match item.state {
-            FindingState::Queued => {
-                queued += 1;
-                if deps.in_cycle(&item.finding.id) {
-                    cycle += 1;
-                } else if deps.deps_met(&item.finding.id, &resolved) {
-                    eligible += 1;
-                } else {
-                    blocked += 1;
-                }
-            }
-            FindingState::Fixed => fixed += 1,
-            FindingState::WontFix => wontfix += 1,
-            FindingState::Pending => pending += 1,
         }
     }
 
