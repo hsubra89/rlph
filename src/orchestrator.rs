@@ -817,7 +817,7 @@ impl<
         let comment_body = format!(
             "{REVIEW_MARKER}\n{}",
             render_summary_for_github(
-                agg_output.verdict.clone(),
+                agg_output.verdict,
                 &agg_output.findings,
                 &agg_output.comment,
             ),
