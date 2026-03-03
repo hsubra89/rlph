@@ -14,14 +14,14 @@ const COMPLETED_REACTIONS: &[&str] = &["THUMBS_UP", "CONFUSED"];
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
-struct GraphQlResponse<T> {
+struct GraphQLResponse<T> {
     data: Option<T>,
     #[serde(default)]
-    errors: Option<Vec<GraphQlError>>,
+    errors: Option<Vec<GraphQLError>>,
 }
 
 #[derive(Debug, Deserialize)]
-struct GraphQlError {
+struct GraphQLError {
     message: String,
 }
 
@@ -159,7 +159,7 @@ mutation($threadId: ID!) {
 }
 "#;
 
-fn check_graphql_errors<T>(response: &GraphQlResponse<T>) -> Result<()> {
+fn check_graphql_errors<T>(response: &GraphQLResponse<T>) -> Result<()> {
     if let Some(errors) = &response.errors {
         let msgs: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
         return Err(Error::Submission(format!(
@@ -230,7 +230,7 @@ fn fetch_review_threads(owner: &str, repo: &str, pr_number: u64) -> Result<Vec<R
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: GraphQlResponse<ReviewThreadsData> = serde_json::from_str(&stdout)
+    let response: GraphQLResponse<ReviewThreadsData> = serde_json::from_str(&stdout)
         .map_err(|e| Error::Submission(format!("failed to parse GraphQL response: {e}")))?;
 
     check_graphql_errors(&response)?;
@@ -266,7 +266,7 @@ fn resolve_thread(thread_id: &str) -> Result<()> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: GraphQlResponse<serde_json::Value> = serde_json::from_str(&stdout)
+    let response: GraphQLResponse<serde_json::Value> = serde_json::from_str(&stdout)
         .map_err(|e| Error::Submission(format!("failed to parse resolve response: {e}")))?;
 
     check_graphql_errors(&response)?;
@@ -427,7 +427,7 @@ mod tests {
             }
         }"#;
 
-        let response: GraphQlResponse<ReviewThreadsData> =
+        let response: GraphQLResponse<ReviewThreadsData> =
             serde_json::from_str(json).expect("should parse");
         let threads = response
             .data
@@ -451,7 +451,7 @@ mod tests {
             "data": null,
             "errors": [{"message": "Not found"}]
         }"#;
-        let response: GraphQlResponse<ReviewThreadsData> =
+        let response: GraphQLResponse<ReviewThreadsData> =
             serde_json::from_str(json).expect("should parse");
         assert!(response.errors.is_some());
         assert!(response.data.is_none());
@@ -470,7 +470,7 @@ mod tests {
                 }
             }
         }"#;
-        let response: GraphQlResponse<ReviewThreadsData> =
+        let response: GraphQLResponse<ReviewThreadsData> =
             serde_json::from_str(json).expect("should parse");
         let threads = response
             .data
