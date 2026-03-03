@@ -377,4 +377,26 @@ diff --git a/a/src/lib.rs b/a/src/lib.rs
         assert_eq!(mapped_nested.line, 10);
         assert!(!mapped_nested.used_fallback);
     }
+
+    #[test]
+    fn map_keeps_real_leading_b_path_component_distinct() {
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+@@ -1,0 +1,1 @@
++first
+diff --git a/b/src/main.rs b/b/src/main.rs
+@@ -20,0 +20,1 @@
++second
+"#;
+        let mapper = DiffPositionMapper::from_diff(diff).unwrap();
+
+        let mapped_root = mapper.map("src/main.rs", 1).unwrap();
+        assert_eq!(mapped_root.file, "src/main.rs");
+        assert_eq!(mapped_root.line, 1);
+        assert!(!mapped_root.used_fallback);
+
+        let mapped_nested = mapper.map("b/src/main.rs", 20).unwrap();
+        assert_eq!(mapped_nested.file, "b/src/main.rs");
+        assert_eq!(mapped_nested.line, 20);
+        assert!(!mapped_nested.used_fallback);
+    }
 }
