@@ -51,31 +51,31 @@ struct ReviewThreadConnection {
 
 #[derive(Debug, Clone, Deserialize)]
 struct ReviewThreadNode {
-    pub id: String,
+    id: String,
     #[serde(rename = "isResolved")]
-    pub is_resolved: bool,
-    pub comments: CommentConnection,
+    is_resolved: bool,
+    comments: CommentConnection,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct CommentConnection {
-    pub nodes: Vec<CommentNode>,
+    nodes: Vec<CommentNode>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct CommentNode {
-    pub body: String,
-    pub reactions: ReactionConnection,
+    body: String,
+    reactions: ReactionConnection,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct ReactionConnection {
-    pub nodes: Vec<ReactionNode>,
+    nodes: Vec<ReactionNode>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct ReactionNode {
-    pub content: String,
+    content: String,
 }
 
 // ---------------------------------------------------------------------------
