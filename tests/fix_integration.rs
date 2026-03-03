@@ -10,10 +10,7 @@ use rlph::fix::{run_fix, run_fix_loop};
 use rlph::orchestrator::CorrectionRunner;
 use rlph::review_schema::{ReviewFinding, render_inline_finding_comment_for_github};
 use rlph::runner::{RunResult, RunnerKind};
-use rlph::submission::{
-    InlineReviewComment, PrComment, PrReviewComment, PullRequestReviewEvent, Reaction,
-    SubmissionBackend, SubmitResult,
-};
+use rlph::submission::{PrReviewComment, Reaction, SubmissionBackend, SubmitResult};
 use rlph::test_helpers::make_finding;
 use tokio::sync::watch;
 
@@ -133,37 +130,6 @@ impl MockFixSubmission {
 impl SubmissionBackend for MockFixSubmission {
     fn submit(&self, _: &str, _: &str, _: &str, _: &str) -> Result<SubmitResult> {
         unimplemented!("submit not needed for fix tests")
-    }
-
-    fn find_existing_pr_for_issue(&self, _: u64) -> Result<Option<u64>> {
-        Ok(None)
-    }
-
-    fn upsert_review_comment(&self, _pr_number: u64, _body: &str) -> Result<()> {
-        Ok(())
-    }
-
-    fn submit_inline_pr_review(
-        &self,
-        _pr_number: u64,
-        _event: PullRequestReviewEvent,
-        _comments: &[InlineReviewComment],
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
-        Ok(String::new())
-    }
-
-    fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
-        Ok(vec![])
-    }
-
-    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<PrComment> {
-        Err(Error::Submission(
-            "not used in reaction workflow".to_string(),
-        ))
     }
 
     fn fetch_pr_review_comments(&self, _pr_number: u64) -> Result<Vec<PrReviewComment>> {
@@ -482,36 +448,6 @@ impl PollingMockSubmission {
 impl SubmissionBackend for PollingMockSubmission {
     fn submit(&self, _: &str, _: &str, _: &str, _: &str) -> Result<SubmitResult> {
         unimplemented!("submit not needed for fix tests")
-    }
-
-    fn find_existing_pr_for_issue(&self, issue_number: u64) -> Result<Option<u64>> {
-        self.base.find_existing_pr_for_issue(issue_number)
-    }
-
-    fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()> {
-        self.base.upsert_review_comment(pr_number, body)
-    }
-
-    fn submit_inline_pr_review(
-        &self,
-        pr_number: u64,
-        event: PullRequestReviewEvent,
-        comments: &[InlineReviewComment],
-    ) -> Result<()> {
-        self.base
-            .submit_inline_pr_review(pr_number, event, comments)
-    }
-
-    fn fetch_pr_diff(&self, pr_number: u64) -> Result<String> {
-        self.base.fetch_pr_diff(pr_number)
-    }
-
-    fn fetch_pr_comments(&self, pr_number: u64) -> Result<Vec<PrComment>> {
-        self.base.fetch_pr_comments(pr_number)
-    }
-
-    fn fetch_comment_by_id(&self, comment_id: u64) -> Result<PrComment> {
-        self.base.fetch_comment_by_id(comment_id)
     }
 
     fn fetch_pr_review_comments(&self, pr_number: u64) -> Result<Vec<PrReviewComment>> {

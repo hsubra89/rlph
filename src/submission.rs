@@ -86,44 +86,71 @@ pub trait SubmissionBackend: Send + Sync {
     fn submit(&self, branch: &str, base: &str, title: &str, body: &str) -> Result<SubmitResult>;
 
     /// Find an open PR that references the given issue number.
-    fn find_existing_pr_for_issue(&self, issue_number: u64) -> Result<Option<u64>>;
+    fn find_existing_pr_for_issue(&self, _issue_number: u64) -> Result<Option<u64>> {
+        Ok(None)
+    }
 
     /// Post or update a review comment on an existing PR.
     /// If a previous rlph review comment exists, updates it; otherwise creates a new one.
-    fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()>;
+    fn upsert_review_comment(&self, _pr_number: u64, _body: &str) -> Result<()> {
+        Ok(())
+    }
 
     /// Post a single batched PR review with one or more inline comments.
     fn submit_inline_pr_review(
         &self,
-        pr_number: u64,
-        event: PullRequestReviewEvent,
-        comments: &[InlineReviewComment],
-    ) -> Result<()>;
+        _pr_number: u64,
+        _event: PullRequestReviewEvent,
+        _comments: &[InlineReviewComment],
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// Fetch the full PR diff used for inline comment line mapping.
-    fn fetch_pr_diff(&self, pr_number: u64) -> Result<String>;
+    fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
+        Ok(String::new())
+    }
 
     /// Fetch all comments on a PR/issue thread.
-    fn fetch_pr_comments(&self, pr_number: u64) -> Result<Vec<PrComment>>;
+    fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
+        Ok(vec![])
+    }
 
     /// Fetch a single comment by its ID.
-    fn fetch_comment_by_id(&self, comment_id: u64) -> Result<PrComment>;
+    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<PrComment> {
+        Err(Error::Submission("not implemented".to_string()))
+    }
 
     /// Fetch all inline review comments on a PR (comments on diff lines).
-    fn fetch_pr_review_comments(&self, pr_number: u64) -> Result<Vec<PrReviewComment>>;
+    fn fetch_pr_review_comments(&self, _pr_number: u64) -> Result<Vec<PrReviewComment>> {
+        Ok(vec![])
+    }
 
     /// List reactions on a PR review comment.
-    fn list_review_comment_reactions(&self, comment_id: u64) -> Result<Vec<Reaction>>;
+    fn list_review_comment_reactions(&self, _comment_id: u64) -> Result<Vec<Reaction>> {
+        Ok(vec![])
+    }
 
     /// Add a reaction to a PR review comment. `reaction` is one of:
     /// "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes".
-    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<()>;
+    fn add_review_comment_reaction(&self, _comment_id: u64, _reaction: &str) -> Result<()> {
+        Ok(())
+    }
 
     /// Remove a reaction from a PR review comment by reaction ID.
-    fn delete_review_comment_reaction(&self, comment_id: u64, reaction_id: u64) -> Result<()>;
+    fn delete_review_comment_reaction(&self, _comment_id: u64, _reaction_id: u64) -> Result<()> {
+        Ok(())
+    }
 
     /// Post a reply to a PR review comment.
-    fn reply_to_review_comment(&self, pr_number: u64, comment_id: u64, body: &str) -> Result<()>;
+    fn reply_to_review_comment(
+        &self,
+        _pr_number: u64,
+        _comment_id: u64,
+        _body: &str,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// HTML marker injected into review comments so we can find and update them.

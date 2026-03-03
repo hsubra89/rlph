@@ -421,45 +421,6 @@ impl SubmissionBackend for MockSubmission {
                 .to_string(),
         )
     }
-
-    fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<rlph::submission::PrComment>> {
-        Ok(vec![])
-    }
-
-    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<rlph::submission::PrComment> {
-        Err(Error::Submission("not implemented in mock".to_string()))
-    }
-
-    fn fetch_pr_review_comments(
-        &self,
-        _pr_number: u64,
-    ) -> Result<Vec<rlph::submission::PrReviewComment>> {
-        Ok(vec![])
-    }
-
-    fn list_review_comment_reactions(
-        &self,
-        _comment_id: u64,
-    ) -> Result<Vec<rlph::submission::Reaction>> {
-        Ok(vec![])
-    }
-
-    fn add_review_comment_reaction(&self, _comment_id: u64, _reaction: &str) -> Result<()> {
-        Ok(())
-    }
-
-    fn delete_review_comment_reaction(&self, _comment_id: u64, _reaction_id: u64) -> Result<()> {
-        Ok(())
-    }
-
-    fn reply_to_review_comment(
-        &self,
-        _pr_number: u64,
-        _comment_id: u64,
-        _body: &str,
-    ) -> Result<()> {
-        Ok(())
-    }
 }
 
 struct FailSubmission;
@@ -469,64 +430,8 @@ impl SubmissionBackend for FailSubmission {
         Err(Error::Submission("mock submission failure".to_string()))
     }
 
-    fn find_existing_pr_for_issue(&self, _issue_number: u64) -> Result<Option<u64>> {
-        Ok(None)
-    }
-
-    fn upsert_review_comment(&self, _pr_number: u64, _body: &str) -> Result<()> {
-        Ok(())
-    }
-
-    fn submit_inline_pr_review(
-        &self,
-        _pr_number: u64,
-        _event: PullRequestReviewEvent,
-        _comments: &[InlineReviewComment],
-    ) -> Result<()> {
-        Ok(())
-    }
-
     fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
         Ok("diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,1 @@\n+fn main() {}\n".to_string())
-    }
-
-    fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<rlph::submission::PrComment>> {
-        Ok(vec![])
-    }
-
-    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<rlph::submission::PrComment> {
-        Err(Error::Submission("not implemented in mock".to_string()))
-    }
-
-    fn fetch_pr_review_comments(
-        &self,
-        _pr_number: u64,
-    ) -> Result<Vec<rlph::submission::PrReviewComment>> {
-        Ok(vec![])
-    }
-
-    fn list_review_comment_reactions(
-        &self,
-        _comment_id: u64,
-    ) -> Result<Vec<rlph::submission::Reaction>> {
-        Ok(vec![])
-    }
-
-    fn add_review_comment_reaction(&self, _comment_id: u64, _reaction: &str) -> Result<()> {
-        Ok(())
-    }
-
-    fn delete_review_comment_reaction(&self, _comment_id: u64, _reaction_id: u64) -> Result<()> {
-        Ok(())
-    }
-
-    fn reply_to_review_comment(
-        &self,
-        _pr_number: u64,
-        _comment_id: u64,
-        _body: &str,
-    ) -> Result<()> {
-        Ok(())
     }
 }
 
