@@ -65,20 +65,20 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let finding_deps = FindingDeps::build(&items);
     let resolved = resolved_finding_ids(&items);
 
-    let (eligible_refs, _dep_blocked) = dep_eligible(
+    let (eligible_refs, dep_blocked) = dep_eligible(
         items.iter().filter(|i| i.state == FindingState::Queued),
         &finding_deps,
         &resolved,
     );
 
     if eligible_refs.is_empty() {
-        info!("no eligible items found — nothing to fix");
+        info!(dep_blocked, "no eligible items found — nothing to fix");
         return Ok(());
     }
 
     info!(
         count = eligible_refs.len(),
-        "found eligible items for parallel fix"
+        dep_blocked, "found eligible items for parallel fix"
     );
 
     // 3. Pre-compute per-item data and spawn into JoinSet
