@@ -117,6 +117,7 @@ pub struct InlineReviewComment {
 
 #[derive(Debug, Serialize)]
 struct ReviewCreateRequest {
+    body: String,
     event: String,
     comments: Vec<ReviewInlineCommentRequest>,
 }
@@ -386,7 +387,9 @@ impl SubmissionBackend for GitHubSubmission {
         }
 
         let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews");
+        let body = format!("Review: {} finding(s) across the changes.", comments.len());
         let payload = ReviewCreateRequest {
+            body,
             event: event.as_api_value().to_string(),
             comments: comments
                 .iter()
