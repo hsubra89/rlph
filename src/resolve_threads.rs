@@ -120,6 +120,10 @@ pub(crate) fn find_completed_rlph_thread_ids(threads: &[ReviewThreadNode]) -> Ve
 // threads may miss completed rlph threads beyond the first page. In practice
 // this limit is unlikely to be hit; if it is, switch to cursor-based pagination
 // (see run_gh_api_paginated for a reference pattern).
+//
+// NOTE: reactions(first: 20) is not paginated. A comment with >20 reactions
+// could have its completion reaction missed, silently preventing thread
+// resolution. In practice this is unlikely for review comments.
 const REVIEW_THREADS_QUERY: &str = r#"
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
