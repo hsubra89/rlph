@@ -281,8 +281,8 @@ pub fn render_inline_finding_comment_for_github(
     if !dependency_descriptions.is_empty() {
         write!(
             body,
-            "\n\nDepends on: {}.",
-            dependency_descriptions.join("; ")
+            "\n\n> **Depends on:**\n> {}",
+            dependency_descriptions.join("\n> ")
         )
         .unwrap();
     }
@@ -1076,7 +1076,7 @@ mod tests {
         assert!(
             body.contains("**WARNING** (correctness) `dep-finding`: Potential null dereference")
         );
-        assert!(body.contains("Depends on: Missing null guard in constructor."));
+        assert!(body.contains("> **Depends on:**\n> Missing null guard in constructor"));
         assert!(body.contains(
             "Note: this finding applies to line 88 but is shown here because that line is not in the diff."
         ));

@@ -1046,8 +1046,8 @@ fn build_inline_review_comments(
                 .map(|dep_id| {
                     findings_by_id
                         .get(dep_id.as_str())
-                        .map(|dep| Cow::Borrowed(dep.description.as_str()))
-                        .unwrap_or_else(|| Cow::Owned(format!("finding `{dep_id}`")))
+                        .map(|dep| Cow::Owned(format!("`{dep_id}`: {}", dep.description)))
+                        .unwrap_or_else(|| Cow::Owned(format!("`{dep_id}`")))
                 })
                 .collect();
             let dependency_descriptions: Vec<&str> =
@@ -1248,7 +1248,10 @@ mod tests {
             .iter()
             .find(|c| c.body.contains("Use after free"))
             .expect("expected follow-up comment");
-        assert!(body.body.contains("Depends on: Base check missing."));
+        assert!(
+            body.body
+                .contains("> **Depends on:**\n> `base-check`: Base check missing")
+        );
     }
 
     #[test]
