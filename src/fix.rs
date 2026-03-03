@@ -6,6 +6,9 @@ use std::time::Duration;
 use tokio::sync::{Semaphore, watch};
 use tracing::{info, warn};
 
+/// Reply bodies grouped by their parent review comment ID.
+pub type ReplyMap = HashMap<u64, Vec<String>>;
+
 /// Maximum number of push attempts before giving up (rebase+retry on conflict).
 const MAX_PUSH_ATTEMPTS: u32 = 3;
 
@@ -19,7 +22,7 @@ use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
 use crate::fix_comment::{
     FindingState, FixItem, FixResultKind, REACTION_CONFUSED, REACTION_THUMBS_UP,
-    build_fix_items_from_review_comments,
+    build_fix_items_from_review_comments, collect_reply_bodies, format_review_context,
 };
 use crate::fix_deps::{FindingDeps, resolved_finding_ids};
 use crate::orchestrator::{CorrectionRunner, retry_with_correction};
@@ -57,7 +60,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 
     // 1. Fetch review comments and reactions, build fix items
     info!(pr_number, "polling GitHub for PR review comments");
-    let items = fetch_and_parse_items(pr_number, &*submission)?;
+    let (items, reply_map) = fetch_and_parse_items(pr_number, &*submission)?;
     info!(total = items.len(), "parsed fix items from review comments");
 
     // Clean up stale 🚀 reactions on already-resolved findings (best-effort)
@@ -104,8 +107,13 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     for item in &eligible_refs {
         let item = (*item).clone();
 
-        let Some(prepared) = prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine)
-        else {
+        let Some(prepared) = prepare_fix_item(
+            item,
+            pr_number,
+            &shared.fix_config,
+            prompt_engine,
+            &reply_map,
+        ) else {
             skipped += 1;
             continue;
         };
@@ -224,7 +232,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             completed = completed.len(),
             "polling for newly 🚀-reacted comments"
         );
-        let items = match fetch_and_parse_items(pr_number, &*shared.submission) {
+        let (items, reply_map) = match fetch_and_parse_items(pr_number, &*shared.submission) {
             Ok(result) => result,
             Err(e) => {
                 warn!(error = %e, cycle, "failed to fetch review comments, retrying next cycle");
@@ -286,9 +294,13 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         for item in newly_queued {
             let finding_id = item.finding.id.clone();
 
-            let Some(prepared) =
-                prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine)
-            else {
+            let Some(prepared) = prepare_fix_item(
+                item,
+                pr_number,
+                &shared.fix_config,
+                prompt_engine,
+                &reply_map,
+            ) else {
                 failed.insert(finding_id);
                 skipped += 1;
                 continue;
@@ -347,11 +359,17 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
 /// Fetch all inline review comments on a PR, check reactions for each that
 /// contains a finding marker, and build `FixItem`s.
+///
+/// Also collects reply comment bodies grouped by parent comment ID, so callers
+/// can pass reply context to the fix agent.
 pub fn fetch_and_parse_items(
     pr_number: u64,
     submission: &(impl SubmissionBackend + ?Sized),
-) -> Result<Vec<FixItem>> {
+) -> Result<(Vec<FixItem>, ReplyMap)> {
     let comments = submission.fetch_pr_review_comments(pr_number)?;
+
+    // Collect reply bodies before building fix items (which skips replies)
+    let reply_map = collect_reply_bodies(&comments);
 
     // Only fetch reactions for comments that contain the finding marker
     let finding_comments: Vec<_> = comments
@@ -380,7 +398,10 @@ pub fn fetch_and_parse_items(
         collected.push(result?);
     }
 
-    Ok(build_fix_items_from_review_comments(&comments, &collected))
+    Ok((
+        build_fix_items_from_review_comments(&comments, &collected),
+        reply_map,
+    ))
 }
 
 /// Filter pre-screened items through the dependency gate.
@@ -581,6 +602,10 @@ struct PreparedFixItem {
     item: FixItem,
     fix_branch: String,
     prompt: String,
+    /// The GitHub review comment ID (for re-fetching fresh body at execution time).
+    comment_id: u64,
+    /// Reply bodies collected from the review thread.
+    replies: Vec<String>,
 }
 
 /// Validate branch name, render the prompt, and log the spawn.
@@ -592,6 +617,7 @@ fn prepare_fix_item(
     pr_number: u64,
     fix_config: &ReviewStepConfig,
     prompt_engine: &PromptEngine,
+    reply_map: &HashMap<u64, Vec<String>>,
 ) -> Option<PreparedFixItem> {
     let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
     if let Err(e) = validate_branch_name(&fix_branch) {
@@ -616,10 +642,15 @@ fn prepare_fix_item(
         "prepared fix item"
     );
 
+    let comment_id = item.comment_id;
+    let replies = reply_map.get(&comment_id).cloned().unwrap_or_default();
+
     Some(PreparedFixItem {
         item,
         fix_branch,
         prompt,
+        comment_id,
+        replies,
     })
 }
 
@@ -639,8 +670,25 @@ async fn acquire_and_run_fix<S: SubmissionBackend, C: CorrectionRunner>(
     let PreparedFixItem {
         item,
         fix_branch,
-        prompt,
+        mut prompt,
+        comment_id,
+        replies,
     } = prepared;
+
+    // Re-fetch the comment body at execution time for the freshest content
+    match shared.submission.fetch_review_comment_by_id(comment_id) {
+        Ok(comment) => {
+            prompt.push_str(&format_review_context(&comment.body, &replies));
+        }
+        Err(e) => {
+            warn!(
+                comment_id,
+                error = %e,
+                "failed to re-fetch review comment body, proceeding without review context"
+            );
+        }
+    }
+
     let ctx = FixContext {
         item,
         pr_number,

@@ -252,8 +252,8 @@ async fn main() {
             let submission = GitHubSubmission::new();
 
             if dry_run {
-                let items = match fix::fetch_and_parse_items(pr_number, &submission) {
-                    Ok(items) => items,
+                let (items, _reply_map) = match fix::fetch_and_parse_items(pr_number, &submission) {
+                    Ok(result) => result,
                     Err(e) => {
                         eprintln!("error: {e}");
                         std::process::exit(1);

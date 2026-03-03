@@ -126,6 +126,11 @@ pub trait SubmissionBackend: Send + Sync {
         Ok(vec![])
     }
 
+    /// Fetch a single PR review comment by its ID.
+    fn fetch_review_comment_by_id(&self, _comment_id: u64) -> Result<PrReviewComment> {
+        Err(Error::Submission("not implemented".to_string()))
+    }
+
     /// List reactions on a PR review comment.
     fn list_review_comment_reactions(&self, _comment_id: u64) -> Result<Vec<Reaction>> {
         Ok(vec![])
@@ -531,6 +536,12 @@ impl SubmissionBackend for GitHubSubmission {
     fn fetch_pr_review_comments(&self, pr_number: u64) -> Result<Vec<PrReviewComment>> {
         run_gh_api_paginated(&format!(
             "repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments"
+        ))
+    }
+
+    fn fetch_review_comment_by_id(&self, comment_id: u64) -> Result<PrReviewComment> {
+        run_gh_api(&format!(
+            "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}"
         ))
     }
 

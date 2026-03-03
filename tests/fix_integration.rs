@@ -193,6 +193,15 @@ impl SubmissionBackend for MockFixSubmission {
             .push((pr_number, comment_id, body.to_string()));
         Ok(())
     }
+
+    fn fetch_review_comment_by_id(&self, comment_id: u64) -> Result<PrReviewComment> {
+        let comments = self.review_comments.lock().unwrap();
+        comments
+            .iter()
+            .find(|c| c.id == comment_id)
+            .cloned()
+            .ok_or_else(|| Error::Submission(format!("comment {comment_id} not found")))
+    }
 }
 
 /// No-op correction runner for tests.
@@ -490,6 +499,10 @@ impl SubmissionBackend for PollingMockSubmission {
     fn reply_to_review_comment(&self, pr_number: u64, comment_id: u64, body: &str) -> Result<()> {
         self.base
             .reply_to_review_comment(pr_number, comment_id, body)
+    }
+
+    fn fetch_review_comment_by_id(&self, comment_id: u64) -> Result<PrReviewComment> {
+        self.base.fetch_review_comment_by_id(comment_id)
     }
 }
 
