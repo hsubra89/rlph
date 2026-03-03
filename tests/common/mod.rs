@@ -61,7 +61,6 @@ pub fn default_test_config() -> Config {
         implement_timeout: None,
         agent_effort: None,
         agent_variant: None,
-        max_review_rounds: 3,
         agent_timeout_retries: 2,
         review_phases: default_review_phases(),
         review_aggregate: default_review_step("review-aggregate"),

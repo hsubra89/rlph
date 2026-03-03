@@ -27,10 +27,10 @@ Fetch tasks (TaskSource) → filter by dependency graph (deps.rs)
   → Cleanup worktree
 ```
 
-Review pipeline runs up to `max_review_rounds` (default 3). Each round:
+Review pipeline runs a single round:
 1. Runs review phases in parallel (correctness, security, hygiene by default)
-2. Aggregation agent combines findings, emits `REVIEW_APPROVED` or `REVIEW_NEEDS_FIX: <instructions>`
-3. If needs fix: findings are posted; orchestrator does not auto-fix. Next round re-runs review to pick up external PR updates.
+2. Aggregation agent combines findings, emits `REVIEW_APPROVED` or `REVIEW_NEEDS_FIX`
+3. Findings are posted as a PR comment. No retry or fix loop.
 
 ## Core Traits
 

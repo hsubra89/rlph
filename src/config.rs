@@ -95,7 +95,6 @@ pub struct ConfigFile {
     pub implement_timeout: Option<u64>,
     pub agent_effort: Option<String>,
     pub agent_variant: Option<String>,
-    pub max_review_rounds: Option<u32>,
     pub agent_timeout_retries: Option<u32>,
     pub review_phases: Option<Vec<ReviewPhaseConfigFile>>,
     pub review_aggregate: Option<ReviewStepConfigFile>,
@@ -124,7 +123,6 @@ pub struct Config {
     pub implement_timeout: Option<u64>,
     pub agent_effort: Option<String>,
     pub agent_variant: Option<String>,
-    pub max_review_rounds: u32,
     pub agent_timeout_retries: u32,
     pub review_phases: Vec<ReviewPhaseConfig>,
     pub review_aggregate: ReviewStepConfig,
@@ -453,10 +451,6 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         implement_timeout,
         agent_effort: global_effort,
         agent_variant: global_variant,
-        max_review_rounds: cli
-            .max_review_rounds
-            .or(file.max_review_rounds)
-            .unwrap_or(1),
         agent_timeout_retries: cli
             .agent_timeout_retries
             .or(file.agent_timeout_retries)

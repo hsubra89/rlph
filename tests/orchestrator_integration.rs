@@ -1130,16 +1130,13 @@ async fn test_worktree_cleaned_up_after_success() {
 }
 
 #[tokio::test]
-async fn test_review_exhaustion_preserves_state() {
+async fn test_needs_fix_completes_successfully() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     let state_dir = repo_dir.path().join(".rlph-test-state");
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
-
-    let mut config = make_config(true);
-    config.max_review_rounds = 2;
 
     let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
@@ -1152,27 +1149,17 @@ async fn test_review_exhaustion_preserves_state() {
         ),
         StateManager::new(&state_dir),
         PromptEngine::new(None),
-        config,
+        make_config(true),
         repo_dir.path().to_path_buf(),
     )
     .with_review_factory(NeverApproveReviewFactory);
 
-    let err = orchestrator.run_once().await.unwrap_err();
-    assert!(
-        err.to_string().contains("review did not complete"),
-        "unexpected error: {err}"
-    );
-
-    // State should still show current task in review phase (resumable)
-    let state_mgr = StateManager::new(&state_dir);
-    let state = state_mgr.load();
-    assert!(state.current_task.is_some());
-    assert_eq!(state.current_task.unwrap().phase, "review");
-    assert!(state.history.is_empty());
+    // needs_fix verdict should complete without error
+    orchestrator.run_once().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_run_once_needs_fix_retries_without_running_fix_phase() {
+async fn test_run_once_needs_fix_runs_single_review() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
@@ -1181,9 +1168,6 @@ async fn test_run_once_needs_fix_retries_without_running_fix_phase() {
     let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
     let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
     let factory = NeedsFixThenApproveFactory::default();
-
-    let mut config = make_config(true);
-    config.max_review_rounds = 2;
 
     let orchestrator = Orchestrator::new(
         source,
@@ -1196,7 +1180,7 @@ async fn test_run_once_needs_fix_retries_without_running_fix_phase() {
         ),
         StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
-        config,
+        make_config(true),
         repo_dir.path().to_path_buf(),
     )
     .with_review_factory(factory.clone());
@@ -1205,8 +1189,8 @@ async fn test_run_once_needs_fix_retries_without_running_fix_phase() {
 
     assert_eq!(
         factory.aggregate_runs(),
-        2,
-        "expected 2 review rounds (needs_fix then approved)"
+        1,
+        "expected exactly 1 review round (no retry on needs_fix)"
     );
     assert_eq!(
         factory.fix_runs(),
@@ -1484,64 +1468,7 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
 }
 
 #[tokio::test]
-async fn test_review_only_exhaustion_preserves_state() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
-    let task = make_task(99, "Needs fixes");
-
-    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
-    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
-    let source = MockSource::new(vec![task.clone()], Arc::clone(&source_tracker));
-    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
-    let worktree_mgr = WorktreeManager::new(
-        repo_dir.path().to_path_buf(),
-        wt_dir.path().to_path_buf(),
-        "main".to_string(),
-    );
-    let worktree_info = worktree_mgr.create(99, "review-exhaustion").unwrap();
-    let state_dir = repo_dir.path().join(".rlph-test-state");
-    let vars = make_review_vars(
-        &task,
-        repo_dir.path(),
-        &worktree_info.branch,
-        &worktree_info.path,
-    );
-
-    let mut config = make_config(true);
-    config.max_review_rounds = 2;
-    let orchestrator = Orchestrator::new(
-        source,
-        MockRunner::new("gh-99"),
-        submission,
-        worktree_mgr,
-        StateManager::new(&state_dir),
-        PromptEngine::new(None),
-        config,
-        repo_dir.path().to_path_buf(),
-    )
-    .with_review_factory(NeverApproveReviewFactory);
-
-    let invocation = ReviewInvocation {
-        task_id_for_state: "pr-99".to_string(),
-        mark_in_review_task_id: None,
-        worktree_info: worktree_info.clone(),
-        vars,
-        comment_pr_number: Some(99),
-    };
-    let err = orchestrator
-        .run_review_for_existing_pr(invocation)
-        .await
-        .unwrap_err();
-    assert!(err.to_string().contains("review did not complete"));
-
-    let state = StateManager::new(&state_dir).load();
-    assert!(state.current_task.is_some());
-    assert_eq!(state.current_task.unwrap().phase, "review");
-    assert!(state.history.is_empty());
-    assert!(!worktree_info.path.exists());
-}
-
-#[tokio::test]
-async fn test_review_only_retries_rounds_without_running_fix_phase() {
+async fn test_review_only_needs_fix_completes_successfully() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(99, "Needs fixes");
 
@@ -1564,9 +1491,6 @@ async fn test_review_only_retries_rounds_without_running_fix_phase() {
     let state_dir = repo_dir.path().join(".rlph-test-state");
     let factory = NeedsFixThenApproveFactory::default();
 
-    let mut config = make_config(true);
-    config.max_review_rounds = 2;
-
     let orchestrator = Orchestrator::new(
         source,
         MockRunner::new("gh-99"),
@@ -1574,7 +1498,7 @@ async fn test_review_only_retries_rounds_without_running_fix_phase() {
         worktree_mgr,
         StateManager::new(&state_dir),
         PromptEngine::new(None),
-        config,
+        make_config(true),
         repo_dir.path().to_path_buf(),
     )
     .with_review_factory(factory.clone());
@@ -1586,6 +1510,7 @@ async fn test_review_only_retries_rounds_without_running_fix_phase() {
         vars,
         comment_pr_number: Some(99),
     };
+    // needs_fix verdict should complete without error; no second round
     orchestrator
         .run_review_for_existing_pr(invocation)
         .await
@@ -1593,13 +1518,13 @@ async fn test_review_only_retries_rounds_without_running_fix_phase() {
 
     assert_eq!(
         factory.aggregate_runs(),
-        2,
-        "expected 2 review rounds in review-only mode"
+        1,
+        "expected exactly 1 review round (no retry on needs_fix)"
     );
     assert_eq!(
         factory.fix_runs(),
         0,
-        "review-only mode must not invoke internal review-fix phase"
+        "orchestrator must not invoke internal review-fix phase"
     );
 }
 
@@ -2269,7 +2194,7 @@ async fn test_phase_malformed_json_correction_succeeds() {
 }
 
 #[tokio::test]
-async fn test_phase_malformed_json_correction_exhausted_fails_round() {
+async fn test_phase_malformed_json_correction_exhausted_errors_immediately() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
@@ -2299,16 +2224,12 @@ async fn test_phase_malformed_json_correction_exhausted_fails_round() {
         factory,
         correction,
     );
-    // Should fail — phase JSON recovery exhausted retries the round until max_review_rounds
+    // Should fail immediately — no review loop to retry
     let err = fut.await.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("review did not complete"),
-        "expected review failure after correction exhaustion, got: {msg}"
-    );
-    assert!(
         msg.contains("review phase") && msg.contains("malformed JSON"),
-        "expected descriptive parse-failure context in error, got: {msg}"
+        "expected descriptive parse-failure error, got: {msg}"
     );
 }
 
@@ -2354,28 +2275,29 @@ async fn test_aggregator_malformed_json_correction_succeeds() {
 }
 
 #[tokio::test]
-async fn test_aggregator_malformed_json_correction_exhausted_retries_round() {
+async fn test_aggregator_malformed_json_correction_exhausted_errors_immediately() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
     // Aggregator always returns malformed JSON — after correction exhaustion the
-    // orchestrator will `continue` to the next review round. With max_review_rounds=3
-    // and 3 review phases, we need 3 rounds * (3 phases + 1 agg) * 2 corrections = 18
-    // correction responses. But actually, only the aggregator triggers correction,
-    // so we need 3 rounds * 2 retries = 6 correction responses, all invalid.
+    // orchestrator errors immediately (no review loop to retry).
     let factory = MalformedAggregatorFactory {
         agg_stdout: "BROKEN AGG JSON".into(),
     };
-    let mut correction_responses = Vec::new();
-    for _ in 0..6 {
-        correction_responses.push(Ok(RunResult {
+    let correction = MockCorrectionRunner::new(vec![
+        Ok(RunResult {
             exit_code: 0,
             stdout: "still broken".into(),
             stderr: String::new(),
             session_id: Some("sess-agg-456".into()),
-        }));
-    }
-    let correction = MockCorrectionRunner::new(correction_responses);
+        }),
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: "still broken".into(),
+            stderr: String::new(),
+            session_id: Some("sess-agg-456".into()),
+        }),
+    ]);
 
     let (fut, _events) = build_correction_test_orchestrator(
         repo_dir.path(),
@@ -2384,16 +2306,10 @@ async fn test_aggregator_malformed_json_correction_exhausted_retries_round() {
         factory,
         correction,
     );
-    // Aggregator correction exhaustion → `continue` each round → eventually exhausts
-    // all max_review_rounds and hits "review did not complete"
     let err = fut.await.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("review did not complete"),
-        "expected review exhaustion error, got: {msg}"
-    );
-    assert!(
         msg.contains("aggregator malformed JSON"),
-        "expected descriptive parse-failure context in error, got: {msg}"
+        "expected aggregator parse-failure error, got: {msg}"
     );
 }

@@ -74,7 +74,6 @@ implement_timeout = 1800       # Implement phase timeout in seconds (30 min)
 agent_effort = "high"          # Effort level: low, medium, high (Claude/Codex only)
 agent_variant = "high"         # Variant: low, high (OpenCode only)
 agent_timeout_retries = 1      # Retries on agent timeout (resumes session)
-max_review_rounds = 1          # Max review-fix rounds per task
 worktree_setup_script = ".rlph/worktree-setup.sh"  # Script to run after worktree creation (see below)
 ```
 
@@ -138,7 +137,7 @@ Specify one of `--once`, `--continuous`, or `--max-iterations`. `--continuous` a
 1. **Fetch** — Pulls eligible tasks from the configured source (GitHub issues, Linear tickets) filtered by label. Respects dependency ordering so blocked tasks are skipped. Auto-selects when only one task is eligible.
 2. **Worktree** — Creates an isolated git worktree for the task. Runs the worktree setup script if present.
 3. **Implement** — Runs an AI agent to implement the task. Agent output streams to stderr in real time. If the agent times out, `rlph` resumes the session automatically (up to `agent_timeout_retries` times).
-4. **Review** — Parallel multi-phase review: independent agents evaluate correctness, security, and hygiene concurrently, then an aggregator consolidates findings into a verdict. If the verdict is "needs fix", a review-fix agent iterates up to `max_review_rounds`.
+4. **Review** — Parallel multi-phase review: independent agents evaluate correctness, security, and hygiene concurrently, then an aggregator consolidates findings into a verdict. Findings are posted as a PR comment.
 5. **Submit** — Opens a pull request and posts structured review findings as a PR comment with per-finding checkboxes.
 
 ### `rlph review <PR>`

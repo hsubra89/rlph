@@ -24,7 +24,6 @@ fn test_config(source: &str) -> Config {
         implement_timeout: Some(1800),
         agent_effort: Some("high".to_string()),
         agent_variant: None,
-        max_review_rounds: 3,
         agent_timeout_retries: 2,
         review_phases: default_review_phases(),
         review_aggregate: default_review_step("review-aggregate"),
