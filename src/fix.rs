@@ -58,6 +58,9 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     let items = fetch_and_parse_items(pr_number, &*submission)?;
     info!(total = items.len(), "parsed fix items from review comments");
 
+    // Clean up stale 🚀 reactions on already-resolved findings (best-effort)
+    cleanup_stale_rockets(&items, &*submission);
+
     // 2. Collect eligible queued items (respecting dependency ordering)
     let finding_deps = FindingDeps::build(&items);
     let resolved = resolved_finding_ids(&items);
@@ -229,6 +232,9 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
                 continue;
             }
         };
+
+        // Clean up stale 🚀 reactions on already-resolved findings (best-effort)
+        cleanup_stale_rockets(&items, &*shared.submission);
 
         if *shutdown.borrow() {
             info!("shutdown requested after fetch, stopping poll loop");
@@ -716,6 +722,38 @@ async fn run_fix_agent_and_apply(
     update_reactions_and_reply(ctx, submission, &fix_result);
 
     Ok(())
+}
+
+/// Remove stale 🚀 reactions from items that are already resolved (Fixed or WontFix).
+///
+/// When a finding has both 🚀 and 👍/😕, the state is correctly resolved as Fixed/WontFix,
+/// but the 🚀 is never cleaned up since rockets are only removed during active fix processing.
+fn cleanup_stale_rockets(items: &[FixItem], submission: &(impl SubmissionBackend + ?Sized)) {
+    for item in items {
+        if matches!(item.state, FindingState::Fixed | FindingState::WontFix)
+            && !item.rocket_reaction_ids.is_empty()
+        {
+            info!(
+                finding_id = %item.finding.id,
+                comment_id = item.comment_id,
+                rockets = item.rocket_reaction_ids.len(),
+                "cleaning up stale 🚀 reactions on resolved finding"
+            );
+            for reaction_id in &item.rocket_reaction_ids {
+                if let Err(e) =
+                    submission.delete_review_comment_reaction(item.comment_id, *reaction_id)
+                {
+                    warn!(
+                        finding_id = %item.finding.id,
+                        comment_id = item.comment_id,
+                        reaction_id,
+                        error = %e,
+                        "failed to remove stale 🚀 reaction"
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Update reactions on the finding's review comment and post a reply.
