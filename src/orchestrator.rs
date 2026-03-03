@@ -830,11 +830,6 @@ impl<
         if let Some(pr_num) = pr_number
             && !self.config.dry_run
         {
-            // Resolve completed rlph review threads from previous review rounds
-            if let Err(e) = self.submission.resolve_completed_review_threads(pr_num) {
-                warn!(error = %e, "failed to resolve completed review threads");
-            }
-
             if let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body) {
                 warn!(error = %e, "failed to upsert summary review comment");
             }
@@ -857,6 +852,12 @@ impl<
                         warn!(error = %e, "failed to build inline review comments");
                     }
                 }
+            }
+
+            // Resolve old review threads after posting the new review so the
+            // latest findings are visible even if resolution fails.
+            if let Err(e) = self.submission.resolve_completed_review_threads(pr_num) {
+                warn!(error = %e, "failed to resolve completed review threads");
             }
         }
 
