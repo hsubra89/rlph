@@ -174,6 +174,30 @@ fn check_graphql_errors<T>(response: &GraphQLResponse<T>) -> Result<()> {
 // GraphQL I/O
 // ---------------------------------------------------------------------------
 
+/// Run `gh api graphql` with the given args and return the parsed response.
+fn run_gh_graphql<T: serde::de::DeserializeOwned>(args: &[&str]) -> Result<GraphQLResponse<T>> {
+    let output = Command::new("gh")
+        .args(["api", "graphql"])
+        .args(args)
+        .output()
+        .map_err(|e| Error::Submission(format!("failed to run gh api graphql: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Submission(format!(
+            "gh api graphql failed: {stderr}"
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: GraphQLResponse<T> = serde_json::from_str(&stdout)
+        .map_err(|e| Error::Submission(format!("failed to parse GraphQL response: {e}")))?;
+
+    check_graphql_errors(&response)?;
+
+    Ok(response)
+}
+
 /// Resolve all completed rlph-finding review threads on a PR.
 ///
 /// Returns the number of threads resolved.
@@ -214,35 +238,21 @@ pub(crate) fn resolve_completed_threads(owner: &str, repo: &str, pr_number: u32)
 }
 
 fn fetch_review_threads(owner: &str, repo: &str, pr_number: u32) -> Result<Vec<ReviewThreadNode>> {
+    let query_arg = format!("query={REVIEW_THREADS_QUERY}");
+    let owner_arg = format!("owner={owner}");
+    let name_arg = format!("name={repo}");
     let number_arg = format!("number={pr_number}");
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "graphql",
-            "-f",
-            &format!("query={REVIEW_THREADS_QUERY}"),
-            "-f",
-            &format!("owner={owner}"),
-            "-f",
-            &format!("name={repo}"),
-            "-F",
-            &number_arg,
-        ])
-        .output()
-        .map_err(|e| Error::Submission(format!("failed to run gh api graphql: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(Error::Submission(format!(
-            "gh api graphql failed: {stderr}"
-        )));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: GraphQLResponse<ReviewThreadsData> = serde_json::from_str(&stdout)
-        .map_err(|e| Error::Submission(format!("failed to parse GraphQL response: {e}")))?;
-
-    check_graphql_errors(&response)?;
+    let response: GraphQLResponse<ReviewThreadsData> = run_gh_graphql(&[
+        "-f",
+        &query_arg,
+        "-f",
+        &owner_arg,
+        "-f",
+        &name_arg,
+        "-F",
+        &number_arg,
+    ])?;
 
     let threads = response
         .data
@@ -255,32 +265,15 @@ fn fetch_review_threads(owner: &str, repo: &str, pr_number: u32) -> Result<Vec<R
 }
 
 fn resolve_thread(thread_id: &str) -> Result<()> {
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "graphql",
-            "-f",
-            &format!("query={RESOLVE_THREAD_MUTATION}"),
-            "-f",
-            &format!("threadId={thread_id}"),
-        ])
-        .output()
-        .map_err(|e| Error::Submission(format!("failed to run gh api graphql: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(Error::Submission(format!(
-            "gh api graphql resolve thread failed: {stderr}"
-        )));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: GraphQLResponse<serde_json::Value> = serde_json::from_str(&stdout)
-        .map_err(|e| Error::Submission(format!("failed to parse resolve response: {e}")))?;
+    let query_arg = format!("query={RESOLVE_THREAD_MUTATION}");
+    let thread_arg = format!("threadId={thread_id}");
 
     // Response data (isResolved confirmation) intentionally discarded —
     // a successful mutation with no GraphQL errors is sufficient.
-    check_graphql_errors(&response)
+    let _: GraphQLResponse<serde_json::Value> =
+        run_gh_graphql(&["-f", &query_arg, "-f", &thread_arg])?;
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
