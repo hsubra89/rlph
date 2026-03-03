@@ -588,7 +588,7 @@ impl SubmissionBackend for GitHubSubmission {
 
     fn resolve_completed_review_threads(&self, pr_number: u64) -> Result<u32> {
         let (owner, repo) = detect_owner_repo()?;
-        crate::resolve_threads::resolve_completed_threads(&owner, &repo, pr_number)
+        crate::resolve_threads::resolve_completed_threads(&owner, &repo, pr_number as u32)
     }
 }
 

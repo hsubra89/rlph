@@ -177,7 +177,7 @@ fn check_graphql_errors<T>(response: &GraphQLResponse<T>) -> Result<()> {
 /// Resolve all completed rlph-finding review threads on a PR.
 ///
 /// Returns the number of threads resolved.
-pub(crate) fn resolve_completed_threads(owner: &str, repo: &str, pr_number: u64) -> Result<u32> {
+pub(crate) fn resolve_completed_threads(owner: &str, repo: &str, pr_number: u32) -> Result<u32> {
     let threads = fetch_review_threads(owner, repo, pr_number)?;
     let thread_ids = find_completed_rlph_thread_ids(&threads);
 
@@ -213,7 +213,7 @@ pub(crate) fn resolve_completed_threads(owner: &str, repo: &str, pr_number: u64)
     Ok(resolved)
 }
 
-fn fetch_review_threads(owner: &str, repo: &str, pr_number: u64) -> Result<Vec<ReviewThreadNode>> {
+fn fetch_review_threads(owner: &str, repo: &str, pr_number: u32) -> Result<Vec<ReviewThreadNode>> {
     let number_arg = format!("number={pr_number}");
     let output = Command::new("gh")
         .args([
