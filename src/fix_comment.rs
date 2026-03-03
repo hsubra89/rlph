@@ -53,33 +53,36 @@ pub enum FixResultKind {
     WontFix { reason: String },
 }
 
-/// Determine the `FindingState` from a set of reactions on a comment.
+/// Classify reactions on a finding comment in a single pass: determine the
+/// `FindingState` and collect 🚀 reaction IDs.
 ///
 /// Priority: Fixed (👍) and WontFix (😕) take precedence over Queued (🚀).
 /// If both 👍 and 😕 are present, Fixed wins.
-pub fn determine_finding_state(reactions: &[Reaction]) -> FindingState {
-    let has_thumbs_up = reactions.iter().any(|r| r.content == REACTION_THUMBS_UP);
-    let has_confused = reactions.iter().any(|r| r.content == REACTION_CONFUSED);
-    let has_rocket = reactions.iter().any(|r| r.content == REACTION_ROCKET);
+pub fn classify_reactions(reactions: &[Reaction]) -> (FindingState, Vec<u64>) {
+    let mut has_thumbs_up = false;
+    let mut has_confused = false;
+    let mut rocket_ids = Vec::new();
 
-    if has_thumbs_up {
+    for r in reactions {
+        match r.content.as_str() {
+            REACTION_THUMBS_UP => has_thumbs_up = true,
+            REACTION_CONFUSED => has_confused = true,
+            REACTION_ROCKET => rocket_ids.push(r.id),
+            _ => {}
+        }
+    }
+
+    let state = if has_thumbs_up {
         FindingState::Fixed
     } else if has_confused {
         FindingState::WontFix
-    } else if has_rocket {
+    } else if !rocket_ids.is_empty() {
         FindingState::Queued
     } else {
         FindingState::Pending
-    }
-}
+    };
 
-/// Collect 🚀 reaction IDs from a set of reactions.
-pub fn rocket_reaction_ids(reactions: &[Reaction]) -> Vec<u64> {
-    reactions
-        .iter()
-        .filter(|r| r.content == REACTION_ROCKET)
-        .map(|r| r.id)
-        .collect()
+    (state, rocket_ids)
 }
 
 /// Build `FixItem`s from inline review comments and their reactions.
@@ -113,8 +116,7 @@ pub fn build_fix_items_from_review_comments(
 
         let reactions = reactions_map.get(&comment.id).copied().unwrap_or(&[]);
 
-        let state = determine_finding_state(reactions);
-        let rocket_ids = rocket_reaction_ids(reactions);
+        let (state, rocket_ids) = classify_reactions(reactions);
 
         items.push(FixItem {
             finding,
@@ -210,68 +212,80 @@ mod tests {
             .collect()
     }
 
-    // ---- determine_finding_state tests ----
+    // ---- classify_reactions tests ----
 
     #[test]
     fn test_state_pending_when_no_reactions() {
-        assert_eq!(determine_finding_state(&[]), FindingState::Pending);
+        let (state, rocket_ids) = classify_reactions(&[]);
+        assert_eq!(state, FindingState::Pending);
+        assert!(rocket_ids.is_empty());
     }
 
     #[test]
     fn test_state_queued_when_rocket() {
         let reactions = make_reactions(&[("rocket", 1)]);
-        assert_eq!(determine_finding_state(&reactions), FindingState::Queued);
+        let (state, rocket_ids) = classify_reactions(&reactions);
+        assert_eq!(state, FindingState::Queued);
+        assert_eq!(rocket_ids, vec![1]);
     }
 
     #[test]
     fn test_state_fixed_when_check() {
         let reactions = make_reactions(&[("+1", 1)]);
-        assert_eq!(determine_finding_state(&reactions), FindingState::Fixed);
+        let (state, _) = classify_reactions(&reactions);
+        assert_eq!(state, FindingState::Fixed);
     }
 
     #[test]
     fn test_state_wontfix_when_confused() {
         let reactions = make_reactions(&[("confused", 1)]);
-        assert_eq!(determine_finding_state(&reactions), FindingState::WontFix);
+        let (state, _) = classify_reactions(&reactions);
+        assert_eq!(state, FindingState::WontFix);
     }
 
     #[test]
     fn test_state_fixed_takes_precedence_over_rocket() {
         let reactions = make_reactions(&[("rocket", 1), ("+1", 2)]);
-        assert_eq!(determine_finding_state(&reactions), FindingState::Fixed);
+        let (state, rocket_ids) = classify_reactions(&reactions);
+        assert_eq!(state, FindingState::Fixed);
+        assert_eq!(rocket_ids, vec![1]);
     }
 
     #[test]
     fn test_state_wontfix_takes_precedence_over_rocket() {
         let reactions = make_reactions(&[("rocket", 1), ("confused", 2)]);
-        assert_eq!(determine_finding_state(&reactions), FindingState::WontFix);
+        let (state, rocket_ids) = classify_reactions(&reactions);
+        assert_eq!(state, FindingState::WontFix);
+        assert_eq!(rocket_ids, vec![1]);
     }
 
     #[test]
     fn test_state_fixed_takes_precedence_over_confused() {
         let reactions = make_reactions(&[("+1", 1), ("confused", 2)]);
-        assert_eq!(determine_finding_state(&reactions), FindingState::Fixed);
+        let (state, _) = classify_reactions(&reactions);
+        assert_eq!(state, FindingState::Fixed);
     }
 
     #[test]
     fn test_state_ignores_irrelevant_reactions() {
         let reactions = make_reactions(&[("heart", 1), ("eyes", 2)]);
-        assert_eq!(determine_finding_state(&reactions), FindingState::Pending);
+        let (state, rocket_ids) = classify_reactions(&reactions);
+        assert_eq!(state, FindingState::Pending);
+        assert!(rocket_ids.is_empty());
     }
-
-    // ---- rocket_reaction_ids tests ----
 
     #[test]
     fn test_rocket_ids_empty_when_no_rockets() {
         let reactions = make_reactions(&[("heart", 1), ("+1", 2)]);
-        assert!(rocket_reaction_ids(&reactions).is_empty());
+        let (_, rocket_ids) = classify_reactions(&reactions);
+        assert!(rocket_ids.is_empty());
     }
 
     #[test]
     fn test_rocket_ids_collects_all_rocket_reactions() {
         let reactions = make_reactions(&[("rocket", 10), ("heart", 20), ("rocket", 30)]);
-        let ids = rocket_reaction_ids(&reactions);
-        assert_eq!(ids, vec![10, 30]);
+        let (_, rocket_ids) = classify_reactions(&reactions);
+        assert_eq!(rocket_ids, vec![10, 30]);
     }
 
     // ---- build_fix_items_from_review_comments tests ----
