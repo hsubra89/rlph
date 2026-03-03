@@ -18,7 +18,7 @@ const MAX_CONCURRENT_FIXES: usize = 1;
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
 use crate::fix_comment::{
-    FindingState, FixItem, FixResultKind, REACTION_CHECK, REACTION_CONFUSED,
+    FindingState, FixItem, FixResultKind, REACTION_CONFUSED, REACTION_THUMBS_UP,
     build_fix_items_from_review_comments,
 };
 use crate::fix_deps::{FindingDeps, resolved_finding_ids};
@@ -745,7 +745,7 @@ fn update_reactions_and_reply(
     // Add result reaction (best-effort)
     let (reaction, reply_body) = match fix_result {
         FixResultKind::Fixed { commit_message } => {
-            (REACTION_CHECK, format!("Fixed: {commit_message}"))
+            (REACTION_THUMBS_UP, format!("Fixed: {commit_message}"))
         }
         FixResultKind::WontFix { reason } => (REACTION_CONFUSED, format!("Won't fix: {reason}")),
     };

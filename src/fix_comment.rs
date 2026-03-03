@@ -8,7 +8,7 @@ use crate::submission::{PrReviewComment, Reaction};
 
 /// GitHub reaction content strings used for fix workflow signaling.
 pub const REACTION_ROCKET: &str = "rocket";
-pub const REACTION_CHECK: &str = "+1";
+pub const REACTION_THUMBS_UP: &str = "+1";
 pub const REACTION_CONFUSED: &str = "confused";
 
 /// State of a finding derived from reactions on its inline review comment.
@@ -58,11 +58,11 @@ pub enum FixResultKind {
 /// Priority: Fixed (👍) and WontFix (😕) take precedence over Queued (🚀).
 /// If both 👍 and 😕 are present, Fixed wins.
 pub fn determine_finding_state(reactions: &[Reaction]) -> FindingState {
-    let has_check = reactions.iter().any(|r| r.content == REACTION_CHECK);
+    let has_thumbs_up = reactions.iter().any(|r| r.content == REACTION_THUMBS_UP);
     let has_confused = reactions.iter().any(|r| r.content == REACTION_CONFUSED);
     let has_rocket = reactions.iter().any(|r| r.content == REACTION_ROCKET);
 
-    if has_check {
+    if has_thumbs_up {
         FindingState::Fixed
     } else if has_confused {
         FindingState::WontFix
