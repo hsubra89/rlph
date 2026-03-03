@@ -8,10 +8,10 @@ use rlph::config::{Config, ReviewStepConfig};
 use rlph::error::{Error, Result};
 use rlph::fix::{run_fix, run_fix_loop};
 use rlph::orchestrator::CorrectionRunner;
-use rlph::review_schema::{ReviewFinding, render_inline_finding_comment_for_github};
+use rlph::review_schema::ReviewFinding;
 use rlph::runner::{RunResult, RunnerKind};
 use rlph::submission::{PrReviewComment, Reaction, SubmissionBackend, SubmitResult};
-use rlph::test_helpers::make_finding;
+use rlph::test_helpers::{make_finding, make_review_comment};
 use tokio::sync::watch;
 
 use common::{default_test_config, run_git, setup_git_repo};
@@ -33,11 +33,7 @@ fn make_review_comments(findings: &[ReviewFinding]) -> Vec<PrReviewComment> {
     findings
         .iter()
         .enumerate()
-        .map(|(i, f)| PrReviewComment {
-            id: (100 + i) as u64,
-            body: render_inline_finding_comment_for_github(f, &[], None),
-            in_reply_to_id: None,
-        })
+        .map(|(i, f)| make_review_comment((100 + i) as u64, f))
         .collect()
 }
 
