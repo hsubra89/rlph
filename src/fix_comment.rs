@@ -91,9 +91,9 @@ pub fn build_fix_items_from_review_comments(
     comments: &[PrReviewComment],
     reactions_by_comment: &[(u64, Vec<Reaction>)],
 ) -> Vec<FixItem> {
-    let reactions_map: HashMap<u64, &Vec<Reaction>> = reactions_by_comment
+    let reactions_map: HashMap<u64, &[Reaction]> = reactions_by_comment
         .iter()
-        .map(|(id, r)| (*id, r))
+        .map(|(id, r)| (*id, r.as_slice()))
         .collect();
 
     let mut items = Vec::new();
@@ -111,11 +111,7 @@ pub fn build_fix_items_from_review_comments(
             continue;
         };
 
-        let empty_reactions = Vec::new();
-        let reactions = reactions_map
-            .get(&comment.id)
-            .copied()
-            .unwrap_or(&empty_reactions);
+        let reactions = reactions_map.get(&comment.id).copied().unwrap_or(&[]);
 
         let state = determine_finding_state(reactions);
         let rocket_ids = rocket_reaction_ids(reactions);
