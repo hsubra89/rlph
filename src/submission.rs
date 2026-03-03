@@ -91,8 +91,8 @@ impl GitHubSubmission {
 
     /// Check if a PR already exists for the given branch.
     fn find_existing_pr(&self, branch: &str) -> Result<Option<(String, Option<u64>)>> {
-        let output = Command::new("gh")
-            .args([
+        let stdout = run_gh(
+            &[
                 "pr",
                 "list",
                 "--head",
@@ -101,16 +101,9 @@ impl GitHubSubmission {
                 "url,number",
                 "--limit",
                 "1",
-            ])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!("gh pr list failed: {stderr}")));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+            ],
+            "gh pr list",
+        )?;
         let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)
             .map_err(|e| Error::Submission(format!("failed to parse gh output: {e}")))?;
 
@@ -125,8 +118,8 @@ impl GitHubSubmission {
     }
 
     fn find_existing_pr_for_issue_impl(&self, issue_number: u64) -> Result<Option<u64>> {
-        let output = Command::new("gh")
-            .args([
+        let stdout = run_gh(
+            &[
                 "pr",
                 "list",
                 "--state",
@@ -135,16 +128,9 @@ impl GitHubSubmission {
                 "number,body",
                 "--limit",
                 "100",
-            ])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!("gh pr list failed: {stderr}")));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+            ],
+            "gh pr list",
+        )?;
         let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)
             .map_err(|e| Error::Submission(format!("failed to parse gh output: {e}")))?;
 
@@ -168,24 +154,15 @@ impl GitHubSubmission {
     /// Find an existing rlph review comment on a PR, returning its ID if found.
     fn find_review_comment(&self, pr_number: u64) -> Result<Option<u64>> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments");
-        let output = Command::new("gh")
-            .args([
+        let stdout = run_gh(
+            &[
                 "api",
                 &endpoint,
                 "--jq",
                 ".[] | select(.body | contains(\"<!-- rlph-review -->\")) | .id",
-            ])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!(
-                "gh api list comments failed: {stderr}"
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+            ],
+            "gh api list comments",
+        )?;
         // Take the first (most recent won't matter — there should be at most one)
         let comment_id = stdout
             .lines()
@@ -196,23 +173,16 @@ impl GitHubSubmission {
 
     pub fn get_pr_context(&self, pr_number: u64) -> Result<PrContext> {
         let number_str = pr_number.to_string();
-        let output = Command::new("gh")
-            .args([
+        let stdout = run_gh(
+            &[
                 "pr",
                 "view",
                 &number_str,
                 "--json",
                 "number,title,body,url,headRefName,baseRefName",
-            ])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!("gh pr view failed: {stderr}")));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+            ],
+            "gh pr view",
+        )?;
         parse_pr_context_json(&stdout)
             .map_err(|e| Error::Submission(format!("failed to parse gh pr view output: {e}")))
     }
@@ -259,19 +229,13 @@ impl SubmissionBackend for GitHubSubmission {
         }
 
         // Create new PR
-        let output = Command::new("gh")
-            .args([
+        let stdout = run_gh(
+            &[
                 "pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body,
-            ])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!("gh pr create failed: {stderr}")));
-        }
-
-        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            ],
+            "gh pr create",
+        )?;
+        let url = stdout.trim().to_string();
         let number = parse_pr_number_from_url(&url);
         info!(url = %url, "created PR");
         Ok(SubmitResult { url, number })
@@ -285,25 +249,11 @@ impl SubmissionBackend for GitHubSubmission {
         // Try to find an existing rlph review comment
         if let Some(comment_id) = self.find_review_comment(pr_number)? {
             let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}");
-            let output = Command::new("gh")
-                .args([
-                    "api",
-                    &endpoint,
-                    "-X",
-                    "PATCH",
-                    "-f",
-                    &format!("body={body}"),
-                ])
-                .output()
-                .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(Error::Submission(format!(
-                    "gh api PATCH comment failed: {stderr}"
-                )));
-            }
-
+            let body_field = format!("body={body}");
+            run_gh(
+                &["api", &endpoint, "-X", "PATCH", "-f", &body_field],
+                "gh api PATCH comment",
+            )?;
             info!(
                 pr_number = pr_number,
                 comment_id = comment_id,
@@ -311,16 +261,10 @@ impl SubmissionBackend for GitHubSubmission {
             );
         } else {
             let number_str = pr_number.to_string();
-            let output = Command::new("gh")
-                .args(["pr", "comment", &number_str, "--body", body])
-                .output()
-                .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(Error::Submission(format!("gh pr comment failed: {stderr}")));
-            }
-
+            run_gh(
+                &["pr", "comment", &number_str, "--body", body],
+                "gh pr comment",
+            )?;
             info!(pr_number = pr_number, "created review comment on PR");
         }
         Ok(())
@@ -370,20 +314,23 @@ pub(crate) fn detect_default_branch() -> String {
     "main".to_string()
 }
 
-pub(crate) fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
+/// Run `gh` with the given arguments and return stdout on success.
+fn run_gh(args: &[&str], label: &str) -> Result<String> {
     let output = Command::new("gh")
-        .args(["api", endpoint])
+        .args(args)
         .output()
         .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(Error::Submission(format!(
-            "gh api {endpoint} failed: {stderr}"
-        )));
+        return Err(Error::Submission(format!("{label} failed: {stderr}")));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+pub(crate) fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
+    let stdout = run_gh(&["api", endpoint], &format!("gh api {endpoint}"))?;
     serde_json::from_str(&stdout)
         .map_err(|e| Error::Submission(format!("failed to parse gh api response: {e}")))
 }
