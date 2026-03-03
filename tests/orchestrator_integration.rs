@@ -1063,36 +1063,6 @@ async fn test_needs_fix_completes_successfully() {
 }
 
 #[tokio::test]
-async fn test_run_once_needs_fix_runs_single_review() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
-    let task = make_task(42, "Fix bug");
-
-    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
-    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
-    let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
-    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
-
-    let orchestrator = Orchestrator::new(
-        source,
-        MockRunner::new("gh-42"),
-        submission,
-        WorktreeManager::new(
-            repo_dir.path().to_path_buf(),
-            wt_dir.path().to_path_buf(),
-            "main".to_string(),
-        ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
-        PromptEngine::new(None),
-        make_config(true),
-        repo_dir.path().to_path_buf(),
-    )
-    .with_review_factory(NeverApproveReviewFactory);
-
-    // needs_fix verdict completes without error
-    orchestrator.run_once().await.unwrap();
-}
-
-#[tokio::test]
 async fn test_existing_pr_skips_submission() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
