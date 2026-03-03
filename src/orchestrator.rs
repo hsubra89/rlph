@@ -643,7 +643,7 @@ impl<
     ) -> Result<()> {
         self.state_mgr.update_phase("review")?;
 
-        // Report phase names.
+        // Report phase names
         let phase_names: Vec<String> = self
             .config
             .review_phases
