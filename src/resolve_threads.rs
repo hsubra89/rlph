@@ -116,6 +116,10 @@ pub(crate) fn find_completed_rlph_thread_ids(threads: &[ReviewThreadNode]) -> Ve
 // GraphQL queries
 // ---------------------------------------------------------------------------
 
+// NOTE: reviewThreads(first: 100) is not paginated. PRs with >100 review
+// threads may miss completed rlph threads beyond the first page. In practice
+// this limit is unlikely to be hit; if it is, switch to cursor-based pagination
+// (see run_gh_api_paginated for a reference pattern).
 const REVIEW_THREADS_QUERY: &str = r#"
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
