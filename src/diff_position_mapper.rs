@@ -115,9 +115,10 @@ fn finalize_pending_file(file: PendingFile, file_hunks: &mut HashMap<String, Vec
 
 impl DiffPositionMapper {
     pub fn from_diff(diff: &str) -> Result<Self, DiffPositionMapperError> {
-        let diff_header_re = Regex::new(r"^diff --git a/(.+) b/(.+)$").map_err(|e| {
-            DiffPositionMapperError::Parse(format!("invalid diff header regex: {e}"))
-        })?;
+        let diff_header_re =
+            Regex::new(r#"^diff --git "?a/(.+?)"? "?b/(.+?)"?$"#).map_err(|e| {
+                DiffPositionMapperError::Parse(format!("invalid diff header regex: {e}"))
+            })?;
         let hunk_header_re =
             Regex::new(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@").map_err(|e| {
                 DiffPositionMapperError::Parse(format!("invalid hunk header regex: {e}"))
@@ -344,5 +345,19 @@ mod tests {
                 "diff did not contain any parseable file headers".to_string()
             )
         );
+    }
+
+    #[test]
+    fn from_diff_accepts_quoted_diff_headers() {
+        let diff = r#"diff --git "a/src/file with spaces.rs" "b/src/file with spaces.rs"
+@@ -0,0 +1,2 @@
++line 1
++line 2
+"#;
+        let mapper = DiffPositionMapper::from_diff(diff).unwrap();
+        let mapped = mapper.map("src/file with spaces.rs", 2).unwrap();
+        assert_eq!(mapped.file, "src/file with spaces.rs");
+        assert_eq!(mapped.line, 2);
+        assert!(!mapped.used_fallback);
     }
 }
