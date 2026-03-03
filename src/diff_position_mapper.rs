@@ -209,9 +209,7 @@ impl DiffPositionMapper {
             }
         }
 
-        let mapped_line = best_line.ok_or_else(|| {
-            Error::DiffPositionMapper(format!("no mappable lines in diff: {normalized_file}"))
-        })?;
+        let mapped_line = best_line.expect("hunks is non-empty, so best_line is always set");
         Ok(DiffPosition {
             file: normalized_file,
             line: mapped_line,
