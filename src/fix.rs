@@ -405,12 +405,6 @@ fn dep_eligible<'a>(
         }
         eligible.push(item);
     }
-    if dep_blocked > 0 {
-        info!(
-            count = dep_blocked,
-            "items held back waiting for dependencies"
-        );
-    }
     (eligible, dep_blocked)
 }
 
