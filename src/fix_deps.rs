@@ -87,11 +87,7 @@ impl FindingDeps {
     ///
     /// Only returns deps that are in the graph but not yet in `resolved`.
     /// Findings with no dependencies return an empty vec.
-    pub fn unresolved_deps<'a>(
-        &'a self,
-        finding_id: &str,
-        resolved: &HashSet<&str>,
-    ) -> Vec<&'a str> {
+    pub fn unresolved_deps(&self, finding_id: &str, resolved: &HashSet<&str>) -> Vec<&str> {
         let Some(deps) = self.edges.get(finding_id) else {
             return vec![];
         };
