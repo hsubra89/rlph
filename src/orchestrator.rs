@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1040,18 +1039,18 @@ fn build_inline_review_comments(
                     return None;
                 }
             };
-            let dependency_descriptions: Vec<Cow<'_, str>> = finding
+            let dependency_descriptions: Vec<String> = finding
                 .depends_on
                 .iter()
                 .map(|dep_id| {
                     findings_by_id
                         .get(dep_id.as_str())
-                        .map(|dep| Cow::Owned(format!("`{dep_id}`: {}", dep.description)))
-                        .unwrap_or_else(|| Cow::Owned(format!("`{dep_id}`")))
+                        .map(|dep| format!("`{dep_id}`: {}", dep.description))
+                        .unwrap_or_else(|| format!("`{dep_id}`"))
                 })
                 .collect();
             let dependency_descriptions: Vec<&str> =
-                dependency_descriptions.iter().map(|c| c.as_ref()).collect();
+                dependency_descriptions.iter().map(|s| s.as_str()).collect();
 
             let fallback = match mapped.fallback {
                 FallbackKind::Exact => None,
