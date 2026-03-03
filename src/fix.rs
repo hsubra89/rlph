@@ -6,9 +6,6 @@ use std::time::Duration;
 use tokio::sync::{Semaphore, watch};
 use tracing::{info, warn};
 
-/// Reply bodies grouped by their parent review comment ID.
-pub type ReplyMap = HashMap<u64, Vec<String>>;
-
 /// Maximum number of push attempts before giving up (rebase+retry on conflict).
 const MAX_PUSH_ATTEMPTS: u32 = 3;
 
@@ -21,7 +18,7 @@ const MAX_CONCURRENT_FIXES: usize = 1;
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
 use crate::fix_comment::{
-    FindingState, FixItem, FixResultKind, REACTION_CONFUSED, REACTION_THUMBS_UP,
+    FindingState, FixItem, FixResultKind, REACTION_CONFUSED, REACTION_THUMBS_UP, ReplyMap,
     build_fix_items_from_review_comments, collect_reply_bodies, format_review_context,
 };
 use crate::fix_deps::{FindingDeps, resolved_finding_ids};

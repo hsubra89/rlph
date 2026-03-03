@@ -6,6 +6,9 @@ use crate::review_schema::{
 };
 use crate::submission::{PrReviewComment, Reaction};
 
+/// Reply bodies grouped by their parent review comment ID.
+pub type ReplyMap = HashMap<u64, Vec<String>>;
+
 /// GitHub reaction content strings used for fix workflow signaling.
 pub const REACTION_ROCKET: &str = "rocket";
 pub const REACTION_THUMBS_UP: &str = "+1";
@@ -147,8 +150,8 @@ fn extract_finding_from_body(body: &str) -> Option<ReviewFinding> {
 ///
 /// Only comments with `in_reply_to_id` set are considered replies; top-level
 /// comments are ignored.
-pub fn collect_reply_bodies(comments: &[PrReviewComment]) -> HashMap<u64, Vec<String>> {
-    let mut map: HashMap<u64, Vec<String>> = HashMap::new();
+pub fn collect_reply_bodies(comments: &[PrReviewComment]) -> ReplyMap {
+    let mut map: ReplyMap = HashMap::new();
     for c in comments {
         if let Some(parent_id) = c.in_reply_to_id {
             map.entry(parent_id).or_default().push(c.body.clone());
