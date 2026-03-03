@@ -6,9 +6,6 @@ use std::time::Duration;
 use tokio::sync::{Semaphore, watch};
 use tracing::{info, warn};
 
-/// Serializes comment re-fetch + update to prevent concurrent fix agents from racing.
-static COMMENT_UPDATE_LOCK: Semaphore = Semaphore::const_new(1);
-
 /// Maximum number of push attempts before giving up (rebase+retry on conflict).
 const MAX_PUSH_ATTEMPTS: u32 = 3;
 
@@ -20,25 +17,30 @@ const MAX_CONCURRENT_FIXES: usize = 1;
 
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
-use crate::fix_comment::{CheckboxState, FixItem, FixResultKind, parse_fix_items, update_comment};
+use crate::fix_comment::{
+    FindingState, FixItem, FixResultKind, REACTION_CONFUSED, REACTION_THUMBS_UP, ReplyMap,
+    build_fix_items_from_review_comments, collect_reply_bodies, format_review_context,
+};
 use crate::fix_deps::{FindingDeps, resolved_finding_ids};
 use crate::orchestrator::{CorrectionRunner, retry_with_correction};
 use crate::prompts::PromptEngine;
-use crate::review_schema::{SchemaName, StandaloneFixOutput, parse_standalone_fix_output};
+use crate::review_schema::{
+    FINDING_MARKER, SchemaName, StandaloneFixOutput, parse_standalone_fix_output,
+};
 use crate::runner::{AgentRunner, Phase, RunResult, build_runner};
-use crate::submission::{REVIEW_MARKER, SubmissionBackend};
+use crate::submission::{PrReviewComment, Reaction, SubmissionBackend};
 use crate::worktree::{WorktreeManager, git_in_dir, resolve_setup_script, validate_branch_name};
 
-/// Run the standalone fix flow for ALL checked findings on a PR concurrently.
+/// Run the standalone fix flow for ALL 🚀-reacted findings on a PR concurrently.
 ///
 /// Steps:
-/// 1. Fetch review comment, parse checked items
-/// 2. Collect all eligible checked items
+/// 1. Fetch inline review comments and their reactions, parse queued items
+/// 2. Collect all eligible queued items (respecting dependencies)
 /// 3. Spawn a fix agent for each item in parallel (JoinSet)
 ///    - Each gets its own worktree off `origin/<pr-branch>`
 ///    - Parse StandaloneFixOutput JSON (with retry)
 ///    - If fixed: rebase onto `origin/<pr-branch>`, push with retry
-///    - Update review comment checkbox with result
+///    - Update reactions and post reply
 ///    - Clean up worktree
 /// 4. Collect results, log any errors
 pub async fn run_fix<C: CorrectionRunner + 'static>(
@@ -53,29 +55,32 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     // Validate pr_branch from GitHub API at the trust boundary
     validate_branch_name(pr_branch)?;
 
-    // 1. Fetch review comment and parse checked items
-    info!(pr_number, "polling GitHub for PR comments");
-    let (items, _comment_id) = fetch_and_parse_items(pr_number, &*submission, None)?;
-    info!(total = items.len(), "parsed fix items from review comment");
+    // 1. Fetch review comments and reactions, build fix items
+    info!(pr_number, "polling GitHub for PR review comments");
+    let (items, comments) = fetch_and_parse_items(pr_number, &*submission)?;
+    info!(total = items.len(), "parsed fix items from review comments");
 
-    // 2. Collect eligible checked items (respecting dependency ordering)
+    // Clean up stale 🚀 reactions on already-resolved findings (best-effort)
+    cleanup_stale_rockets(&items, &*submission);
+
+    // 2. Collect eligible queued items (respecting dependency ordering)
     let finding_deps = FindingDeps::build(&items);
     let resolved = resolved_finding_ids(&items);
 
-    let (eligible_refs, _dep_blocked) = dep_eligible(
-        items.iter().filter(|i| i.state == CheckboxState::Checked),
+    let (eligible_refs, dep_blocked) = dep_eligible(
+        items.iter().filter(|i| i.state == FindingState::Queued),
         &finding_deps,
         &resolved,
     );
 
     if eligible_refs.is_empty() {
-        info!("no eligible items found — nothing to fix");
+        info!(dep_blocked, "no eligible items found — nothing to fix");
         return Ok(());
     }
 
     info!(
         count = eligible_refs.len(),
-        "found eligible items for parallel fix"
+        dep_blocked, "found eligible items for parallel fix"
     );
 
     // 3. Pre-compute per-item data and spawn into JoinSet
@@ -95,12 +100,18 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 
     let mut join_set = tokio::task::JoinSet::new();
 
+    let mut reply_map = collect_reply_bodies(&comments);
     let mut skipped: usize = 0;
     for item in &eligible_refs {
         let item = (*item).clone();
 
-        let Some(prepared) = prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine)
-        else {
+        let Some(prepared) = prepare_fix_item(
+            item,
+            pr_number,
+            &shared.fix_config,
+            prompt_engine,
+            &mut reply_map,
+        ) else {
             skipped += 1;
             continue;
         };
@@ -153,7 +164,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 
 /// Run the fix command as a continuous polling loop.
 ///
-/// Polls for newly-checked checkboxes every `poll_seconds`, spawns fix agents
+/// Polls for newly 🚀-reacted comments every `poll_seconds`, spawns fix agents
 /// for new items, and tracks in-flight/completed items to avoid re-processing.
 ///
 /// On shutdown signal: stops accepting new tasks, waits for in-flight agents
@@ -192,7 +203,6 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
     let mut completed: HashSet<String> = HashSet::new();
     let mut failed: HashSet<String> = HashSet::new();
     let mut cycle: u64 = 0;
-    let mut cached_comment_id: Option<u64> = None;
     let mut finding_deps: Option<FindingDeps> = None;
 
     loop {
@@ -218,46 +228,49 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             cycle,
             in_flight = in_flight.len(),
             completed = completed.len(),
-            "polling for newly-checked items"
+            "polling for newly 🚀-reacted comments"
         );
-        let (items, comment_id) =
-            match fetch_and_parse_items(pr_number, &*shared.submission, cached_comment_id) {
-                Ok(result) => result,
-                Err(e) => {
-                    warn!(error = %e, cycle, "failed to fetch review comment, retrying next cycle");
-                    cached_comment_id = None;
-                    if wait_or_shutdown(poll_duration, &mut shutdown).await {
-                        break;
-                    }
-                    continue;
+        let (items, comments) = match fetch_and_parse_items(pr_number, &*shared.submission) {
+            Ok(result) => result,
+            Err(e) => {
+                warn!(error = %e, cycle, "failed to fetch review comments, retrying next cycle");
+                if wait_or_shutdown(poll_duration, &mut shutdown).await {
+                    break;
                 }
-            };
-        cached_comment_id = Some(comment_id);
+                continue;
+            }
+        };
+
+        // Clean up stale 🚀 reactions on already-resolved findings (best-effort)
+        cleanup_stale_rockets(&items, &*shared.submission);
 
         if *shutdown.borrow() {
             info!("shutdown requested after fetch, stopping poll loop");
             break;
         }
 
-        // Build dependency graph, rebuilding if item count changed (e.g. comment edited mid-loop)
+        // Build dependency graph, rebuilding if item count changed
         let deps = match &finding_deps {
             Some(existing) if !existing.is_stale(items.len()) => finding_deps.as_ref().unwrap(),
             Some(_) => {
                 warn!(
                     old_count = finding_deps.as_ref().unwrap().item_count(),
                     new_count = items.len(),
-                    "review comment edited: item count changed, rebuilding dependency graph"
+                    "review comments changed: item count changed, rebuilding dependency graph"
                 );
                 finding_deps.insert(FindingDeps::build(&items))
             }
             None => finding_deps.insert(FindingDeps::build(&items)),
         };
-        let resolved = resolved_finding_ids(&items);
+        let mut resolved = resolved_finding_ids(&items);
+        // Union locally completed IDs so dependents unblock even if the ✅
+        // reaction was not persisted to GitHub.
+        resolved.extend(completed.iter().map(String::as_str));
 
-        // Filter: checked AND not already tracked AND deps met
+        // Filter: queued AND not already tracked AND deps met
         let (eligible_refs, dep_blocked) = dep_eligible(
             items.iter().filter(|item| {
-                item.state == CheckboxState::Checked
+                item.state == FindingState::Queued
                     && !in_flight.contains(&item.finding.id)
                     && !completed.contains(&item.finding.id)
                     && !failed.contains(&item.finding.id)
@@ -265,11 +278,11 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             deps,
             &resolved,
         );
-        let newly_checked: Vec<FixItem> = eligible_refs.into_iter().cloned().collect();
+        let newly_queued: Vec<FixItem> = eligible_refs.into_iter().cloned().collect();
 
         info!(
             cycle,
-            newly_checked = newly_checked.len(),
+            newly_queued = newly_queued.len(),
             dep_blocked,
             in_flight = in_flight.len(),
             completed = completed.len(),
@@ -277,29 +290,41 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             "poll cycle summary"
         );
 
-        // Spawn fix agents for newly checked items
+        // Spawn fix agents for newly queued items — build reply map lazily
+        // to avoid cloning every reply body on cycles with no new work.
+        let mut reply_map = if newly_queued.is_empty() {
+            ReplyMap::new()
+        } else {
+            collect_reply_bodies(&comments)
+        };
         let mut skipped: usize = 0;
-        for item in newly_checked {
+        for item in newly_queued {
             let finding_id = item.finding.id.clone();
 
-            let Some(prepared) =
-                prepare_fix_item(item, pr_number, &shared.fix_config, prompt_engine)
-            else {
+            let Some(prepared) = prepare_fix_item(
+                item,
+                pr_number,
+                &shared.fix_config,
+                prompt_engine,
+                &mut reply_map,
+            ) else {
                 failed.insert(finding_id);
                 skipped += 1;
                 continue;
             };
 
             in_flight.insert(finding_id.clone());
-            let finding_id_for_map = finding_id.clone();
 
             let shared = shared.clone();
 
-            let abort_handle = join_set.spawn(async move {
-                let result = acquire_and_run_fix(&shared, prepared, pr_number).await;
-                (finding_id, result)
+            let abort_handle = join_set.spawn({
+                let finding_id = finding_id.clone();
+                async move {
+                    let result = acquire_and_run_fix(&shared, prepared, pr_number).await;
+                    (finding_id, result)
+                }
             });
-            task_finding_ids.insert(abort_handle.id(), finding_id_for_map);
+            task_finding_ids.insert(abort_handle.id(), finding_id);
         }
 
         if skipped > 0 {
@@ -339,36 +364,57 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
     Ok(())
 }
 
-/// Fetch the review comment and parse fix items from it.
+/// Fetch all inline review comments on a PR, check reactions for each that
+/// contains a finding marker, and build `FixItem`s.
 ///
-/// If `cached_comment_id` is `Some`, fetches only that single comment instead
-/// of all PR comments — avoiding redundant API calls on subsequent poll cycles.
-/// Returns the parsed items and the comment ID for caching.
-fn fetch_and_parse_items(
+/// Returns the raw comments alongside the fix items so callers can build
+/// reply maps lazily — only when there are newly-queued items to process.
+pub fn fetch_and_parse_items(
     pr_number: u64,
     submission: &(impl SubmissionBackend + ?Sized),
-    cached_comment_id: Option<u64>,
-) -> Result<(Vec<FixItem>, u64)> {
-    if let Some(comment_id) = cached_comment_id {
-        let comment = submission.fetch_comment_by_id(comment_id)?;
-        return Ok((parse_fix_items(&comment.body), comment_id));
-    }
+) -> Result<(Vec<FixItem>, Vec<PrReviewComment>)> {
+    let comments = submission.fetch_pr_review_comments(pr_number)?;
 
-    let comments = submission.fetch_pr_comments(pr_number)?;
-    let review_comment = comments
+    // Only fetch reactions for comments that contain the finding marker
+    let finding_comments: Vec<_> = comments
         .iter()
-        .find(|c| c.body.contains(REVIEW_MARKER))
-        .ok_or_else(|| {
-            Error::Orchestrator(format!("no rlph review comment found on PR #{pr_number}"))
-        })?;
-    let comment_id = review_comment.id;
-    Ok((parse_fix_items(&review_comment.body), comment_id))
+        .filter(|c| c.in_reply_to_id.is_none() && c.body.contains(FINDING_MARKER))
+        .collect();
+
+    // Fetch reactions in parallel across threads
+    let reactions_by_comment: Vec<Result<(u64, Vec<Reaction>)>> = std::thread::scope(|s| {
+        let handles: Vec<_> = finding_comments
+            .iter()
+            .map(|comment| {
+                let id = comment.id;
+                s.spawn(move || {
+                    submission
+                        .list_review_comment_reactions(id)
+                        .map(|reactions| (id, reactions))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .map_err(|_| Error::Submission("reaction-fetch thread panicked".into()))?
+            })
+            .collect()
+    });
+
+    let collected: Vec<_> = reactions_by_comment.into_iter().collect::<Result<_>>()?;
+
+    Ok((
+        build_fix_items_from_review_comments(&comments, &collected),
+        comments,
+    ))
 }
 
 /// Filter pre-screened items through the dependency gate.
 ///
 /// Accepts an iterator of items that already passed caller-specific checks
-/// (e.g. `Checked` state, not already in-flight). Returns the dep-eligible
+/// (e.g. `Queued` state, not already in-flight). Returns the dep-eligible
 /// subset and a count of items held back by unmet dependencies.
 fn dep_eligible<'a>(
     items: impl Iterator<Item = &'a FixItem>,
@@ -386,12 +432,6 @@ fn dep_eligible<'a>(
             continue;
         }
         eligible.push(item);
-    }
-    if dep_blocked > 0 {
-        info!(
-            count = dep_blocked,
-            "items held back waiting for dependencies"
-        );
     }
     (eligible, dep_blocked)
 }
@@ -420,13 +460,11 @@ fn handle_join_result(
     match result {
         Ok((finding_id, Ok(()))) => {
             info!(%finding_id, "fix completed");
-            task_finding_ids.retain(|_, v| v != &finding_id);
             in_flight.remove(&finding_id);
             completed.insert(finding_id);
         }
         Ok((finding_id, Err(e))) => {
             warn!(%finding_id, error = %e, "fix failed");
-            task_finding_ids.retain(|_, v| v != &finding_id);
             in_flight.remove(&finding_id);
             failed.insert(finding_id);
         }
@@ -462,7 +500,7 @@ pub(crate) async fn wait_or_shutdown(
     }
 }
 
-/// Run a single fix: create worktree, run agent, push, update comment, cleanup.
+/// Run a single fix: create worktree, run agent, push, update reactions, cleanup.
 async fn run_single_fix(
     ctx: FixContext<'_>,
     worktree_dir: &str,
@@ -571,6 +609,10 @@ struct PreparedFixItem {
     item: FixItem,
     fix_branch: String,
     prompt: String,
+    /// The GitHub review comment ID (for re-fetching fresh body at execution time).
+    comment_id: u64,
+    /// Reply bodies collected from the review thread.
+    replies: Vec<String>,
 }
 
 /// Validate branch name, render the prompt, and log the spawn.
@@ -582,6 +624,7 @@ fn prepare_fix_item(
     pr_number: u64,
     fix_config: &ReviewStepConfig,
     prompt_engine: &PromptEngine,
+    reply_map: &mut ReplyMap,
 ) -> Option<PreparedFixItem> {
     let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
     if let Err(e) = validate_branch_name(&fix_branch) {
@@ -606,10 +649,15 @@ fn prepare_fix_item(
         "prepared fix item"
     );
 
+    let comment_id = item.comment_id;
+    let replies = reply_map.remove(&comment_id).unwrap_or_default();
+
     Some(PreparedFixItem {
         item,
         fix_branch,
         prompt,
+        comment_id,
+        replies,
     })
 }
 
@@ -629,8 +677,25 @@ async fn acquire_and_run_fix<S: SubmissionBackend, C: CorrectionRunner>(
     let PreparedFixItem {
         item,
         fix_branch,
-        prompt,
+        mut prompt,
+        comment_id,
+        replies,
     } = prepared;
+
+    // Re-fetch the comment body at execution time for the freshest content
+    match shared.submission.fetch_review_comment_by_id(comment_id) {
+        Ok(comment) => {
+            prompt.push_str(&format_review_context(&comment.body, &replies));
+        }
+        Err(e) => {
+            warn!(
+                comment_id,
+                error = %e,
+                "failed to re-fetch review comment body, proceeding without review context"
+            );
+        }
+    }
+
     let ctx = FixContext {
         item,
         pr_number,
@@ -651,7 +716,7 @@ async fn acquire_and_run_fix<S: SubmissionBackend, C: CorrectionRunner>(
     .await
 }
 
-/// Inner function: spawn agent, parse output, rebase/push with retry, update comment.
+/// Inner function: spawn agent, parse output, rebase/push with retry, update reactions + reply.
 async fn run_fix_agent_and_apply(
     ctx: &FixContext<'_>,
     worktree_path: &Path,
@@ -684,47 +749,123 @@ async fn run_fix_agent_and_apply(
 
     info!(finding_id = %ctx.item.finding.id, ?fix_output, "fix agent completed");
 
-    // Apply result and update comment
+    // Apply result
     let fix_result = match fix_output {
         StandaloneFixOutput::Fixed { commit_message } => {
             info!(finding_id = %ctx.item.finding.id, commit_message, "fix applied — rebasing and pushing");
             push_to_pr_branch_with_retry(worktree_path, ctx.fix_branch, ctx.pr_branch).await?;
-            FixResultKind::Fixed {
-                commit_message: commit_message.clone(),
-            }
+            FixResultKind::Fixed { commit_message }
         }
         StandaloneFixOutput::WontFix { reason } => {
             info!(finding_id = %ctx.item.finding.id, reason, "finding marked as won't fix");
-            FixResultKind::WontFix {
-                reason: reason.clone(),
-            }
+            FixResultKind::WontFix { reason }
         }
     };
 
-    // Re-fetch and update review comment under lock to avoid racing with concurrent fix agents
-    let _permit = COMMENT_UPDATE_LOCK
-        .acquire()
-        .await
-        .expect("comment update semaphore closed unexpectedly");
-
-    info!(pr_number = ctx.pr_number, finding_id = %ctx.item.finding.id, "polling GitHub to re-fetch review comment");
-    let comments = submission.fetch_pr_comments(ctx.pr_number)?;
-    let fresh_body = comments
-        .iter()
-        .find(|c| c.body.contains(REVIEW_MARKER))
-        .map(|c| c.body.as_str())
-        .ok_or_else(|| {
-            Error::Orchestrator(format!(
-                "review comment disappeared from PR #{}",
-                ctx.pr_number
-            ))
-        })?;
-
-    let updated_body = update_comment(fresh_body, &ctx.item.finding.id, &fix_result);
-    info!(pr_number = ctx.pr_number, finding_id = %ctx.item.finding.id, "updating review comment");
-    submission.upsert_review_comment(ctx.pr_number, &updated_body)?;
+    // Update reactions and post reply (best-effort — don't fail on already-pushed code)
+    update_reactions_and_reply(ctx, submission, &fix_result);
 
     Ok(())
+}
+
+/// Remove 🚀 reactions from a single review comment (best-effort).
+fn remove_rocket_reactions(
+    finding_id: &str,
+    comment_id: u64,
+    rocket_reaction_ids: &[u64],
+    submission: &(impl SubmissionBackend + ?Sized),
+) {
+    for reaction_id in rocket_reaction_ids {
+        if let Err(e) = submission.delete_review_comment_reaction(comment_id, *reaction_id) {
+            warn!(
+                finding_id, comment_id, reaction_id,
+                error = %e,
+                "failed to remove 🚀 reaction"
+            );
+        }
+    }
+}
+
+/// Remove stale 🚀 reactions from items that are already resolved (Fixed or WontFix).
+///
+/// When a finding has both 🚀 and 👍/😕, the state is correctly resolved as Fixed/WontFix,
+/// but the 🚀 is never cleaned up since rockets are only removed during active fix processing.
+fn cleanup_stale_rockets(items: &[FixItem], submission: &(impl SubmissionBackend + ?Sized)) {
+    for item in items {
+        if matches!(item.state, FindingState::Fixed | FindingState::WontFix)
+            && !item.rocket_reaction_ids.is_empty()
+        {
+            info!(
+                finding_id = %item.finding.id,
+                comment_id = item.comment_id,
+                rockets = item.rocket_reaction_ids.len(),
+                "cleaning up stale 🚀 reactions on resolved finding"
+            );
+            remove_rocket_reactions(
+                &item.finding.id,
+                item.comment_id,
+                &item.rocket_reaction_ids,
+                submission,
+            );
+        }
+    }
+}
+
+/// Update reactions on the finding's review comment and post a reply.
+///
+/// - Add 👍 (fixed) or 😕 (won't fix)
+/// - Post a reply with details
+/// - Remove all 🚀 reactions
+///
+/// The outcome emoji and reply are added before removing 🚀 so that observers
+/// always see the result before the queuing signal disappears.
+fn update_reactions_and_reply(
+    ctx: &FixContext<'_>,
+    submission: &(impl SubmissionBackend + ?Sized),
+    fix_result: &FixResultKind,
+) {
+    let comment_id = ctx.item.comment_id;
+    let finding_id = &ctx.item.finding.id;
+
+    // Add result reaction (best-effort)
+    let (reaction, reply_body) = match fix_result {
+        FixResultKind::Fixed { commit_message } => {
+            (REACTION_THUMBS_UP, format!("Fixed: {commit_message}"))
+        }
+        FixResultKind::WontFix { reason } => (REACTION_CONFUSED, format!("Won't fix: {reason}")),
+    };
+
+    if let Err(e) = submission.add_review_comment_reaction(comment_id, reaction) {
+        warn!(
+            %finding_id, comment_id, reaction,
+            error = %e,
+            "failed to add result reaction"
+        );
+    }
+
+    // Post reply (best-effort)
+    info!(
+        pr_number = ctx.pr_number,
+        %finding_id,
+        comment_id,
+        "posting fix reply to review comment"
+    );
+    if let Err(e) = submission.reply_to_review_comment(ctx.pr_number, comment_id, &reply_body) {
+        warn!(
+            %finding_id, comment_id,
+            error = %e,
+            "failed to post fix reply"
+        );
+    }
+
+    // Remove all 🚀 reactions (best-effort) — done last so the outcome is visible
+    // before the queuing signal disappears.
+    remove_rocket_reactions(
+        finding_id,
+        comment_id,
+        &ctx.item.rocket_reaction_ids,
+        submission,
+    );
 }
 
 /// Parse fix output with up to 2 retries via session resume.
@@ -852,9 +993,11 @@ async fn push_to_pr_branch_with_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fix_comment::{FindingState, build_fix_items_from_review_comments};
     use crate::fix_deps::{FindingDeps, resolved_finding_ids};
-    use crate::review_schema::render_findings_for_github;
-    use crate::test_helpers::{make_finding, make_finding_with_deps};
+    use crate::test_helpers::{
+        make_finding, make_finding_with_deps, make_reactions, make_review_comment,
+    };
 
     #[test]
     fn test_fix_branch_name_is_valid() {
@@ -905,60 +1048,23 @@ mod tests {
     }
 
     #[test]
-    fn test_update_comment_after_fixed() {
-        let finding = make_finding("bug-1");
-        let comment = render_findings_for_github(&[finding], "Summary.");
-        let comment = comment.replace("- [ ] ", "- [x] ");
+    fn test_eligible_item_selection_with_reactions() {
+        let findings = [make_finding("a"), make_finding("b"), make_finding("c")];
+        let c1 = make_review_comment(100, &findings[0]);
+        let c2 = make_review_comment(200, &findings[1]);
+        let c3 = make_review_comment(300, &findings[2]);
 
-        let updated = update_comment(
-            &comment,
-            "bug-1",
-            &FixResultKind::Fixed {
-                commit_message: "bug-1: fixed the bug".to_string(),
-            },
-        );
+        // Only "b" has a 🚀 reaction
+        let reactions = vec![
+            (100u64, vec![]),
+            (200u64, make_reactions(&[("rocket", 1)])),
+            (300u64, vec![]),
+        ];
 
-        assert!(updated.contains("✅"));
-        assert!(updated.contains("> Fixed: bug-1: fixed the bug"));
-        assert!(!updated.contains("- [x]"));
-    }
-
-    #[test]
-    fn test_update_comment_after_wont_fix() {
-        let finding = make_finding("nit-1");
-        let comment = render_findings_for_github(&[finding], "Summary.");
-        let comment = comment.replace("- [ ] ", "- [x] ");
-
-        let updated = update_comment(
-            &comment,
-            "nit-1",
-            &FixResultKind::WontFix {
-                reason: "false positive".to_string(),
-            },
-        );
-
-        assert!(updated.contains("\u{1F635}"));
-        assert!(updated.contains("> Won't fix: false positive"));
-    }
-
-    #[test]
-    fn test_eligible_item_selection() {
-        let findings = vec![make_finding("a"), make_finding("b"), make_finding("c")];
-        let comment = render_findings_for_github(&findings, "Summary.");
-
-        // Check only "b"
-        let mut lines: Vec<String> = comment.lines().map(String::from).collect();
-        for line in &mut lines {
-            if line.contains("b description") {
-                *line = line.replace("- [ ] ", "- [x] ");
-            }
-        }
-        let comment = lines.join("\n");
-
-        let items = parse_fix_items(&comment);
+        let items = build_fix_items_from_review_comments(&[c1, c2, c3], &reactions);
         let eligible: Vec<_> = items
             .iter()
-            .filter(|item| item.state == CheckboxState::Checked)
+            .filter(|item| item.state == FindingState::Queued)
             .collect();
 
         assert_eq!(eligible.len(), 1);
@@ -967,22 +1073,22 @@ mod tests {
 
     #[test]
     fn test_multiple_eligible_items() {
-        let findings = vec![make_finding("a"), make_finding("b"), make_finding("c")];
-        let comment = render_findings_for_github(&findings, "Summary.");
+        let findings = [make_finding("a"), make_finding("b"), make_finding("c")];
+        let c1 = make_review_comment(100, &findings[0]);
+        let c2 = make_review_comment(200, &findings[1]);
+        let c3 = make_review_comment(300, &findings[2]);
 
-        // Check "a" and "c"
-        let mut lines: Vec<String> = comment.lines().map(String::from).collect();
-        for line in &mut lines {
-            if line.contains("a description") || line.contains("c description") {
-                *line = line.replace("- [ ] ", "- [x] ");
-            }
-        }
-        let comment = lines.join("\n");
+        // "a" and "c" have 🚀 reactions
+        let reactions = vec![
+            (100u64, make_reactions(&[("rocket", 1)])),
+            (200u64, vec![]),
+            (300u64, make_reactions(&[("rocket", 2)])),
+        ];
 
-        let items = parse_fix_items(&comment);
+        let items = build_fix_items_from_review_comments(&[c1, c2, c3], &reactions);
         let eligible: Vec<_> = items
             .iter()
-            .filter(|item| item.state == CheckboxState::Checked)
+            .filter(|item| item.state == FindingState::Queued)
             .collect();
 
         assert_eq!(eligible.len(), 2);
@@ -992,13 +1098,14 @@ mod tests {
 
     #[test]
     fn test_no_eligible_items() {
-        let findings = vec![make_finding("a")];
-        let comment = render_findings_for_github(&findings, "Summary.");
+        let findings = [make_finding("a")];
+        let c1 = make_review_comment(100, &findings[0]);
 
-        let items = parse_fix_items(&comment);
+        // No reactions
+        let items = build_fix_items_from_review_comments(&[c1], &[]);
         let eligible: Vec<_> = items
             .iter()
-            .filter(|item| item.state == CheckboxState::Checked)
+            .filter(|item| item.state == FindingState::Queued)
             .collect();
 
         assert!(eligible.is_empty());
@@ -1006,68 +1113,59 @@ mod tests {
 
     #[test]
     fn test_already_fixed_items_not_eligible() {
-        let findings = vec![make_finding("a")];
-        let comment = render_findings_for_github(&findings, "Summary.");
-        let comment = comment.replace("- [ ] ", "- ✅ ");
+        let findings = [make_finding("a")];
+        let c1 = make_review_comment(100, &findings[0]);
 
-        let items = parse_fix_items(&comment);
+        // Has 👍 (fixed) — not eligible
+        let reactions = vec![(100u64, make_reactions(&[("+1", 1)]))];
+
+        let items = build_fix_items_from_review_comments(&[c1], &reactions);
         let eligible: Vec<_> = items
             .iter()
-            .filter(|item| item.state == CheckboxState::Checked)
+            .filter(|item| item.state == FindingState::Queued)
             .collect();
 
         assert!(eligible.is_empty());
+        assert_eq!(items[0].state, FindingState::Fixed);
     }
 
     // --- Dependency-aware eligibility tests ---
 
-    /// Helper: render findings to a comment, apply state changes, and parse back.
-    fn render_and_parse(findings: &[crate::review_schema::ReviewFinding]) -> String {
-        render_findings_for_github(findings, "Summary.")
-    }
-
-    /// Apply a state change to a specific finding in the rendered comment.
-    fn set_state(comment: &str, finding_id: &str, old: &str, new: &str) -> String {
-        let target = format!("{finding_id} description");
-        comment
-            .lines()
-            .map(|line| {
-                if line.contains(&target) {
-                    line.replace(old, new)
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     #[test]
-    fn test_dependent_item_blocked_when_dep_unchecked() {
-        let findings = vec![make_finding("a"), make_finding_with_deps("b", &["a"])];
-        let comment = render_and_parse(&findings);
-        // Check both a and b
-        let comment = comment.replace("- [ ] ", "- [x] ");
-        let items = parse_fix_items(&comment);
+    fn test_dependent_item_blocked_when_dep_queued() {
+        let findings = [make_finding("a"), make_finding_with_deps("b", &["a"])];
+        let c1 = make_review_comment(100, &findings[0]);
+        let c2 = make_review_comment(200, &findings[1]);
 
+        // Both have 🚀
+        let reactions = vec![
+            (100u64, make_reactions(&[("rocket", 1)])),
+            (200u64, make_reactions(&[("rocket", 2)])),
+        ];
+
+        let items = build_fix_items_from_review_comments(&[c1, c2], &reactions);
         let deps = FindingDeps::build(&items);
         let resolved = resolved_finding_ids(&items);
 
         // a has no deps → eligible
         assert!(deps.deps_met("a", &resolved));
-        // b depends on a which is Checked (not Fixed) → blocked
+        // b depends on a which is Queued (not Fixed) → blocked
         assert!(!deps.deps_met("b", &resolved));
     }
 
     #[test]
     fn test_dependent_item_unblocked_when_dep_fixed() {
-        let findings = vec![make_finding("a"), make_finding_with_deps("b", &["a"])];
-        let comment = render_and_parse(&findings);
-        // a is fixed, b is checked
-        let comment = set_state(&comment, "a", "- [ ] ", "- ✅ ");
-        let comment = set_state(&comment, "b", "- [ ] ", "- [x] ");
-        let items = parse_fix_items(&comment);
+        let findings = [make_finding("a"), make_finding_with_deps("b", &["a"])];
+        let c1 = make_review_comment(100, &findings[0]);
+        let c2 = make_review_comment(200, &findings[1]);
 
+        // a has 👍 (fixed), b has 🚀
+        let reactions = vec![
+            (100u64, make_reactions(&[("+1", 1)])),
+            (200u64, make_reactions(&[("rocket", 2)])),
+        ];
+
+        let items = build_fix_items_from_review_comments(&[c1, c2], &reactions);
         let deps = FindingDeps::build(&items);
         let resolved = resolved_finding_ids(&items);
 
@@ -1076,13 +1174,17 @@ mod tests {
 
     #[test]
     fn test_dependent_item_unblocked_when_dep_wontfix() {
-        let findings = vec![make_finding("a"), make_finding_with_deps("b", &["a"])];
-        let comment = render_and_parse(&findings);
-        // a is wontfix, b is checked
-        let comment = set_state(&comment, "a", "- [ ] ", "- \u{1F635} ");
-        let comment = set_state(&comment, "b", "- [ ] ", "- [x] ");
-        let items = parse_fix_items(&comment);
+        let findings = [make_finding("a"), make_finding_with_deps("b", &["a"])];
+        let c1 = make_review_comment(100, &findings[0]);
+        let c2 = make_review_comment(200, &findings[1]);
 
+        // a has 😕 (wontfix), b has 🚀
+        let reactions = vec![
+            (100u64, make_reactions(&[("confused", 1)])),
+            (200u64, make_reactions(&[("rocket", 2)])),
+        ];
+
+        let items = build_fix_items_from_review_comments(&[c1, c2], &reactions);
         let deps = FindingDeps::build(&items);
         let resolved = resolved_finding_ids(&items);
 
@@ -1090,31 +1192,44 @@ mod tests {
     }
 
     #[test]
-    fn test_circular_deps_detected_in_rendered_comment() {
-        let findings = vec![
+    fn test_circular_deps_detected() {
+        let findings = [
             make_finding_with_deps("a", &["b"]),
             make_finding_with_deps("b", &["a"]),
         ];
-        let comment = render_and_parse(&findings);
-        let comment = comment.replace("- [ ] ", "- [x] ");
-        let items = parse_fix_items(&comment);
+        let c1 = make_review_comment(100, &findings[0]);
+        let c2 = make_review_comment(200, &findings[1]);
 
+        let reactions = vec![
+            (100u64, make_reactions(&[("rocket", 1)])),
+            (200u64, make_reactions(&[("rocket", 2)])),
+        ];
+
+        let items = build_fix_items_from_review_comments(&[c1, c2], &reactions);
         let deps = FindingDeps::build(&items);
         assert!(deps.in_cycle("a"));
         assert!(deps.in_cycle("b"));
     }
 
     #[test]
-    fn test_dep_chain_through_rendered_comment() {
-        let findings = vec![
+    fn test_dep_chain() {
+        let findings = [
             make_finding("a"),
             make_finding_with_deps("b", &["a"]),
             make_finding_with_deps("c", &["b"]),
         ];
-        let comment = render_and_parse(&findings);
-        let comment = comment.replace("- [ ] ", "- [x] ");
-        let items = parse_fix_items(&comment);
+        let c1 = make_review_comment(100, &findings[0]);
+        let c2 = make_review_comment(200, &findings[1]);
+        let c3 = make_review_comment(300, &findings[2]);
 
+        // All queued
+        let reactions = vec![
+            (100u64, make_reactions(&[("rocket", 1)])),
+            (200u64, make_reactions(&[("rocket", 2)])),
+            (300u64, make_reactions(&[("rocket", 3)])),
+        ];
+
+        let items = build_fix_items_from_review_comments(&[c1, c2, c3], &reactions);
         let deps = FindingDeps::build(&items);
         let resolved = resolved_finding_ids(&items);
 
@@ -1124,10 +1239,20 @@ mod tests {
         assert!(!deps.deps_met("c", &resolved));
 
         // After a is fixed: b eligible, c still blocked
-        let comment2 = set_state(&render_and_parse(&findings), "a", "- [ ] ", "- ✅ ");
-        let comment2 = set_state(&comment2, "b", "- [ ] ", "- [x] ");
-        let comment2 = set_state(&comment2, "c", "- [ ] ", "- [x] ");
-        let items2 = parse_fix_items(&comment2);
+        let findings2 = [
+            make_finding("a"),
+            make_finding_with_deps("b", &["a"]),
+            make_finding_with_deps("c", &["b"]),
+        ];
+        let d1 = make_review_comment(100, &findings2[0]);
+        let d2 = make_review_comment(200, &findings2[1]);
+        let d3 = make_review_comment(300, &findings2[2]);
+        let reactions2 = vec![
+            (100u64, make_reactions(&[("+1", 10)])),    // a fixed
+            (200u64, make_reactions(&[("rocket", 2)])), // b queued
+            (300u64, make_reactions(&[("rocket", 3)])), // c queued
+        ];
+        let items2 = build_fix_items_from_review_comments(&[d1, d2, d3], &reactions2);
         let resolved2 = resolved_finding_ids(&items2);
 
         assert!(deps.deps_met("b", &resolved2));
@@ -1136,12 +1261,12 @@ mod tests {
 
     #[test]
     fn test_unknown_dep_does_not_block() {
-        // Finding references a dependency not present in the comment
-        let findings = vec![make_finding_with_deps("a", &["nonexistent"])];
-        let comment = render_and_parse(&findings);
-        let comment = comment.replace("- [ ] ", "- [x] ");
-        let items = parse_fix_items(&comment);
+        let findings = [make_finding_with_deps("a", &["nonexistent"])];
+        let c1 = make_review_comment(100, &findings[0]);
 
+        let reactions = vec![(100u64, make_reactions(&[("rocket", 1)]))];
+
+        let items = build_fix_items_from_review_comments(&[c1], &reactions);
         let deps = FindingDeps::build(&items);
         let resolved = resolved_finding_ids(&items);
 

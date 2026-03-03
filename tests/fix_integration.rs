@@ -1,20 +1,17 @@
 mod common;
 
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rlph::config::{Config, ReviewStepConfig};
 use rlph::error::{Error, Result};
 use rlph::fix::{run_fix, run_fix_loop};
 use rlph::orchestrator::CorrectionRunner;
-use rlph::review_schema::{ReviewFinding, render_findings_for_github};
+use rlph::review_schema::ReviewFinding;
 use rlph::runner::{RunResult, RunnerKind};
-use rlph::submission::{
-    InlineReviewComment, PrComment, PullRequestReviewEvent, REVIEW_MARKER, SubmissionBackend,
-    SubmitResult,
-};
-use rlph::test_helpers::make_finding;
+use rlph::submission::{PrReviewComment, Reaction, SubmissionBackend, SubmitResult};
+use rlph::test_helpers::{make_finding, make_review_comment};
 use tokio::sync::watch;
 
 use common::{default_test_config, run_git, setup_git_repo};
@@ -31,37 +28,38 @@ fn create_pr_branch(repo: &Path, branch: &str) {
 
 // --- Mocks ---
 
-/// Build a review comment with specific findings checked, including the rlph marker.
-fn make_review_comment(findings: &[ReviewFinding], checked_ids: &[&str]) -> String {
-    let mut body = format!(
-        "{REVIEW_MARKER}\n{}",
-        render_findings_for_github(findings, "Test review summary.")
-    );
-    for id in checked_ids {
-        let lines: Vec<String> = body
-            .lines()
-            .map(|line| {
-                if line.contains(&format!("{id} description")) {
-                    line.replace("- [ ] ", "- [x] ")
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect();
-        body = lines.join("\n");
-    }
-    body
+/// Build PrReviewComments from findings, assigning sequential IDs starting at 100.
+fn make_review_comments(findings: &[ReviewFinding]) -> Vec<PrReviewComment> {
+    findings
+        .iter()
+        .enumerate()
+        .map(|(i, f)| make_review_comment((100 + i) as u64, f))
+        .collect()
 }
 
-/// Create a PrComment from a body string for testing.
-fn make_pr_comment(body: &str) -> PrComment {
-    let json = serde_json::json!({
-        "id": 1,
-        "body": body,
-        "created_at": "2025-01-01T00:00:00Z",
-        "author_association": "OWNER"
-    });
-    serde_json::from_value(json).unwrap()
+/// Build reactions for a comment: rocket reactions for "queued" items.
+fn rocket_reactions(comment_id: u64) -> (u64, Vec<Reaction>) {
+    (
+        comment_id,
+        vec![Reaction {
+            id: comment_id * 1000 + 1,
+            content: "rocket".to_string(),
+        }],
+    )
+}
+
+fn fixed_reactions(comment_id: u64) -> (u64, Vec<Reaction>) {
+    (
+        comment_id,
+        vec![Reaction {
+            id: comment_id * 1000 + 2,
+            content: "+1".to_string(),
+        }],
+    )
+}
+
+fn no_reactions(comment_id: u64) -> (u64, Vec<Reaction>) {
+    (comment_id, vec![])
 }
 
 fn make_fix_step_config(agent_binary: String) -> ReviewStepConfig {
@@ -83,26 +81,45 @@ fn make_config() -> Config {
     }
 }
 
-/// Mock submission that returns a configurable review comment and tracks updates.
+/// Mock submission with reaction-based fix workflow.
+///
+/// Stores review comments and their reactions. Tracks reaction additions/removals
+/// and reply posts.
 struct MockFixSubmission {
-    comment_body: Mutex<String>,
-    upsert_calls: Mutex<Vec<String>>,
+    review_comments: Mutex<Vec<PrReviewComment>>,
+    reactions: Mutex<Vec<(u64, Vec<Reaction>)>>,
+    added_reactions: Mutex<Vec<(u64, String)>>,
+    deleted_reactions: Mutex<Vec<(u64, u64)>>,
+    replies: Mutex<Vec<(u64, u64, String)>>,
+    next_reaction_id: AtomicU64,
 }
 
 impl MockFixSubmission {
-    fn new(initial_comment: String) -> Self {
+    fn new(comments: Vec<PrReviewComment>, reactions: Vec<(u64, Vec<Reaction>)>) -> Self {
         Self {
-            comment_body: Mutex::new(initial_comment),
-            upsert_calls: Mutex::new(Vec::new()),
+            review_comments: Mutex::new(comments),
+            reactions: Mutex::new(reactions),
+            added_reactions: Mutex::new(Vec::new()),
+            deleted_reactions: Mutex::new(Vec::new()),
+            replies: Mutex::new(Vec::new()),
+            next_reaction_id: AtomicU64::new(9000),
         }
     }
 
-    fn get_comment_body(&self) -> String {
-        self.comment_body.lock().unwrap().clone()
+    fn added_reaction_count(&self) -> usize {
+        self.added_reactions.lock().unwrap().len()
     }
 
-    fn upsert_count(&self) -> usize {
-        self.upsert_calls.lock().unwrap().len()
+    fn deleted_reaction_count(&self) -> usize {
+        self.deleted_reactions.lock().unwrap().len()
+    }
+
+    fn reply_count(&self) -> usize {
+        self.replies.lock().unwrap().len()
+    }
+
+    fn added_reactions(&self) -> Vec<(u64, String)> {
+        self.added_reactions.lock().unwrap().clone()
     }
 }
 
@@ -111,37 +128,75 @@ impl SubmissionBackend for MockFixSubmission {
         unimplemented!("submit not needed for fix tests")
     }
 
-    fn find_existing_pr_for_issue(&self, _: u64) -> Result<Option<u64>> {
-        Ok(None)
+    fn fetch_pr_review_comments(&self, _pr_number: u64) -> Result<Vec<PrReviewComment>> {
+        Ok(self.review_comments.lock().unwrap().clone())
     }
 
-    fn upsert_review_comment(&self, _pr_number: u64, body: &str) -> Result<()> {
-        *self.comment_body.lock().unwrap() = body.to_string();
-        self.upsert_calls.lock().unwrap().push(body.to_string());
+    fn list_review_comment_reactions(&self, comment_id: u64) -> Result<Vec<Reaction>> {
+        let reactions = self.reactions.lock().unwrap();
+        Ok(reactions
+            .iter()
+            .find(|(id, _)| *id == comment_id)
+            .map(|(_, r)| r.clone())
+            .unwrap_or_default())
+    }
+
+    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<()> {
+        let new_id = self.next_reaction_id.fetch_add(1, Ordering::SeqCst);
+        self.added_reactions
+            .lock()
+            .unwrap()
+            .push((comment_id, reaction.to_string()));
+
+        // Also update the reactions store so subsequent fetches see the new state
+        let mut reactions = self.reactions.lock().unwrap();
+        let entry = reactions.iter_mut().find(|(id, _)| *id == comment_id);
+        if let Some((_, list)) = entry {
+            list.push(Reaction {
+                id: new_id,
+                content: reaction.to_string(),
+            });
+        } else {
+            reactions.push((
+                comment_id,
+                vec![Reaction {
+                    id: new_id,
+                    content: reaction.to_string(),
+                }],
+            ));
+        }
         Ok(())
     }
 
-    fn submit_inline_pr_review(
-        &self,
-        _pr_number: u64,
-        _event: PullRequestReviewEvent,
-        _comments: &[InlineReviewComment],
-    ) -> Result<()> {
+    fn delete_review_comment_reaction(&self, comment_id: u64, reaction_id: u64) -> Result<()> {
+        self.deleted_reactions
+            .lock()
+            .unwrap()
+            .push((comment_id, reaction_id));
+
+        // Also update the reactions store
+        let mut reactions = self.reactions.lock().unwrap();
+        if let Some((_, list)) = reactions.iter_mut().find(|(id, _)| *id == comment_id) {
+            list.retain(|r| r.id != reaction_id);
+        }
         Ok(())
     }
 
-    fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
-        Ok(String::new())
+    fn reply_to_review_comment(&self, pr_number: u64, comment_id: u64, body: &str) -> Result<()> {
+        self.replies
+            .lock()
+            .unwrap()
+            .push((pr_number, comment_id, body.to_string()));
+        Ok(())
     }
 
-    fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
-        let body = self.comment_body.lock().unwrap().clone();
-        Ok(vec![make_pr_comment(&body)])
-    }
-
-    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<PrComment> {
-        let body = self.comment_body.lock().unwrap().clone();
-        Ok(make_pr_comment(&body))
+    fn fetch_review_comment_by_id(&self, comment_id: u64) -> Result<PrReviewComment> {
+        let comments = self.review_comments.lock().unwrap();
+        comments
+            .iter()
+            .find(|c| c.id == comment_id)
+            .cloned()
+            .ok_or_else(|| Error::Submission(format!("comment {comment_id} not found")))
     }
 }
 
@@ -170,8 +225,6 @@ impl CorrectionRunner for MockCorrectionRunner {
 /// Create a mock agent script that makes a commit and outputs fix JSON.
 fn create_mock_agent_script(dir: &Path) -> String {
     let script_path = dir.join("mock-fix-agent.sh");
-    // Script: creates a unique file, commits it, outputs stream-json result.
-    // Uses $RANDOM and PID to ensure unique filenames across parallel invocations.
     let script = r#"#!/bin/bash
 # Mock fix agent: creates a file, commits it, outputs fix result
 ID="$$-$RANDOM"
@@ -189,9 +242,9 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit
     script_path.to_str().unwrap().to_string()
 }
 
-/// Test that `run_fix` processes multiple checked items concurrently.
+/// Test that `run_fix` processes multiple 🚀-reacted items.
 #[tokio::test]
-async fn test_parallel_fix_multiple_checked_items() {
+async fn test_parallel_fix_multiple_queued_items() {
     let (_bare_dir, repo_dir) = setup_git_repo();
     let repo_root = repo_dir.path();
 
@@ -200,15 +253,19 @@ async fn test_parallel_fix_multiple_checked_items() {
 
     let agent_script = create_mock_agent_script(repo_root);
 
-    // 3 checked items → 3 parallel fixes
     let findings = vec![
         make_finding("bug-alpha"),
         make_finding("bug-beta"),
         make_finding("bug-gamma"),
     ];
-    let review_comment = make_review_comment(&findings, &["bug-alpha", "bug-beta", "bug-gamma"]);
+    let comments = make_review_comments(&findings);
+    let reactions = vec![
+        rocket_reactions(100), // bug-alpha queued
+        rocket_reactions(101), // bug-beta queued
+        rocket_reactions(102), // bug-gamma queued
+    ];
 
-    let submission = Arc::new(MockFixSubmission::new(review_comment));
+    let submission = Arc::new(MockFixSubmission::new(comments, reactions));
     let correction_runner = Arc::new(MockCorrectionRunner);
 
     let wt_dir = tempfile::TempDir::new().unwrap();
@@ -229,31 +286,37 @@ async fn test_parallel_fix_multiple_checked_items() {
 
     assert!(result.is_ok(), "run_fix failed: {:?}", result.err());
 
-    // Each fix should have updated the comment
+    // Each fix should have: removed 🚀, added 👍, posted reply
     assert_eq!(
-        submission.upsert_count(),
+        submission.deleted_reaction_count(),
         3,
-        "expected 3 comment updates (one per finding)"
+        "expected 3 🚀 reactions removed"
     );
+    assert_eq!(
+        submission.added_reaction_count(),
+        3,
+        "expected 3 result reactions added"
+    );
+    assert_eq!(submission.reply_count(), 3, "expected 3 replies posted");
 
-    // Final comment: no checked items should remain
-    let final_body = submission.get_comment_body();
-    assert!(
-        !final_body.contains("- [x]"),
-        "no items should remain checked after all fixes"
-    );
+    // All added reactions should be "+1" (fixed)
+    for (_, reaction) in submission.added_reactions() {
+        assert_eq!(reaction, "+1");
+    }
 }
 
-/// Test that `run_fix` with no checked items returns Ok and does nothing.
+/// Test that `run_fix` with no 🚀-reacted items returns Ok and does nothing.
 #[tokio::test]
-async fn test_fix_no_checked_items() {
+async fn test_fix_no_queued_items() {
     let (_bare_dir, repo_dir) = setup_git_repo();
     let repo_root = repo_dir.path();
 
     let findings = vec![make_finding("a"), make_finding("b")];
-    let review_comment = make_review_comment(&findings, &[]); // none checked
+    let comments = make_review_comments(&findings);
+    // No reactions at all
+    let reactions = vec![no_reactions(100), no_reactions(101)];
 
-    let submission = Arc::new(MockFixSubmission::new(review_comment));
+    let submission = Arc::new(MockFixSubmission::new(comments, reactions));
     let correction_runner = Arc::new(MockCorrectionRunner);
 
     let config = make_config();
@@ -284,9 +347,10 @@ async fn test_parallel_fix_worktrees_cleaned_up() {
     let agent_script = create_mock_agent_script(repo_root);
 
     let findings = vec![make_finding("clean-a"), make_finding("clean-b")];
-    let review_comment = make_review_comment(&findings, &["clean-a", "clean-b"]);
+    let comments = make_review_comments(&findings);
+    let reactions = vec![rocket_reactions(100), rocket_reactions(101)];
 
-    let submission = Arc::new(MockFixSubmission::new(review_comment));
+    let submission = Arc::new(MockFixSubmission::new(comments, reactions));
     let correction_runner = Arc::new(MockCorrectionRunner);
 
     let wt_dir = tempfile::TempDir::new().unwrap();
@@ -325,53 +389,64 @@ async fn test_parallel_fix_worktrees_cleaned_up() {
     );
 }
 
+/// Test that already-fixed items (with 👍 reaction) are skipped.
+#[tokio::test]
+async fn test_fix_skips_already_fixed_items() {
+    let (_bare_dir, repo_dir) = setup_git_repo();
+    let repo_root = repo_dir.path();
+
+    let findings = vec![make_finding("a"), make_finding("b")];
+    let comments = make_review_comments(&findings);
+    // a is already fixed (has 👍), b has no reactions
+    let reactions = vec![fixed_reactions(100), no_reactions(101)];
+
+    let submission = Arc::new(MockFixSubmission::new(comments, reactions));
+    let correction_runner = Arc::new(MockCorrectionRunner);
+
+    let config = make_config();
+
+    let result = run_fix(
+        42,
+        "main",
+        &config,
+        Arc::clone(&submission),
+        &rlph::prompts::PromptEngine::new(None),
+        repo_root,
+        correction_runner,
+    )
+    .await;
+
+    assert!(result.is_ok());
+    // Nothing should have been processed
+    assert_eq!(submission.reply_count(), 0);
+    assert_eq!(submission.added_reaction_count(), 0);
+}
+
 // --- Polling loop tests ---
 
-/// Mock submission that dynamically checks new items after initial fixes complete.
-///
-/// On `fetch_pr_comments`: after the first upsert (alpha fixed), the returned
-/// comment will also have "beta" checked — simulating a user checking a new box
-/// between poll cycles.
+/// Mock submission that dynamically adds 🚀 reactions after initial fixes complete.
 struct PollingMockSubmission {
     base: MockFixSubmission,
     fetch_count: AtomicUsize,
-    /// Finding ID to dynamically "check" after the first fix completes.
-    deferred_check_id: Option<String>,
+    /// Finding comment ID to dynamically add 🚀 reaction after the first fix completes.
+    deferred_rocket_comment_id: Option<u64>,
 }
 
 impl PollingMockSubmission {
-    fn new(initial_comment: String, deferred_check_id: Option<String>) -> Self {
+    fn new(
+        comments: Vec<PrReviewComment>,
+        reactions: Vec<(u64, Vec<Reaction>)>,
+        deferred_rocket_comment_id: Option<u64>,
+    ) -> Self {
         Self {
-            base: MockFixSubmission::new(initial_comment),
+            base: MockFixSubmission::new(comments, reactions),
             fetch_count: AtomicUsize::new(0),
-            deferred_check_id,
+            deferred_rocket_comment_id,
         }
     }
 
-    fn upsert_count(&self) -> usize {
-        self.base.upsert_count()
-    }
-
-    /// Compute the current comment body, applying deferred checkbox checks
-    /// after the first fix completes.
-    fn current_body(&self) -> String {
-        let mut body = self.base.get_comment_body();
-        if let Some(ref id) = self.deferred_check_id
-            && self.base.upsert_count() >= 1
-        {
-            body = body
-                .lines()
-                .map(|line| {
-                    if line.contains(&format!("{id} description")) && line.contains("- [ ]") {
-                        line.replace("- [ ] ", "- [x] ")
-                    } else {
-                        line.to_string()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-        }
-        body
+    fn reply_count(&self) -> usize {
+        self.base.reply_count()
     }
 }
 
@@ -380,40 +455,54 @@ impl SubmissionBackend for PollingMockSubmission {
         unimplemented!("submit not needed for fix tests")
     }
 
-    fn find_existing_pr_for_issue(&self, issue_number: u64) -> Result<Option<u64>> {
-        self.base.find_existing_pr_for_issue(issue_number)
+    fn fetch_pr_review_comments(&self, pr_number: u64) -> Result<Vec<PrReviewComment>> {
+        self.fetch_count.fetch_add(1, Ordering::SeqCst);
+
+        // After the first fix completes (reply posted), add 🚀 to deferred comment
+        if let Some(comment_id) = self.deferred_rocket_comment_id
+            && self.base.reply_count() >= 1
+        {
+            // Add rocket reaction if not already present
+            let reactions = self.base.reactions.lock().unwrap();
+            let has_rocket = reactions
+                .iter()
+                .find(|(id, _)| *id == comment_id)
+                .map(|(_, r)| r.iter().any(|rx| rx.content == "rocket"))
+                .unwrap_or(false);
+            drop(reactions);
+
+            if !has_rocket {
+                let _ = self.base.add_review_comment_reaction(comment_id, "rocket");
+            }
+        }
+
+        self.base.fetch_pr_review_comments(pr_number)
     }
 
-    fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()> {
-        self.base.upsert_review_comment(pr_number, body)
+    fn list_review_comment_reactions(&self, comment_id: u64) -> Result<Vec<Reaction>> {
+        self.base.list_review_comment_reactions(comment_id)
     }
 
-    fn submit_inline_pr_review(
-        &self,
-        pr_number: u64,
-        event: PullRequestReviewEvent,
-        comments: &[InlineReviewComment],
-    ) -> Result<()> {
+    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<()> {
+        self.base.add_review_comment_reaction(comment_id, reaction)
+    }
+
+    fn delete_review_comment_reaction(&self, comment_id: u64, reaction_id: u64) -> Result<()> {
         self.base
-            .submit_inline_pr_review(pr_number, event, comments)
+            .delete_review_comment_reaction(comment_id, reaction_id)
     }
 
-    fn fetch_pr_diff(&self, pr_number: u64) -> Result<String> {
-        self.base.fetch_pr_diff(pr_number)
+    fn reply_to_review_comment(&self, pr_number: u64, comment_id: u64, body: &str) -> Result<()> {
+        self.base
+            .reply_to_review_comment(pr_number, comment_id, body)
     }
 
-    fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
-        self.fetch_count.fetch_add(1, Ordering::SeqCst);
-        Ok(vec![make_pr_comment(&self.current_body())])
-    }
-
-    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<PrComment> {
-        self.fetch_count.fetch_add(1, Ordering::SeqCst);
-        Ok(make_pr_comment(&self.current_body()))
+    fn fetch_review_comment_by_id(&self, comment_id: u64) -> Result<PrReviewComment> {
+        self.base.fetch_review_comment_by_id(comment_id)
     }
 }
 
-/// Test fixture for `run_fix_loop` tests, reducing shared setup boilerplate.
+/// Test fixture for `run_fix_loop` tests.
 struct FixLoopFixture {
     _bare_dir: tempfile::TempDir,
     repo_dir: tempfile::TempDir,
@@ -429,8 +518,8 @@ struct FixLoopFixture {
 impl FixLoopFixture {
     fn new(
         findings: &[ReviewFinding],
-        checked_ids: &[&str],
-        deferred_check_id: Option<String>,
+        queued_comment_ids: &[u64],
+        deferred_rocket_comment_id: Option<u64>,
     ) -> Self {
         let (_bare_dir, repo_dir) = setup_git_repo();
         let repo_root = repo_dir.path();
@@ -440,10 +529,22 @@ impl FixLoopFixture {
 
         let agent_script = create_mock_agent_script(repo_root);
 
-        let initial_comment = make_review_comment(findings, checked_ids);
+        let comments = make_review_comments(findings);
+        let reactions: Vec<_> = comments
+            .iter()
+            .map(|c| {
+                if queued_comment_ids.contains(&c.id) {
+                    rocket_reactions(c.id)
+                } else {
+                    no_reactions(c.id)
+                }
+            })
+            .collect();
+
         let submission = Arc::new(PollingMockSubmission::new(
-            initial_comment,
-            deferred_check_id,
+            comments,
+            reactions,
+            deferred_rocket_comment_id,
         ));
         let correction_runner = Arc::new(MockCorrectionRunner);
 
@@ -492,17 +593,14 @@ impl FixLoopFixture {
     }
 }
 
-/// Test that `run_fix_loop` picks up newly-checked items across poll cycles.
-///
-/// Cycle 1: "alpha" is checked → fix agent spawned and completes
-/// Cycle 2: "beta" becomes checked (simulated) → fix agent spawned and completes
-/// After both are done, shutdown is triggered.
+/// Test that `run_fix_loop` picks up newly 🚀-reacted items across poll cycles.
 #[tokio::test]
-async fn test_fix_loop_picks_up_newly_checked_items() {
+async fn test_fix_loop_picks_up_newly_queued_items() {
+    // alpha starts with 🚀, beta gets 🚀 after alpha is fixed
     let mut f = FixLoopFixture::new(
         &[make_finding("alpha"), make_finding("beta")],
-        &["alpha"],
-        Some("beta".to_string()),
+        &[100],    // alpha (comment 100) starts queued
+        Some(101), // beta (comment 101) gets 🚀 after first fix
     );
 
     let submission = Arc::clone(&f.submission);
@@ -510,7 +608,7 @@ async fn test_fix_loop_picks_up_newly_checked_items() {
     let shutdown_handle = tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if submission.upsert_count() >= 2 {
+            if submission.reply_count() >= 2 {
                 let _ = shutdown_tx.send(true);
                 return;
             }
@@ -522,11 +620,11 @@ async fn test_fix_loop_picks_up_newly_checked_items() {
 
     assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
 
-    // Both items should have been fixed
+    // Both items should have been fixed (2 replies)
     assert_eq!(
-        f.submission.upsert_count(),
+        f.submission.reply_count(),
         2,
-        "expected 2 comment updates (one per finding across different poll cycles)"
+        "expected 2 replies (one per finding across different poll cycles)"
     );
 
     // Multiple fetch calls (at least 2 poll cycles)
@@ -540,18 +638,19 @@ async fn test_fix_loop_picks_up_newly_checked_items() {
 /// Test that already-completed items are not re-processed by the polling loop.
 #[tokio::test]
 async fn test_fix_loop_skips_completed_items() {
-    let mut f = FixLoopFixture::new(&[make_finding("only-one")], &["only-one"], None);
+    let mut f = FixLoopFixture::new(
+        &[make_finding("only-one")],
+        &[100], // only-one starts queued
+        None,
+    );
 
     let submission = Arc::clone(&f.submission);
     let shutdown_tx = f.take_shutdown_tx();
-    // Let the loop run for a few cycles after the fix completes, then shutdown.
-    // If the item gets re-processed, upsert_count will be > 1.
     let shutdown_handle = tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let fetches = submission.fetch_count.load(Ordering::SeqCst);
-            // Wait for at least 3 poll cycles after the fix completes
-            if submission.upsert_count() >= 1 && fetches >= 4 {
+            if submission.reply_count() >= 1 && fetches >= 4 {
                 let _ = shutdown_tx.send(true);
                 return;
             }
@@ -565,17 +664,20 @@ async fn test_fix_loop_skips_completed_items() {
 
     // Item should have been processed exactly once
     assert_eq!(
-        f.submission.upsert_count(),
+        f.submission.reply_count(),
         1,
         "completed item should not be re-processed"
     );
 }
 
-/// Test that `run_fix_loop` gracefully shuts down: waits for in-flight tasks,
-/// then exits cleanly.
+/// Test that `run_fix_loop` gracefully shuts down.
 #[tokio::test]
 async fn test_fix_loop_graceful_shutdown() {
-    let mut f = FixLoopFixture::new(&[make_finding("slow-item")], &["slow-item"], None);
+    let mut f = FixLoopFixture::new(
+        &[make_finding("slow-item")],
+        &[100], // slow-item starts queued
+        None,
+    );
 
     // Override with a slow agent (sleeps 2 seconds before committing)
     let script_path = f.repo_root().join("mock-slow-agent.sh");
@@ -594,10 +696,9 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     f.config.fix = make_fix_step_config(script_path.to_str().unwrap().to_string());
-    f.config.poll_seconds = 5; // Longer than the 2s agent sleep so shutdown is processed before next poll
+    f.config.poll_seconds = 5;
 
     let shutdown_tx = f.take_shutdown_tx();
-    // Send shutdown after 1 second (agent takes 2s, so it should be in-flight)
     let shutdown_handle = tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let _ = shutdown_tx.send(true);
@@ -610,7 +711,7 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit
 
     // The slow agent should have completed during graceful shutdown
     assert_eq!(
-        f.submission.upsert_count(),
+        f.submission.reply_count(),
         1,
         "in-flight fix should complete during graceful shutdown"
     );

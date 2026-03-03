@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
 use rlph::fix;
-use rlph::fix_comment::{format_fix_items_for_display, parse_fix_items};
+use rlph::fix_comment::format_fix_items_for_display;
 use rlph::orchestrator::{
     DefaultCorrectionRunner, Orchestrator, ReviewInvocation, build_task_vars,
 };
@@ -22,7 +22,7 @@ use rlph::sources::github::GitHubSource;
 use rlph::sources::linear::LinearSource;
 use rlph::sources::{Task, TaskSource};
 use rlph::state::StateManager;
-use rlph::submission::{GitHubSubmission, PrContext, REVIEW_MARKER, SubmissionBackend};
+use rlph::submission::{GitHubSubmission, PrContext};
 use rlph::worktree::{WorktreeManager, resolve_setup_script};
 
 /// Parse a PR reference that is either a plain number or a GitHub PR URL.
@@ -252,21 +252,13 @@ async fn main() {
             let submission = GitHubSubmission::new();
 
             if dry_run {
-                let comments = match submission.fetch_pr_comments(pr_number) {
-                    Ok(c) => c,
+                let (items, _comments) = match fix::fetch_and_parse_items(pr_number, &submission) {
+                    Ok(result) => result,
                     Err(e) => {
                         eprintln!("error: {e}");
                         std::process::exit(1);
                     }
                 };
-
-                let review_comment = comments.iter().find(|c| c.body.contains(REVIEW_MARKER));
-                let Some(review_comment) = review_comment else {
-                    eprintln!("No rlph review comment found on PR #{pr_number}.");
-                    std::process::exit(1);
-                };
-
-                let items = parse_fix_items(&review_comment.body);
                 print!("{}", format_fix_items_for_display(&items));
                 return;
             }

@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1040,18 +1039,18 @@ fn build_inline_review_comments(
                     return None;
                 }
             };
-            let dependency_descriptions: Vec<Cow<'_, str>> = finding
+            let dependency_descriptions: Vec<String> = finding
                 .depends_on
                 .iter()
                 .map(|dep_id| {
                     findings_by_id
                         .get(dep_id.as_str())
-                        .map(|dep| Cow::Borrowed(dep.description.as_str()))
-                        .unwrap_or_else(|| Cow::Owned(format!("finding `{dep_id}`")))
+                        .map(|dep| format!("`{dep_id}`: {}", dep.description))
+                        .unwrap_or_else(|| format!("`{dep_id}`"))
                 })
                 .collect();
             let dependency_descriptions: Vec<&str> =
-                dependency_descriptions.iter().map(|c| c.as_ref()).collect();
+                dependency_descriptions.iter().map(|s| s.as_str()).collect();
 
             let fallback = match mapped.fallback {
                 FallbackKind::Exact => None,
@@ -1136,6 +1135,41 @@ mod tests {
                 "not used in inline review mapping tests".to_string(),
             ))
         }
+
+        fn fetch_pr_review_comments(
+            &self,
+            _pr_number: u64,
+        ) -> Result<Vec<crate::submission::PrReviewComment>> {
+            Ok(vec![])
+        }
+
+        fn list_review_comment_reactions(
+            &self,
+            _comment_id: u64,
+        ) -> Result<Vec<crate::submission::Reaction>> {
+            Ok(vec![])
+        }
+
+        fn add_review_comment_reaction(&self, _comment_id: u64, _reaction: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn delete_review_comment_reaction(
+            &self,
+            _comment_id: u64,
+            _reaction_id: u64,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn reply_to_review_comment(
+            &self,
+            _pr_number: u64,
+            _comment_id: u64,
+            _body: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -1213,7 +1247,10 @@ mod tests {
             .iter()
             .find(|c| c.body.contains("Use after free"))
             .expect("expected follow-up comment");
-        assert!(body.body.contains("Depends on: Base check missing."));
+        assert!(
+            body.body
+                .contains("> **Depends on:**\n> `base-check`: Base check missing")
+        );
     }
 
     #[test]
