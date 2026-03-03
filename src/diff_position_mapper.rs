@@ -3,7 +3,15 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::error::Error;
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum DiffPositionMapperError {
+    #[error("diff parse error: {0}")]
+    Parse(String),
+    #[error("file not found in diff: {0}")]
+    FileNotFound(String),
+    #[error("file has no mappable lines in diff: {0}")]
+    NoMappableLines(String),
+}
 
 static DIFF_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"^diff --git "?a/(.+?)"? "?b/(.+?)"?$"#).expect("diff header regex is valid")
@@ -93,11 +101,9 @@ fn normalize_path(path: &str) -> String {
     path.trim().trim_matches('"').to_string()
 }
 
-fn parse_u32(value: &str, context: &str) -> Result<u32, Error> {
+fn parse_u32(value: &str, context: &str) -> Result<u32, DiffPositionMapperError> {
     value.parse::<u32>().map_err(|e| {
-        Error::DiffPositionMapper(format!(
-            "parse error: invalid {context} value '{value}': {e}"
-        ))
+        DiffPositionMapperError::Parse(format!("invalid {context} value '{value}': {e}"))
     })
 }
 
@@ -111,7 +117,7 @@ fn finalize_pending_file(file: PendingFile, file_hunks: &mut HashMap<String, Vec
 }
 
 impl DiffPositionMapper {
-    pub fn from_diff(diff: &str) -> Result<Self, Error> {
+    pub fn from_diff(diff: &str) -> Result<Self, DiffPositionMapperError> {
         let mut file_hunks: HashMap<String, Vec<Hunk>> = HashMap::new();
         let mut pending: Option<PendingFile> = None;
 
@@ -155,8 +161,8 @@ impl DiffPositionMapper {
                     continue;
                 }
                 let end = start.checked_add(count - 1).ok_or_else(|| {
-                    Error::DiffPositionMapper(format!(
-                        "parse error: hunk end overflow for start={start}, count={count}"
+                    DiffPositionMapperError::Parse(format!(
+                        "hunk end overflow for start={start}, count={count}"
                     ))
                 })?;
                 current.hunks.push(Hunk { start, end });
@@ -168,24 +174,23 @@ impl DiffPositionMapper {
         }
 
         if !diff.trim().is_empty() && file_hunks.is_empty() {
-            return Err(Error::DiffPositionMapper(
-                "parse error: diff did not contain any parseable file headers".to_string(),
+            return Err(DiffPositionMapperError::Parse(
+                "diff did not contain any parseable file headers".to_string(),
             ));
         }
 
         Ok(Self { file_hunks })
     }
 
-    pub fn map(&self, file: &str, line: u32) -> Result<DiffPosition, Error> {
+    pub fn map(&self, file: &str, line: u32) -> Result<DiffPosition, DiffPositionMapperError> {
         let normalized_file = normalize_path(file);
-        let hunks = self.file_hunks.get(&normalized_file).ok_or_else(|| {
-            Error::DiffPositionMapper(format!("file not found in diff: {normalized_file}"))
-        })?;
+        let hunks = self
+            .file_hunks
+            .get(&normalized_file)
+            .ok_or_else(|| DiffPositionMapperError::FileNotFound(normalized_file.clone()))?;
 
         if hunks.is_empty() {
-            return Err(Error::DiffPositionMapper(format!(
-                "no mappable lines in diff: {normalized_file}"
-            )));
+            return Err(DiffPositionMapperError::NoMappableLines(normalized_file));
         }
 
         if hunks.iter().copied().any(|hunk| hunk.contains(line)) {
@@ -220,8 +225,7 @@ impl DiffPositionMapper {
 
 #[cfg(test)]
 mod tests {
-    use super::DiffPositionMapper;
-    use crate::error::Error;
+    use super::{DiffPositionMapper, DiffPositionMapperError};
 
     const REALISTIC_UNIFIED_DIFF: &str =
         include_str!("../tests/fixtures/diff_position_mapper/realistic_unified.diff");
@@ -241,8 +245,9 @@ mod tests {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
         let err = mapper.map("src/missing.rs", 10).unwrap_err();
 
-        assert!(
-            matches!(&err, Error::DiffPositionMapper(msg) if msg.contains("file not found in diff: src/missing.rs"))
+        assert_eq!(
+            err,
+            DiffPositionMapperError::FileNotFound("src/missing.rs".to_string())
         );
     }
 
@@ -318,16 +323,20 @@ mod tests {
     fn test_map_reports_no_mappable_lines_for_deletions_only_hunks() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
         let err = mapper.map("src/deletions_only.rs", 10).unwrap_err();
-        assert!(
-            matches!(&err, Error::DiffPositionMapper(msg) if msg.contains("no mappable lines in diff: src/deletions_only.rs"))
+        assert_eq!(
+            err,
+            DiffPositionMapperError::NoMappableLines("src/deletions_only.rs".to_string())
         );
     }
 
     #[test]
     fn test_from_diff_rejects_non_diff_input() {
         let err = DiffPositionMapper::from_diff("not a unified diff").unwrap_err();
-        assert!(
-            matches!(&err, Error::DiffPositionMapper(msg) if msg.contains("diff did not contain any parseable file headers"))
+        assert_eq!(
+            err,
+            DiffPositionMapperError::Parse(
+                "diff did not contain any parseable file headers".to_string()
+            )
         );
     }
 

@@ -2,9 +2,11 @@
 
 ## Error Handling
 
-Single `Error` enum in `error.rs` with `thiserror`. Every module has a variant (`TaskSource(String)`, `Worktree(String)`, etc.). Use `Error::VariantName(format!(...))` — no `anyhow`, no `.unwrap()` in library code.
+Central `Error` enum in `error.rs` with `thiserror`. No `anyhow`, no `.unwrap()` in library code.
 
-`ProcessTimeout` is the exception: it carries structured data (stdout/stderr lines) for resume logic.
+- **Simple modules** (single failure mode): use `Error::VariantName(String)` directly (e.g. `Worktree(String)`).
+- **Modules with multiple error kinds**: define a module-local error enum and nest it via `#[from]` + `#[error(transparent)]`. Example: `DiffPositionMapperError` has `Parse`, `FileNotFound`, `NoMappableLines` variants; the central enum wraps it as `DiffPositionMapper(#[from] DiffPositionMapperError)`.
+- **Structured data**: `ProcessTimeout` carries stdout/stderr lines for resume logic.
 
 ## Async
 
