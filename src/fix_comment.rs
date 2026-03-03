@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 
 use crate::review_schema::{
@@ -90,7 +91,7 @@ pub fn build_fix_items_from_review_comments(
     comments: &[PrReviewComment],
     reactions_by_comment: &[(u64, Vec<Reaction>)],
 ) -> Vec<FixItem> {
-    let reactions_map: std::collections::HashMap<u64, &Vec<Reaction>> = reactions_by_comment
+    let reactions_map: HashMap<u64, &Vec<Reaction>> = reactions_by_comment
         .iter()
         .map(|(id, r)| (*id, r))
         .collect();
