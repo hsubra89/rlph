@@ -834,7 +834,7 @@ impl<
         if agg_output.verdict == Verdict::Approved {
             info!("review approved");
         } else {
-            info!("review needs_fix; findings posted");
+            info!("review needs fix; findings posted");
         }
 
         Ok(())
