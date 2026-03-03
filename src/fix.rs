@@ -402,10 +402,7 @@ pub fn fetch_and_parse_items(
             .collect()
     });
 
-    let mut collected = Vec::with_capacity(reactions_by_comment.len());
-    for result in reactions_by_comment {
-        collected.push(result?);
-    }
+    let collected: Vec<_> = reactions_by_comment.into_iter().collect::<Result<_>>()?;
 
     Ok((
         build_fix_items_from_review_comments(&comments, &collected),
