@@ -1449,7 +1449,11 @@ async fn test_review_only_needs_fix_completes_successfully() {
     let inline_comment = &submission_data.reviews[0].comments[0];
     assert_eq!(inline_comment.path, "src/main.rs");
     assert_eq!(inline_comment.line, 1);
-    assert!(inline_comment.body.contains("**WARNING**: issue"));
+    assert!(
+        inline_comment
+            .body
+            .contains("**WARNING** `issue-found`: issue")
+    );
     assert!(inline_comment.body.contains(FINDING_MARKER));
 }
 

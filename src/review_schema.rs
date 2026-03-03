@@ -265,7 +265,18 @@ pub fn render_inline_finding_comment_for_github(
     dependency_descriptions: &[&str],
     fallback: Option<FallbackContext>,
 ) -> String {
-    let mut body = format!("**{}**: {}", finding.severity.label(), finding.description);
+    let category_part = finding
+        .category
+        .as_deref()
+        .map(|c| format!(" ({c})"))
+        .unwrap_or_default();
+    let mut body = format!(
+        "**{}**{} `{}`: {}",
+        finding.severity.label(),
+        category_part,
+        finding.id,
+        finding.description
+    );
 
     if !dependency_descriptions.is_empty() {
         write!(
@@ -1062,7 +1073,9 @@ mod tests {
             Some(FallbackContext::Line(88)),
         );
 
-        assert!(body.contains("**WARNING**: Potential null dereference"));
+        assert!(
+            body.contains("**WARNING** (correctness) `dep-finding`: Potential null dereference")
+        );
         assert!(body.contains("Depends on: Missing null guard in constructor."));
         assert!(body.contains(
             "Note: this finding applies to line 88 but is shown here because that line is not in the diff."
@@ -1093,7 +1106,7 @@ mod tests {
             }),
         );
 
-        assert!(body.contains("**CRITICAL**: Issue in missing file"));
+        assert!(body.contains("**CRITICAL** (correctness) `file-fallback`: Issue in missing file"));
         assert!(body.contains(
             "Note: this finding applies to `src/missing.rs:42` but is shown here because that file is not in the diff."
         ));
