@@ -23,7 +23,7 @@ Fetch tasks (TaskSource) → filter by dependency graph (deps.rs)
   → Create worktree (worktree.rs)
   → Implement phase: agent codes in worktree
   → Push branch, submit PR (SubmissionBackend)
-  → Review pipeline (parallel phases → aggregate → repeat rounds)
+  → Review pipeline (parallel phases → aggregate → post findings)
   → Cleanup worktree
 ```
 
