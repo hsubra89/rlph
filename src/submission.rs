@@ -147,6 +147,15 @@ pub trait SubmissionBackend: Send + Sync {
         Ok(())
     }
 
+    /// Resolve all completed rlph-finding review threads on a PR.
+    ///
+    /// Finds unresolved threads whose first comment contains the `<!-- rlph-finding:`
+    /// marker and has a ✅ (THUMBS_UP) or 😕 (CONFUSED) reaction, then resolves them
+    /// via the GitHub GraphQL API. Returns the count of threads resolved.
+    fn resolve_completed_review_threads(&self, _pr_number: u64) -> Result<u32> {
+        Ok(0)
+    }
+
     /// Post a reply to a PR review comment.
     fn reply_to_review_comment(
         &self,
@@ -576,6 +585,68 @@ impl SubmissionBackend for GitHubSubmission {
         info!(pr_number, comment_id, "replied to review comment");
         Ok(())
     }
+
+    fn resolve_completed_review_threads(&self, pr_number: u64) -> Result<u32> {
+        let (owner, repo) = detect_owner_repo()?;
+        crate::resolve_threads::resolve_completed_threads(&owner, &repo, pr_number as u32)
+    }
+}
+
+/// Detect the GitHub repository owner and name from the local git remote URL.
+///
+/// Parses `git remote get-url origin` instead of calling the GitHub API, avoiding
+/// a redundant network round-trip (the same `repos/{owner}/{repo}` endpoint is
+/// already called by [`detect_default_branch`] when the local symbolic-ref is
+/// unavailable).
+fn detect_owner_repo() -> Result<(String, String)> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .map_err(|e| Error::Submission(format!("failed to run git: {e}")))?;
+
+    if !output.status.success() {
+        return Err(Error::Submission(
+            "git remote get-url origin failed".to_string(),
+        ));
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout);
+    parse_owner_repo_from_remote(url.trim())
+}
+
+/// Extract `(owner, repo)` from a GitHub remote URL.
+///
+/// Supports HTTPS (`https://github.com/owner/repo.git`) and SSH
+/// (`git@github.com:owner/repo.git`) formats.
+///
+/// NOTE: Only handles standard github.com URLs. SSH URLs with custom ports
+/// (e.g. `ssh://git@github.com:2222/owner/repo`) or GitHub Enterprise hosts
+/// are not supported.
+fn parse_owner_repo_from_remote(url: &str) -> Result<(String, String)> {
+    // Try SSH format: git@github.com:owner/repo.git
+    let path = if let Some(rest) = url.strip_prefix("git@github.com:") {
+        rest
+    } else if let Some(rest) = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+    {
+        rest
+    } else {
+        return Err(Error::Submission(format!(
+            "unrecognised GitHub remote URL: {url}"
+        )));
+    };
+
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut parts = path.splitn(2, '/');
+    match (parts.next(), parts.next()) {
+        (Some(owner), Some(repo)) if !owner.is_empty() && !repo.is_empty() => {
+            Ok((owner.to_string(), repo.to_string()))
+        }
+        _ => Err(Error::Submission(format!(
+            "could not parse owner/repo from remote URL: {url}"
+        ))),
+    }
 }
 
 pub(crate) fn detect_default_branch() -> String {
@@ -726,7 +797,8 @@ fn extract_issue_number_reference(body: &str) -> Option<u64> {
 mod tests {
     use super::{
         PrComment, PrCommentUser, extract_issue_number_reference, format_pr_comments_for_prompt,
-        parse_pr_context_json, parse_pr_number_from_url, pr_body_references_issue,
+        parse_owner_repo_from_remote, parse_pr_context_json, parse_pr_number_from_url,
+        pr_body_references_issue,
     };
 
     #[test]
@@ -905,5 +977,32 @@ mod tests {
         assert_eq!(extract_issue_number_reference("Resolves #42"), Some(42));
         assert_eq!(extract_issue_number_reference("Fixes (#7)."), Some(7));
         assert_eq!(extract_issue_number_reference("No issue refs"), None);
+    }
+
+    #[test]
+    fn test_parse_owner_repo_ssh() {
+        let (owner, repo) = parse_owner_repo_from_remote("git@github.com:acme/widget.git").unwrap();
+        assert_eq!(owner, "acme");
+        assert_eq!(repo, "widget");
+    }
+
+    #[test]
+    fn test_parse_owner_repo_https() {
+        let (owner, repo) =
+            parse_owner_repo_from_remote("https://github.com/acme/widget.git").unwrap();
+        assert_eq!(owner, "acme");
+        assert_eq!(repo, "widget");
+    }
+
+    #[test]
+    fn test_parse_owner_repo_https_no_dotgit() {
+        let (owner, repo) = parse_owner_repo_from_remote("https://github.com/acme/widget").unwrap();
+        assert_eq!(owner, "acme");
+        assert_eq!(repo, "widget");
+    }
+
+    #[test]
+    fn test_parse_owner_repo_unrecognised() {
+        assert!(parse_owner_repo_from_remote("https://gitlab.com/acme/widget").is_err());
     }
 }

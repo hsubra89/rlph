@@ -853,6 +853,12 @@ impl<
                     }
                 }
             }
+
+            // Resolve old review threads after posting the new review so the
+            // latest findings are visible even if resolution fails.
+            if let Err(e) = self.submission.resolve_completed_review_threads(pr_num) {
+                warn!(error = %e, "failed to resolve completed review threads");
+            }
         }
 
         // Report PR URL after the review
