@@ -1024,10 +1024,21 @@ fn build_inline_review_comments(
         .map(|finding| (finding.id.as_str(), finding))
         .collect();
 
-    findings
+    Ok(findings
         .iter()
-        .map(|finding| {
-            let mapped = mapper.map(&finding.file, finding.line)?;
+        .filter_map(|finding| {
+            let mapped = match mapper.map(&finding.file, finding.line) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!(
+                        finding_id = %finding.id,
+                        file = %finding.file,
+                        error = %e,
+                        "skipping inline comment for unmappable finding"
+                    );
+                    return None;
+                }
+            };
             let dependency_descriptions = finding
                 .depends_on
                 .iter()
@@ -1039,7 +1050,7 @@ fn build_inline_review_comments(
                 })
                 .collect::<Vec<_>>();
 
-            Ok(InlineReviewComment {
+            Some(InlineReviewComment {
                 path: mapped.file,
                 line: mapped.line,
                 body: render_inline_finding_comment_for_github(
@@ -1049,7 +1060,7 @@ fn build_inline_review_comments(
                 ),
             })
         })
-        .collect()
+        .collect())
 }
 
 /// Extract the issue number from a task ID like "gh-42".
