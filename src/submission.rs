@@ -147,6 +147,15 @@ pub trait SubmissionBackend: Send + Sync {
         Ok(())
     }
 
+    /// Resolve all completed rlph-finding review threads on a PR.
+    ///
+    /// Finds unresolved threads whose first comment contains the `<!-- rlph-finding:`
+    /// marker and has a ✅ (THUMBS_UP) or 😕 (CONFUSED) reaction, then resolves them
+    /// via the GitHub GraphQL API. Returns the count of threads resolved.
+    fn resolve_completed_review_threads(&self, _pr_number: u64) -> Result<u32> {
+        Ok(0)
+    }
+
     /// Post a reply to a PR review comment.
     fn reply_to_review_comment(
         &self,
@@ -576,6 +585,26 @@ impl SubmissionBackend for GitHubSubmission {
         info!(pr_number, comment_id, "replied to review comment");
         Ok(())
     }
+
+    fn resolve_completed_review_threads(&self, pr_number: u64) -> Result<u32> {
+        let (owner, repo) = detect_owner_repo()?;
+        crate::resolve_threads::resolve_completed_threads(&owner, &repo, pr_number)
+    }
+}
+
+/// Detect the GitHub repository owner and name from the current repo context.
+fn detect_owner_repo() -> Result<(String, String)> {
+    #[derive(Deserialize)]
+    struct Owner {
+        login: String,
+    }
+    #[derive(Deserialize)]
+    struct RepoInfo {
+        name: String,
+        owner: Owner,
+    }
+    let info: RepoInfo = run_gh_api("repos/{owner}/{repo}")?;
+    Ok((info.owner.login, info.name))
 }
 
 pub(crate) fn detect_default_branch() -> String {
