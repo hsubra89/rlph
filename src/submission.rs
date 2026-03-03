@@ -553,23 +553,7 @@ impl SubmissionBackend for GitHubSubmission {
 
     fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<()> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions");
-        let output = Command::new("gh")
-            .args([
-                "api",
-                &endpoint,
-                "-X",
-                "POST",
-                "-f",
-                &format!("content={reaction}"),
-            ])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!(
-                "gh api add reaction failed: {stderr}"
-            )));
-        }
+        run_gh_api_mutate(&endpoint, "POST", &[("content", reaction)])?;
         info!(comment_id, reaction, "added reaction to review comment");
         Ok(())
     }
@@ -577,16 +561,7 @@ impl SubmissionBackend for GitHubSubmission {
     fn delete_review_comment_reaction(&self, comment_id: u64, reaction_id: u64) -> Result<()> {
         let endpoint =
             format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions/{reaction_id}");
-        let output = Command::new("gh")
-            .args(["api", &endpoint, "-X", "DELETE"])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!(
-                "gh api delete reaction failed: {stderr}"
-            )));
-        }
+        run_gh_api_mutate(&endpoint, "DELETE", &[])?;
         info!(
             comment_id,
             reaction_id, "deleted reaction from review comment"
@@ -597,23 +572,7 @@ impl SubmissionBackend for GitHubSubmission {
     fn reply_to_review_comment(&self, pr_number: u64, comment_id: u64, body: &str) -> Result<()> {
         let endpoint =
             format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies");
-        let output = Command::new("gh")
-            .args([
-                "api",
-                &endpoint,
-                "-X",
-                "POST",
-                "-f",
-                &format!("body={body}"),
-            ])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!(
-                "gh api reply to review comment failed: {stderr}"
-            )));
-        }
+        run_gh_api_mutate(&endpoint, "POST", &[("body", body)])?;
         info!(pr_number, comment_id, "replied to review comment");
         Ok(())
     }
@@ -669,6 +628,24 @@ pub(crate) fn run_gh_api_paginated<T: DeserializeOwned>(endpoint: &str) -> Resul
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&stdout)
         .map_err(|e| Error::Submission(format!("failed to parse gh api response: {e}")))
+}
+
+fn run_gh_api_mutate(endpoint: &str, method: &str, fields: &[(&str, &str)]) -> Result<()> {
+    let mut cmd = Command::new("gh");
+    cmd.args(["api", endpoint, "-X", method]);
+    for (key, value) in fields {
+        cmd.args(["-f", &format!("{key}={value}")]);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Submission(format!(
+            "gh api {endpoint} failed: {stderr}"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
