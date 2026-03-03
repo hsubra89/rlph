@@ -1,5 +1,12 @@
 #!/bin/sh
-set -e
 # Setup: ln -sf ../../.hooks/pre-commit .git/hooks/pre-commit
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+
+if ! cargo fmt --all -- --check; then
+  echo "ERROR: code is not formatted. Run 'cargo fmt --all' to fix."
+  exit 1
+fi
+
+if ! cargo clippy --all-targets --all-features -- -D warnings; then
+  echo "ERROR: clippy warnings found. Run 'cargo clippy --all-targets --all-features' and fix the warnings."
+  exit 1
+fi
