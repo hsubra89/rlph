@@ -708,15 +708,11 @@ async fn run_fix_agent_and_apply(
         StandaloneFixOutput::Fixed { commit_message } => {
             info!(finding_id = %ctx.item.finding.id, commit_message, "fix applied — rebasing and pushing");
             push_to_pr_branch_with_retry(worktree_path, ctx.fix_branch, ctx.pr_branch).await?;
-            FixResultKind::Fixed {
-                commit_message: commit_message.clone(),
-            }
+            FixResultKind::Fixed { commit_message }
         }
         StandaloneFixOutput::WontFix { reason } => {
             info!(finding_id = %ctx.item.finding.id, reason, "finding marked as won't fix");
-            FixResultKind::WontFix {
-                reason: reason.clone(),
-            }
+            FixResultKind::WontFix { reason }
         }
     };
 
