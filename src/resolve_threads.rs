@@ -278,11 +278,9 @@ fn resolve_thread(thread_id: &str) -> Result<()> {
     let response: GraphQLResponse<serde_json::Value> = serde_json::from_str(&stdout)
         .map_err(|e| Error::Submission(format!("failed to parse resolve response: {e}")))?;
 
-    check_graphql_errors(&response)?;
-
     // Response data (isResolved confirmation) intentionally discarded —
     // a successful mutation with no GraphQL errors is sufficient.
-    Ok(())
+    check_graphql_errors(&response)
 }
 
 // ---------------------------------------------------------------------------
