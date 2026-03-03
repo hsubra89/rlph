@@ -47,6 +47,9 @@ pub enum Error {
     #[error("orchestrator error: {0}")]
     Orchestrator(String),
 
+    #[error("diff position mapper error: {0}")]
+    DiffPositionMapper(String),
+
     #[error("interrupted by signal")]
     Interrupted,
 }
