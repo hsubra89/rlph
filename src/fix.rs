@@ -28,7 +28,7 @@ use crate::review_schema::{
     FINDING_MARKER, SchemaName, StandaloneFixOutput, parse_standalone_fix_output,
 };
 use crate::runner::{AgentRunner, Phase, RunResult, build_runner};
-use crate::submission::{Reaction, SubmissionBackend};
+use crate::submission::{PrReviewComment, Reaction, SubmissionBackend};
 use crate::worktree::{WorktreeManager, git_in_dir, resolve_setup_script, validate_branch_name};
 
 /// Run the standalone fix flow for ALL 🚀-reacted findings on a PR concurrently.
@@ -57,7 +57,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 
     // 1. Fetch review comments and reactions, build fix items
     info!(pr_number, "polling GitHub for PR review comments");
-    let (items, reply_map) = fetch_and_parse_items(pr_number, &*submission)?;
+    let (items, comments) = fetch_and_parse_items(pr_number, &*submission)?;
     info!(total = items.len(), "parsed fix items from review comments");
 
     // Clean up stale 🚀 reactions on already-resolved findings (best-effort)
@@ -100,6 +100,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 
     let mut join_set = tokio::task::JoinSet::new();
 
+    let reply_map = collect_reply_bodies(&comments);
     let mut skipped: usize = 0;
     for item in &eligible_refs {
         let item = (*item).clone();
@@ -229,7 +230,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             completed = completed.len(),
             "polling for newly 🚀-reacted comments"
         );
-        let (items, reply_map) = match fetch_and_parse_items(pr_number, &*shared.submission) {
+        let (items, comments) = match fetch_and_parse_items(pr_number, &*shared.submission) {
             Ok(result) => result,
             Err(e) => {
                 warn!(error = %e, cycle, "failed to fetch review comments, retrying next cycle");
@@ -289,7 +290,13 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             "poll cycle summary"
         );
 
-        // Spawn fix agents for newly queued items
+        // Spawn fix agents for newly queued items — build reply map lazily
+        // to avoid cloning every reply body on cycles with no new work.
+        let reply_map = if newly_queued.is_empty() {
+            ReplyMap::new()
+        } else {
+            collect_reply_bodies(&comments)
+        };
         let mut skipped: usize = 0;
         for item in newly_queued {
             let finding_id = item.finding.id.clone();
@@ -360,16 +367,13 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 /// Fetch all inline review comments on a PR, check reactions for each that
 /// contains a finding marker, and build `FixItem`s.
 ///
-/// Also collects reply comment bodies grouped by parent comment ID, so callers
-/// can pass reply context to the fix agent.
+/// Returns the raw comments alongside the fix items so callers can build
+/// reply maps lazily — only when there are newly-queued items to process.
 pub fn fetch_and_parse_items(
     pr_number: u64,
     submission: &(impl SubmissionBackend + ?Sized),
-) -> Result<(Vec<FixItem>, ReplyMap)> {
+) -> Result<(Vec<FixItem>, Vec<PrReviewComment>)> {
     let comments = submission.fetch_pr_review_comments(pr_number)?;
-
-    // Collect reply bodies before building fix items (which skips replies)
-    let reply_map = collect_reply_bodies(&comments);
 
     // Only fetch reactions for comments that contain the finding marker
     let finding_comments: Vec<_> = comments
@@ -403,7 +407,7 @@ pub fn fetch_and_parse_items(
 
     Ok((
         build_fix_items_from_review_comments(&comments, &collected),
-        reply_map,
+        comments,
     ))
 }
 

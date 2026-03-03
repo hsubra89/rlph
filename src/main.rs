@@ -252,7 +252,7 @@ async fn main() {
             let submission = GitHubSubmission::new();
 
             if dry_run {
-                let (items, _reply_map) = match fix::fetch_and_parse_items(pr_number, &submission) {
+                let (items, _comments) = match fix::fetch_and_parse_items(pr_number, &submission) {
                     Ok(result) => result,
                     Err(e) => {
                         eprintln!("error: {e}");
