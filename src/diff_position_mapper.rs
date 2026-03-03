@@ -1,8 +1,17 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 use regex::Regex;
 
 use crate::error::Error;
+
+static DIFF_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^diff --git "?a/(.+?)"? "?b/(.+?)"?$"#).expect("diff header regex is valid")
+});
+
+static HUNK_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@").expect("hunk header regex is valid")
+});
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffPosition {
@@ -103,20 +112,11 @@ fn finalize_pending_file(file: PendingFile, file_hunks: &mut HashMap<String, Vec
 
 impl DiffPositionMapper {
     pub fn from_diff(diff: &str) -> Result<Self, Error> {
-        let diff_header_re =
-            Regex::new(r#"^diff --git "?a/(.+?)"? "?b/(.+?)"?$"#).map_err(|e| {
-                Error::DiffPositionMapper(format!("parse error: invalid diff header regex: {e}"))
-            })?;
-        let hunk_header_re =
-            Regex::new(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@").map_err(|e| {
-                Error::DiffPositionMapper(format!("parse error: invalid hunk header regex: {e}"))
-            })?;
-
         let mut file_hunks: HashMap<String, Vec<Hunk>> = HashMap::new();
         let mut pending: Option<PendingFile> = None;
 
         for line in diff.lines() {
-            if let Some(caps) = diff_header_re.captures(line) {
+            if let Some(caps) = DIFF_HEADER_RE.captures(line) {
                 if let Some(previous) = pending.take() {
                     finalize_pending_file(previous, &mut file_hunks);
                 }
@@ -141,7 +141,7 @@ impl DiffPositionMapper {
                 current.rename_to = Some(normalize_path(rename_to));
                 continue;
             }
-            if let Some(caps) = hunk_header_re.captures(line) {
+            if let Some(caps) = HUNK_HEADER_RE.captures(line) {
                 let start = parse_u32(
                     caps.get(1).expect("regex capture group exists").as_str(),
                     "hunk start",
