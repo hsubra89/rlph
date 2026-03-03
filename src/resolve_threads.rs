@@ -159,6 +159,17 @@ mutation($threadId: ID!) {
 }
 "#;
 
+fn check_graphql_errors<T>(response: &GraphQlResponse<T>) -> Result<()> {
+    if let Some(errors) = &response.errors {
+        let msgs: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+        return Err(Error::Submission(format!(
+            "GraphQL errors: {}",
+            msgs.join(", ")
+        )));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // GraphQL I/O
 // ---------------------------------------------------------------------------
@@ -222,13 +233,7 @@ fn fetch_review_threads(owner: &str, repo: &str, pr_number: u64) -> Result<Vec<R
     let response: GraphQlResponse<ReviewThreadsData> = serde_json::from_str(&stdout)
         .map_err(|e| Error::Submission(format!("failed to parse GraphQL response: {e}")))?;
 
-    if let Some(errors) = &response.errors {
-        let msgs: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
-        return Err(Error::Submission(format!(
-            "GraphQL errors: {}",
-            msgs.join(", ")
-        )));
-    }
+    check_graphql_errors(&response)?;
 
     let threads = response
         .data
@@ -264,13 +269,7 @@ fn resolve_thread(thread_id: &str) -> Result<()> {
     let response: GraphQlResponse<serde_json::Value> = serde_json::from_str(&stdout)
         .map_err(|e| Error::Submission(format!("failed to parse resolve response: {e}")))?;
 
-    if let Some(errors) = &response.errors {
-        let msgs: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
-        return Err(Error::Submission(format!(
-            "GraphQL errors: {}",
-            msgs.join(", ")
-        )));
-    }
+    check_graphql_errors(&response)?;
 
     Ok(())
 }
