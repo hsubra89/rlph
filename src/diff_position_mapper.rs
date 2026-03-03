@@ -201,20 +201,18 @@ impl DiffPositionMapper {
             });
         }
 
-        let mut best_line: Option<u32> = None;
-        let mut best_distance = u32::MAX;
-        for hunk in hunks.iter().copied() {
+        let mut best_line = hunks[0].closest_line(line);
+        let mut best_distance = line.abs_diff(best_line);
+        for hunk in hunks[1..].iter().copied() {
             let candidate = hunk.closest_line(line);
             let distance = line.abs_diff(candidate);
-            if distance < best_distance
-                || (distance == best_distance && best_line.is_none_or(|curr| candidate < curr))
-            {
+            if distance < best_distance || (distance == best_distance && candidate < best_line) {
                 best_distance = distance;
-                best_line = Some(candidate);
+                best_line = candidate;
             }
         }
 
-        let mapped_line = best_line.expect("hunks is non-empty, so best_line is always set");
+        let mapped_line = best_line;
         Ok(DiffPosition {
             file: normalized_file,
             line: mapped_line,
