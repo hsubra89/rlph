@@ -90,12 +90,7 @@ impl PendingFile {
 }
 
 fn normalize_path(path: &str) -> String {
-    let trimmed = path.trim().trim_matches('"');
-    trimmed
-        .strip_prefix("a/")
-        .or_else(|| trimmed.strip_prefix("b/"))
-        .unwrap_or(trimmed)
-        .to_string()
+    path.trim().trim_matches('"').to_string()
 }
 
 fn parse_u32(value: &str, context: &str) -> Result<u32, DiffPositionMapperError> {
@@ -359,5 +354,27 @@ mod tests {
         assert_eq!(mapped.file, "src/file with spaces.rs");
         assert_eq!(mapped.line, 2);
         assert!(!mapped.used_fallback);
+    }
+
+    #[test]
+    fn map_keeps_real_leading_a_path_component_distinct() {
+        let diff = r#"diff --git a/src/lib.rs b/src/lib.rs
+@@ -1,0 +1,1 @@
++first
+diff --git a/a/src/lib.rs b/a/src/lib.rs
+@@ -10,0 +10,1 @@
++second
+"#;
+        let mapper = DiffPositionMapper::from_diff(diff).unwrap();
+
+        let mapped_root = mapper.map("src/lib.rs", 1).unwrap();
+        assert_eq!(mapped_root.file, "src/lib.rs");
+        assert_eq!(mapped_root.line, 1);
+        assert!(!mapped_root.used_fallback);
+
+        let mapped_nested = mapper.map("a/src/lib.rs", 10).unwrap();
+        assert_eq!(mapped_nested.file, "a/src/lib.rs");
+        assert_eq!(mapped_nested.line, 10);
+        assert!(!mapped_nested.used_fallback);
     }
 }
