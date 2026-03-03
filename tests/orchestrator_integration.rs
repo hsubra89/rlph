@@ -525,6 +525,82 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
     }
 }
 
+/// Review runner factory where the first aggregate verdict is `needs_fix`
+/// and the second is `approved`.
+///
+/// Used to verify that orchestrator retries review rounds without invoking
+/// the internal ReviewFix phase.
+#[derive(Clone, Default)]
+struct NeedsFixThenApproveFactory {
+    aggregate_runs: Arc<AtomicUsize>,
+    fix_runs: Arc<AtomicUsize>,
+}
+
+impl NeedsFixThenApproveFactory {
+    fn aggregate_runs(&self) -> usize {
+        self.aggregate_runs.load(Ordering::SeqCst)
+    }
+
+    fn fix_runs(&self) -> usize {
+        self.fix_runs.load(Ordering::SeqCst)
+    }
+}
+
+impl ReviewRunnerFactory for NeedsFixThenApproveFactory {
+    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async {
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: r#"{"findings":[]}"#.into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            })
+        })))
+    }
+
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
+        let aggregate_runs = Arc::clone(&self.aggregate_runs);
+        let fix_runs = Arc::clone(&self.fix_runs);
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(
+            move |phase, _prompt, _dir| {
+                let aggregate_runs = Arc::clone(&aggregate_runs);
+                let fix_runs = Arc::clone(&fix_runs);
+                Box::pin(async move {
+                    let stdout = match phase {
+                        Phase::ReviewAggregate => {
+                            let call = aggregate_runs.fetch_add(1, Ordering::SeqCst);
+                            if call == 0 {
+                                r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"id":"issue-found","file":"src/main.rs","line":1,"severity":"warning","description":"issue"}],"fix_instructions":"fix everything"}"#.to_string()
+                            } else {
+                                r#"{"verdict":"approved","comment":"All good.","findings":[],"fix_instructions":null}"#.to_string()
+                            }
+                        }
+                        Phase::ReviewFix => {
+                            fix_runs.fetch_add(1, Ordering::SeqCst);
+                            r#"{"status":"fixed","summary":"attempted fixes","files_changed":["src/main.rs"]}"#
+                                .to_string()
+                        }
+                        _ => String::new(),
+                    };
+                    Ok(RunResult {
+                        exit_code: 0,
+                        stdout,
+                        stderr: String::new(),
+                        session_id: None,
+                    })
+                })
+            },
+        )))
+    }
+}
+
 /// Review runner factory where the review phase itself fails.
 struct FailReviewFactory;
 
@@ -1096,6 +1172,50 @@ async fn test_review_exhaustion_preserves_state() {
 }
 
 #[tokio::test]
+async fn test_run_once_needs_fix_retries_without_running_fix_phase() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let task = make_task(42, "Fix bug");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let factory = NeedsFixThenApproveFactory::default();
+
+    let mut config = make_config(true);
+    config.max_review_rounds = 2;
+
+    let orchestrator = Orchestrator::new(
+        source,
+        MockRunner::new("gh-42"),
+        submission,
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(factory.clone());
+
+    orchestrator.run_once().await.unwrap();
+
+    assert_eq!(
+        factory.aggregate_runs(),
+        2,
+        "expected 2 review rounds (needs_fix then approved)"
+    );
+    assert_eq!(
+        factory.fix_runs(),
+        0,
+        "orchestrator must not invoke internal review-fix phase"
+    );
+}
+
+#[tokio::test]
 async fn test_existing_pr_skips_submission() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
@@ -1284,7 +1404,6 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
         worktree_info: worktree_info.clone(),
         vars,
         comment_pr_number: Some(77),
-        push_remote_branch: None,
     };
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1348,7 +1467,6 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
         worktree_info,
         vars,
         comment_pr_number: Some(88),
-        push_remote_branch: None,
     };
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1408,7 +1526,6 @@ async fn test_review_only_exhaustion_preserves_state() {
         worktree_info: worktree_info.clone(),
         vars,
         comment_pr_number: Some(99),
-        push_remote_branch: None,
     };
     let err = orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1421,6 +1538,69 @@ async fn test_review_only_exhaustion_preserves_state() {
     assert_eq!(state.current_task.unwrap().phase, "review");
     assert!(state.history.is_empty());
     assert!(!worktree_info.path.exists());
+}
+
+#[tokio::test]
+async fn test_review_only_retries_rounds_without_running_fix_phase() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let task = make_task(99, "Needs fixes");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = MockSource::new(vec![task.clone()], Arc::clone(&source_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let worktree_info = worktree_mgr.create(99, "review-needs-fix").unwrap();
+    let vars = make_review_vars(
+        &task,
+        repo_dir.path(),
+        &worktree_info.branch,
+        &worktree_info.path,
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let factory = NeedsFixThenApproveFactory::default();
+
+    let mut config = make_config(true);
+    config.max_review_rounds = 2;
+
+    let orchestrator = Orchestrator::new(
+        source,
+        MockRunner::new("gh-99"),
+        submission,
+        worktree_mgr,
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(factory.clone());
+
+    let invocation = ReviewInvocation {
+        task_id_for_state: "pr-99".to_string(),
+        mark_in_review_task_id: None,
+        worktree_info: worktree_info.clone(),
+        vars,
+        comment_pr_number: Some(99),
+    };
+    orchestrator
+        .run_review_for_existing_pr(invocation)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        factory.aggregate_runs(),
+        2,
+        "expected 2 review rounds in review-only mode"
+    );
+    assert_eq!(
+        factory.fix_runs(),
+        0,
+        "review-only mode must not invoke internal review-fix phase"
+    );
 }
 
 // --- ProgressReporter output tests ---
@@ -1472,7 +1652,6 @@ fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
         worktree_info,
         vars,
         comment_pr_number: Some(77),
-        push_remote_branch: None,
     };
 
     (orchestrator, invocation, events)
@@ -1997,76 +2176,6 @@ impl ReviewRunnerFactory for MalformedAggregatorFactory {
     }
 }
 
-/// Review factory where the fix runner returns malformed JSON (with session_id),
-/// aggregator returns needs_fix on the first round so the fix phase runs,
-/// then approved on subsequent rounds.
-struct MalformedFixFactory {
-    fix_stdout: String,
-    agg_calls: Arc<AtomicUsize>,
-}
-
-impl MalformedFixFactory {
-    fn new(fix_stdout: &str) -> Self {
-        Self {
-            fix_stdout: fix_stdout.into(),
-            agg_calls: Arc::new(AtomicUsize::new(0)),
-        }
-    }
-}
-
-impl ReviewRunnerFactory for MalformedFixFactory {
-    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
-        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
-            Box::pin(async {
-                Ok(RunResult {
-                    exit_code: 0,
-                    stdout: r#"{"findings":[]}"#.into(),
-                    stderr: String::new(),
-                    session_id: None,
-                })
-            })
-        })))
-    }
-
-    fn create_step_runner(
-        &self,
-        _step: &ReviewStepConfig,
-        _timeout_retries: u32,
-        _name: &str,
-    ) -> AnyRunner {
-        let fix_stdout = self.fix_stdout.clone();
-        let agg_calls = Arc::clone(&self.agg_calls);
-        AnyRunner::Callback(CallbackRunner::new(Arc::new(
-            move |phase, _prompt, _dir| {
-                let fix_stdout = fix_stdout.clone();
-                let agg_calls = Arc::clone(&agg_calls);
-                Box::pin(async move {
-                    let stdout = match phase {
-                        Phase::ReviewAggregate => {
-                            let call = agg_calls.fetch_add(1, Ordering::SeqCst);
-                            if call == 0 {
-                                // First round: needs_fix
-                                r#"{"verdict":"needs_fix","comment":"Issues","findings":[],"fix_instructions":"fix it"}"#.to_string()
-                            } else {
-                                // Second round: approved
-                                r#"{"verdict":"approved","comment":"Fixed.","findings":[],"fix_instructions":null}"#.to_string()
-                            }
-                        }
-                        Phase::ReviewFix => fix_stdout,
-                        _ => String::new(),
-                    };
-                    Ok(RunResult {
-                        exit_code: 0,
-                        stdout,
-                        stderr: String::new(),
-                        session_id: Some("sess-fix-789".into()),
-                    })
-                })
-            },
-        )))
-    }
-}
-
 /// Helper to build an orchestrator for correction tests using `run_review_for_existing_pr`.
 fn build_correction_test_orchestrator<F: ReviewRunnerFactory>(
     repo_dir: &Path,
@@ -2113,7 +2222,6 @@ fn build_correction_test_orchestrator<F: ReviewRunnerFactory>(
         worktree_info,
         vars,
         comment_pr_number: Some(77),
-        push_remote_branch: None,
     };
 
     let fut = async move { orchestrator.run_review_for_existing_pr(invocation).await };
@@ -2287,131 +2395,5 @@ async fn test_aggregator_malformed_json_correction_exhausted_retries_round() {
     assert!(
         msg.contains("aggregator malformed JSON"),
         "expected descriptive parse-failure context in error, got: {msg}"
-    );
-}
-
-// --- Fix malformed JSON correction tests ---
-// Fix phase only runs when review_only=false, so we use run_once() which goes
-// through the full choose→implement→review→fix flow.
-
-#[allow(clippy::type_complexity)]
-fn build_fix_correction_orchestrator(
-    repo_dir: &Path,
-    wt_dir: &Path,
-    task: Task,
-    factory: MalformedFixFactory,
-    correction: MockCorrectionRunner,
-) -> (
-    Orchestrator<
-        MockSource,
-        MockRunner,
-        MockSubmission,
-        MalformedFixFactory,
-        CapturingReporter,
-        MockCorrectionRunner,
-    >,
-    Arc<Mutex<Vec<PipelineEvent>>>,
-) {
-    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
-    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
-    let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
-    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
-    let worktree_mgr = WorktreeManager::new(
-        repo_dir.to_path_buf(),
-        wt_dir.to_path_buf(),
-        "main".to_string(),
-    );
-    let state_dir = repo_dir.join(".rlph-test-state");
-    let (reporter, events) = CapturingReporter::new();
-
-    let orchestrator = Orchestrator::new(
-        source,
-        MockRunner::new("gh-42"),
-        submission,
-        worktree_mgr,
-        StateManager::new(&state_dir),
-        PromptEngine::new(None),
-        make_config(true),
-        repo_dir.to_path_buf(),
-    )
-    .with_review_factory(factory)
-    .with_reporter(reporter)
-    .with_correction_runner(correction);
-
-    (orchestrator, events)
-}
-
-#[tokio::test]
-async fn test_fix_malformed_json_correction_succeeds() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
-    let task = make_task(42, "Fix bug");
-
-    let factory = MalformedFixFactory::new("BROKEN FIX JSON");
-    // Correction returns valid fix JSON on first attempt
-    let correction = MockCorrectionRunner::new(vec![Ok(RunResult {
-        exit_code: 0,
-        stdout: r#"{"status":"fixed","summary":"corrected fix","files_changed":["src/main.rs"]}"#
-            .into(),
-        stderr: String::new(),
-        session_id: Some("sess-fix-789".into()),
-    })]);
-
-    let (orchestrator, events) = build_fix_correction_orchestrator(
-        repo_dir.path(),
-        wt_dir.path(),
-        task,
-        factory,
-        correction,
-    );
-    orchestrator.run_once().await.unwrap();
-
-    // Fix correction succeeded → review continues to round 2 where aggregator approves
-    let events = events.lock().unwrap();
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, PipelineEvent::ReviewSummary { .. })),
-        "expected review to complete after fix correction"
-    );
-}
-
-#[tokio::test]
-async fn test_fix_malformed_json_correction_exhausted_retries_round() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
-    let task = make_task(42, "Fix bug");
-
-    let factory = MalformedFixFactory::new("BROKEN FIX JSON");
-    // Both correction attempts return invalid JSON
-    let correction = MockCorrectionRunner::new(vec![
-        Ok(RunResult {
-            exit_code: 0,
-            stdout: "still broken fix".into(),
-            stderr: String::new(),
-            session_id: Some("sess-fix-789".into()),
-        }),
-        Ok(RunResult {
-            exit_code: 0,
-            stdout: "yet more garbage fix".into(),
-            stderr: String::new(),
-            session_id: Some("sess-fix-789".into()),
-        }),
-    ]);
-
-    let (orchestrator, events) = build_fix_correction_orchestrator(
-        repo_dir.path(),
-        wt_dir.path(),
-        task,
-        factory,
-        correction,
-    );
-    // Fix correction exhaustion → retries round → round 2 aggregator approves
-    orchestrator.run_once().await.unwrap();
-
-    let events = events.lock().unwrap();
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, PipelineEvent::ReviewSummary { .. })),
-        "expected review to complete after fix correction exhaustion triggers round retry"
     );
 }

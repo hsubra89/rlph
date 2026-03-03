@@ -12,8 +12,8 @@ use crate::deps::DependencyGraph;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
-    SchemaName, Verdict, correction_prompt, parse_aggregator_output, parse_fix_output,
-    parse_phase_output, render_findings_for_github, render_findings_for_prompt,
+    SchemaName, Verdict, correction_prompt, parse_aggregator_output, parse_phase_output,
+    render_findings_for_github, render_findings_for_prompt,
 };
 use crate::runner::{
     AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, resume_with_correction,
@@ -21,7 +21,7 @@ use crate::runner::{
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
 use crate::submission::{REVIEW_MARKER, SubmissionBackend, format_pr_comments_for_prompt};
-use crate::worktree::{WorktreeInfo, WorktreeManager, validate_branch_name};
+use crate::worktree::{WorktreeInfo, WorktreeManager};
 
 #[derive(Debug)]
 struct ReviewPhaseOutput {
@@ -47,7 +47,6 @@ pub struct ReviewInvocation {
     pub worktree_info: WorktreeInfo,
     pub vars: HashMap<String, String>,
     pub comment_pr_number: Option<u64>,
-    pub push_remote_branch: Option<String>,
 }
 
 /// Factory for creating review-phase runners. Defaults to `build_runner`.
@@ -418,8 +417,6 @@ impl<
                 &invocation.vars,
                 &invocation.worktree_info,
                 invocation.comment_pr_number,
-                invocation.push_remote_branch.as_deref(),
-                true,
             )
             .await;
 
@@ -634,7 +631,7 @@ impl<
             self.source.mark_in_review(&task.id)?;
         }
 
-        self.run_review_pipeline(&vars, worktree_info, pr_number, None, false)
+        self.run_review_pipeline(&vars, worktree_info, pr_number)
             .await
     }
 
@@ -643,15 +640,9 @@ impl<
         vars: &HashMap<String, String>,
         worktree_info: &WorktreeInfo,
         pr_number: Option<u64>,
-        push_remote_branch: Option<&str>,
-        review_only: bool,
     ) -> Result<()> {
         self.state_mgr.update_phase("review")?;
-        let max_reviews = if review_only {
-            1
-        } else {
-            self.config.max_review_rounds
-        };
+        let max_reviews = self.config.max_review_rounds;
         let mut review_passed = false;
         let mut last_json_failure: Option<String> = None;
 
@@ -850,94 +841,10 @@ impl<
                 break;
             }
 
-            if review_only {
-                info!("review-only mode — skipping fix phase");
-                break;
-            }
-
-            let fix_instructions = match agg_output.fix_instructions {
-                Some(instructions) if !instructions.trim().is_empty() => instructions,
-                _ => {
-                    warn!(
-                        "aggregator verdict is needs_fix but fix_instructions is empty — retrying"
-                    );
-                    continue;
-                }
-            };
-
-            info!(round, "review needs fix, running fix agent");
-
-            let fix_config = &self.config.review_fix;
-            let fix_runner = self.review_factory.create_step_runner(
-                fix_config,
-                self.config.agent_timeout_retries,
-                "fix",
+            info!(
+                round,
+                "review needs_fix; posting findings and waiting for external updates before next round"
             );
-
-            let mut fix_vars = vars.clone();
-            fix_vars.insert("fix_instructions".to_string(), fix_instructions);
-
-            let fix_prompt = self
-                .prompt_engine
-                .render_phase(&fix_config.prompt, &fix_vars)?;
-            let fix_result = fix_runner
-                .run(Phase::ReviewFix, &fix_prompt, &worktree_info.path)
-                .await?;
-
-            match parse_fix_output(&fix_result.stdout) {
-                Ok(fix_output) => {
-                    info!(
-                        status = ?fix_output.status,
-                        summary = fix_output.summary,
-                        files_changed = ?fix_output.files_changed,
-                        "fix agent complete"
-                    );
-                }
-                Err(e) => {
-                    // Attempt session resume with correction prompt for fix output
-                    let recovered = retry_with_correction(
-                        &self.correction_runner,
-                        fix_result.session_id.as_deref(),
-                        fix_config.runner,
-                        &fix_config.agent_binary,
-                        fix_config.agent_model.as_deref(),
-                        fix_config.agent_effort.as_deref(),
-                        fix_config.agent_variant.as_deref(),
-                        fix_config.agent_timeout,
-                        SchemaName::Fix,
-                        &e.to_string(),
-                        &worktree_info.path,
-                        parse_fix_output,
-                    )
-                    .await;
-                    match recovered {
-                        Some(fix_output) => {
-                            info!(
-                                status = ?fix_output.status,
-                                summary = fix_output.summary,
-                                files_changed = ?fix_output.files_changed,
-                                "fix agent complete (after correction)"
-                            );
-                        }
-                        None => {
-                            warn!(error = %e, "fix agent JSON correction failed — retrying round");
-                            last_json_failure = Some(format!("fix agent malformed JSON: {e}"));
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            if !self.config.dry_run {
-                let push_result = if let Some(remote_branch) = push_remote_branch {
-                    self.push_branch_to(worktree_info, remote_branch)
-                } else {
-                    self.push_branch(worktree_info)
-                };
-                if let Err(e) = push_result {
-                    warn!(error = %e, "failed to push review fixes");
-                }
-            }
         }
 
         // Report PR URL once after the review loop.
@@ -1003,26 +910,6 @@ impl<
         }
 
         info!(branch = worktree.branch, "pushed branch");
-        Ok(())
-    }
-
-    fn push_branch_to(&self, worktree: &WorktreeInfo, remote_branch: &str) -> Result<()> {
-        validate_branch_name(remote_branch)
-            .map_err(|e| Error::Orchestrator(format!("invalid remote branch name: {e}")))?;
-
-        let refspec = format!("HEAD:{remote_branch}");
-        let output = Command::new("git")
-            .args(["push", "-u", "origin", &refspec])
-            .current_dir(&worktree.path)
-            .output()
-            .map_err(|e| Error::Orchestrator(format!("failed to run git push: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Orchestrator(format!("git push failed: {stderr}")));
-        }
-
-        info!(branch = worktree.branch, remote_branch, "pushed branch");
         Ok(())
     }
 }

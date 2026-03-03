@@ -23,14 +23,14 @@ Fetch tasks (TaskSource) → filter by dependency graph (deps.rs)
   → Create worktree (worktree.rs)
   → Implement phase: agent codes in worktree
   → Push branch, submit PR (SubmissionBackend)
-  → Review pipeline (parallel phases → aggregate → fix loop)
+  → Review pipeline (parallel phases → aggregate → repeat rounds)
   → Cleanup worktree
 ```
 
 Review pipeline runs up to `max_review_rounds` (default 3). Each round:
 1. Runs review phases in parallel (correctness, security, hygiene by default)
 2. Aggregation agent combines findings, emits `REVIEW_APPROVED` or `REVIEW_NEEDS_FIX: <instructions>`
-3. If needs fix: fix agent applies changes, pushes, next round
+3. If needs fix: findings are posted; orchestrator does not auto-fix. Next round re-runs review to pick up external PR updates.
 
 ## Core Traits
 
