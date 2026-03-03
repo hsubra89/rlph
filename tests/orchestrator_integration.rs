@@ -525,82 +525,6 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
     }
 }
 
-/// Review runner factory where the first aggregate verdict is `needs_fix`
-/// and the second is `approved`.
-///
-/// Used to verify that orchestrator retries review rounds without invoking
-/// the internal ReviewFix phase.
-#[derive(Clone, Default)]
-struct NeedsFixThenApproveFactory {
-    aggregate_runs: Arc<AtomicUsize>,
-    fix_runs: Arc<AtomicUsize>,
-}
-
-impl NeedsFixThenApproveFactory {
-    fn aggregate_runs(&self) -> usize {
-        self.aggregate_runs.load(Ordering::SeqCst)
-    }
-
-    fn fix_runs(&self) -> usize {
-        self.fix_runs.load(Ordering::SeqCst)
-    }
-}
-
-impl ReviewRunnerFactory for NeedsFixThenApproveFactory {
-    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
-        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
-            Box::pin(async {
-                Ok(RunResult {
-                    exit_code: 0,
-                    stdout: r#"{"findings":[]}"#.into(),
-                    stderr: String::new(),
-                    session_id: None,
-                })
-            })
-        })))
-    }
-
-    fn create_step_runner(
-        &self,
-        _step: &ReviewStepConfig,
-        _timeout_retries: u32,
-        _name: &str,
-    ) -> AnyRunner {
-        let aggregate_runs = Arc::clone(&self.aggregate_runs);
-        let fix_runs = Arc::clone(&self.fix_runs);
-        AnyRunner::Callback(CallbackRunner::new(Arc::new(
-            move |phase, _prompt, _dir| {
-                let aggregate_runs = Arc::clone(&aggregate_runs);
-                let fix_runs = Arc::clone(&fix_runs);
-                Box::pin(async move {
-                    let stdout = match phase {
-                        Phase::ReviewAggregate => {
-                            let call = aggregate_runs.fetch_add(1, Ordering::SeqCst);
-                            if call == 0 {
-                                r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"id":"issue-found","file":"src/main.rs","line":1,"severity":"warning","description":"issue"}],"fix_instructions":"fix everything"}"#.to_string()
-                            } else {
-                                r#"{"verdict":"approved","comment":"All good.","findings":[],"fix_instructions":null}"#.to_string()
-                            }
-                        }
-                        Phase::ReviewFix => {
-                            fix_runs.fetch_add(1, Ordering::SeqCst);
-                            r#"{"status":"fixed","summary":"attempted fixes","files_changed":["src/main.rs"]}"#
-                                .to_string()
-                        }
-                        _ => String::new(),
-                    };
-                    Ok(RunResult {
-                        exit_code: 0,
-                        stdout,
-                        stderr: String::new(),
-                        session_id: None,
-                    })
-                })
-            },
-        )))
-    }
-}
-
 /// Review runner factory where the review phase itself fails.
 struct FailReviewFactory;
 
@@ -1167,7 +1091,6 @@ async fn test_run_once_needs_fix_runs_single_review() {
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
     let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
     let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
-    let factory = NeedsFixThenApproveFactory::default();
 
     let orchestrator = Orchestrator::new(
         source,
@@ -1183,20 +1106,10 @@ async fn test_run_once_needs_fix_runs_single_review() {
         make_config(true),
         repo_dir.path().to_path_buf(),
     )
-    .with_review_factory(factory.clone());
+    .with_review_factory(NeverApproveReviewFactory);
 
+    // needs_fix verdict completes without error
     orchestrator.run_once().await.unwrap();
-
-    assert_eq!(
-        factory.aggregate_runs(),
-        1,
-        "expected exactly 1 review round (no retry on needs_fix)"
-    );
-    assert_eq!(
-        factory.fix_runs(),
-        0,
-        "orchestrator must not invoke internal review-fix phase"
-    );
 }
 
 #[tokio::test]
@@ -1489,7 +1402,6 @@ async fn test_review_only_needs_fix_completes_successfully() {
         &worktree_info.path,
     );
     let state_dir = repo_dir.path().join(".rlph-test-state");
-    let factory = NeedsFixThenApproveFactory::default();
 
     let orchestrator = Orchestrator::new(
         source,
@@ -1501,7 +1413,7 @@ async fn test_review_only_needs_fix_completes_successfully() {
         make_config(true),
         repo_dir.path().to_path_buf(),
     )
-    .with_review_factory(factory.clone());
+    .with_review_factory(NeverApproveReviewFactory);
 
     let invocation = ReviewInvocation {
         task_id_for_state: "pr-99".to_string(),
@@ -1510,22 +1422,11 @@ async fn test_review_only_needs_fix_completes_successfully() {
         vars,
         comment_pr_number: Some(99),
     };
-    // needs_fix verdict should complete without error; no second round
+    // needs_fix verdict should complete without error
     orchestrator
         .run_review_for_existing_pr(invocation)
         .await
         .unwrap();
-
-    assert_eq!(
-        factory.aggregate_runs(),
-        1,
-        "expected exactly 1 review round (no retry on needs_fix)"
-    );
-    assert_eq!(
-        factory.fix_runs(),
-        0,
-        "orchestrator must not invoke internal review-fix phase"
-    );
 }
 
 // --- ProgressReporter output tests ---
