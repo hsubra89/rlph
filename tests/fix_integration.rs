@@ -390,15 +390,16 @@ impl SubmissionBackend for PollingMockSubmission {
 
     fn submit_inline_pr_review(
         &self,
-        _pr_number: u64,
-        _event: PullRequestReviewEvent,
-        _comments: &[InlineReviewComment],
+        pr_number: u64,
+        event: PullRequestReviewEvent,
+        comments: &[InlineReviewComment],
     ) -> Result<()> {
-        Ok(())
+        self.base
+            .submit_inline_pr_review(pr_number, event, comments)
     }
 
-    fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
-        Ok(String::new())
+    fn fetch_pr_diff(&self, pr_number: u64) -> Result<String> {
+        self.base.fetch_pr_diff(pr_number)
     }
 
     fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
