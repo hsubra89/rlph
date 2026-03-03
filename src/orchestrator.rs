@@ -769,7 +769,7 @@ impl<
         let mut agg_vars = vars.clone();
         agg_vars.insert("review_outputs".to_string(), review_outputs_text);
         agg_vars.insert("pr_comments".to_string(), pr_comments_text);
-        agg_vars.insert("pr_number".to_string(), pr_number_str.clone());
+        agg_vars.insert("pr_number".to_string(), pr_number_str);
 
         let agg_prompt = self
             .prompt_engine
