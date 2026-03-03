@@ -233,7 +233,7 @@ mod tests {
         include_str!("../tests/fixtures/diff_position_mapper/realistic_unified.diff");
 
     #[test]
-    fn map_returns_exact_line_when_request_is_within_hunk() {
+    fn test_map_returns_exact_line_when_request_is_within_hunk() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
         let mapped = mapper.map("src/foo.rs", 4).unwrap();
 
@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn map_returns_error_for_file_missing_from_diff() {
+    fn test_map_returns_error_for_file_missing_from_diff() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
         let err = mapper.map("src/missing.rs", 10).unwrap_err();
 
@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn map_uses_nearest_line_fallback_before_first_hunk() {
+    fn test_map_uses_nearest_line_fallback_before_first_hunk() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
         let mapped = mapper.map("src/foo.rs", 1).unwrap();
 
@@ -263,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn map_uses_nearest_line_fallback_between_hunks() {
+    fn test_map_uses_nearest_line_fallback_between_hunks() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
         let mapped = mapper.map("src/foo.rs", 10).unwrap();
 
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn map_uses_nearest_line_fallback_after_last_hunk() {
+    fn test_map_uses_nearest_line_fallback_after_last_hunk() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
         let mapped = mapper.map("src/foo.rs", 99).unwrap();
 
@@ -281,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn map_handles_first_and_last_lines_of_hunk() {
+    fn test_map_handles_first_and_last_lines_of_hunk() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
 
         let first = mapper.map("src/foo.rs", 3).unwrap();
@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn map_handles_single_line_hunk() {
+    fn test_map_handles_single_line_hunk() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
 
         let exact = mapper.map("src/single.rs", 42).unwrap();
@@ -307,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn map_handles_renamed_files() {
+    fn test_map_handles_renamed_files() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
 
         let mapped_new_path = mapper.map("src/new_name.rs", 8).unwrap();
@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn map_reports_no_mappable_lines_for_deletions_only_hunks() {
+    fn test_map_reports_no_mappable_lines_for_deletions_only_hunks() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
         let err = mapper.map("src/deletions_only.rs", 10).unwrap_err();
         assert_eq!(
@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn from_diff_rejects_non_diff_input() {
+    fn test_from_diff_rejects_non_diff_input() {
         let err = DiffPositionMapper::from_diff("not a unified diff").unwrap_err();
         assert_eq!(
             err,
@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn from_diff_accepts_quoted_diff_headers() {
+    fn test_from_diff_accepts_quoted_diff_headers() {
         let diff = r#"diff --git "a/src/file with spaces.rs" "b/src/file with spaces.rs"
 @@ -0,0 +1,2 @@
 +line 1
@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn map_keeps_real_leading_a_path_component_distinct() {
+    fn test_map_keeps_real_leading_a_path_component_distinct() {
         let diff = r#"diff --git a/src/lib.rs b/src/lib.rs
 @@ -1,0 +1,1 @@
 +first
@@ -379,7 +379,7 @@ diff --git a/a/src/lib.rs b/a/src/lib.rs
     }
 
     #[test]
-    fn map_keeps_real_leading_b_path_component_distinct() {
+    fn test_map_keeps_real_leading_b_path_component_distinct() {
         let diff = r#"diff --git a/src/main.rs b/src/main.rs
 @@ -1,0 +1,1 @@
 +first
