@@ -1136,6 +1136,41 @@ mod tests {
                 "not used in inline review mapping tests".to_string(),
             ))
         }
+
+        fn fetch_pr_review_comments(
+            &self,
+            _pr_number: u64,
+        ) -> Result<Vec<crate::submission::PrReviewComment>> {
+            Ok(vec![])
+        }
+
+        fn list_review_comment_reactions(
+            &self,
+            _comment_id: u64,
+        ) -> Result<Vec<crate::submission::Reaction>> {
+            Ok(vec![])
+        }
+
+        fn add_review_comment_reaction(&self, _comment_id: u64, _reaction: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn delete_review_comment_reaction(
+            &self,
+            _comment_id: u64,
+            _reaction_id: u64,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn reply_to_review_comment(
+            &self,
+            _pr_number: u64,
+            _comment_id: u64,
+            _body: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[test]

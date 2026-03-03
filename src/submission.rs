@@ -20,6 +20,26 @@ pub struct PrComment {
     pub author_association: Option<String>,
 }
 
+/// A pull request review comment (inline comment on a diff line).
+///
+/// Distinct from `PrComment` which represents issue-level comments.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrReviewComment {
+    pub id: u64,
+    pub body: String,
+    /// If this comment is a reply to another review comment.
+    #[serde(default)]
+    pub in_reply_to_id: Option<u64>,
+}
+
+/// A GitHub reaction on a comment.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Reaction {
+    pub id: u64,
+    /// Reaction type: "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct PrCommentUser {
     login: String,
@@ -88,6 +108,22 @@ pub trait SubmissionBackend: Send + Sync {
 
     /// Fetch a single comment by its ID.
     fn fetch_comment_by_id(&self, comment_id: u64) -> Result<PrComment>;
+
+    /// Fetch all inline review comments on a PR (comments on diff lines).
+    fn fetch_pr_review_comments(&self, pr_number: u64) -> Result<Vec<PrReviewComment>>;
+
+    /// List reactions on a PR review comment.
+    fn list_review_comment_reactions(&self, comment_id: u64) -> Result<Vec<Reaction>>;
+
+    /// Add a reaction to a PR review comment. `reaction` is one of:
+    /// "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes".
+    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<()>;
+
+    /// Remove a reaction from a PR review comment by reaction ID.
+    fn delete_review_comment_reaction(&self, comment_id: u64, reaction_id: u64) -> Result<()>;
+
+    /// Post a reply to a PR review comment.
+    fn reply_to_review_comment(&self, pr_number: u64, comment_id: u64, body: &str) -> Result<()>;
 }
 
 /// HTML marker injected into review comments so we can find and update them.
@@ -464,6 +500,85 @@ impl SubmissionBackend for GitHubSubmission {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}");
         run_gh_api(&endpoint)
     }
+
+    fn fetch_pr_review_comments(&self, pr_number: u64) -> Result<Vec<PrReviewComment>> {
+        run_gh_api_paginated(&format!(
+            "repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments"
+        ))
+    }
+
+    fn list_review_comment_reactions(&self, comment_id: u64) -> Result<Vec<Reaction>> {
+        run_gh_api_paginated(&format!(
+            "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions"
+        ))
+    }
+
+    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<()> {
+        let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions");
+        let output = Command::new("gh")
+            .args([
+                "api",
+                &endpoint,
+                "-X",
+                "POST",
+                "-f",
+                &format!("content={reaction}"),
+            ])
+            .output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Submission(format!(
+                "gh api add reaction failed: {stderr}"
+            )));
+        }
+        info!(comment_id, reaction, "added reaction to review comment");
+        Ok(())
+    }
+
+    fn delete_review_comment_reaction(&self, comment_id: u64, reaction_id: u64) -> Result<()> {
+        let endpoint =
+            format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions/{reaction_id}");
+        let output = Command::new("gh")
+            .args(["api", &endpoint, "-X", "DELETE"])
+            .output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Submission(format!(
+                "gh api delete reaction failed: {stderr}"
+            )));
+        }
+        info!(
+            comment_id,
+            reaction_id, "deleted reaction from review comment"
+        );
+        Ok(())
+    }
+
+    fn reply_to_review_comment(&self, pr_number: u64, comment_id: u64, body: &str) -> Result<()> {
+        let endpoint =
+            format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies");
+        let output = Command::new("gh")
+            .args([
+                "api",
+                &endpoint,
+                "-X",
+                "POST",
+                "-f",
+                &format!("body={body}"),
+            ])
+            .output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Submission(format!(
+                "gh api reply to review comment failed: {stderr}"
+            )));
+        }
+        info!(pr_number, comment_id, "replied to review comment");
+        Ok(())
+    }
 }
 
 pub(crate) fn detect_default_branch() -> String {
@@ -497,6 +612,25 @@ pub(crate) fn detect_default_branch() -> String {
     // 3. Ultimate fallback
     debug!("could not detect default branch, falling back to 'main'");
     "main".to_string()
+}
+
+/// Run a `gh api` call with automatic pagination, collecting all pages into a `Vec<T>`.
+pub(crate) fn run_gh_api_paginated<T: DeserializeOwned>(endpoint: &str) -> Result<Vec<T>> {
+    let output = Command::new("gh")
+        .args(["api", endpoint, "--paginate"])
+        .output()
+        .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Submission(format!(
+            "gh api {endpoint} failed: {stderr}"
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout)
+        .map_err(|e| Error::Submission(format!("failed to parse gh api response: {e}")))
 }
 
 pub(crate) fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {

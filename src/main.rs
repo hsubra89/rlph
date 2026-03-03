@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
 use rlph::fix;
-use rlph::fix_comment::{format_fix_items_for_display, parse_fix_items};
+use rlph::fix_comment::{build_fix_items_from_review_comments, format_fix_items_for_display};
 use rlph::orchestrator::{
     DefaultCorrectionRunner, Orchestrator, ReviewInvocation, build_task_vars,
 };
@@ -22,7 +22,7 @@ use rlph::sources::github::GitHubSource;
 use rlph::sources::linear::LinearSource;
 use rlph::sources::{Task, TaskSource};
 use rlph::state::StateManager;
-use rlph::submission::{GitHubSubmission, PrContext, REVIEW_MARKER, SubmissionBackend};
+use rlph::submission::{GitHubSubmission, PrContext, SubmissionBackend};
 use rlph::worktree::{WorktreeManager, resolve_setup_script};
 
 /// Parse a PR reference that is either a plain number or a GitHub PR URL.
@@ -252,7 +252,7 @@ async fn main() {
             let submission = GitHubSubmission::new();
 
             if dry_run {
-                let comments = match submission.fetch_pr_comments(pr_number) {
+                let review_comments = match submission.fetch_pr_review_comments(pr_number) {
                     Ok(c) => c,
                     Err(e) => {
                         eprintln!("error: {e}");
@@ -260,13 +260,28 @@ async fn main() {
                     }
                 };
 
-                let review_comment = comments.iter().find(|c| c.body.contains(REVIEW_MARKER));
-                let Some(review_comment) = review_comment else {
-                    eprintln!("No rlph review comment found on PR #{pr_number}.");
-                    std::process::exit(1);
-                };
+                // Fetch reactions for finding comments
+                let finding_comments: Vec<_> = review_comments
+                    .iter()
+                    .filter(|c| {
+                        c.in_reply_to_id.is_none()
+                            && c.body.contains(rlph::review_schema::FINDING_MARKER)
+                    })
+                    .collect();
 
-                let items = parse_fix_items(&review_comment.body);
+                let mut reactions_by_comment = Vec::new();
+                for comment in &finding_comments {
+                    match submission.list_review_comment_reactions(comment.id) {
+                        Ok(reactions) => reactions_by_comment.push((comment.id, reactions)),
+                        Err(e) => {
+                            eprintln!("error fetching reactions for comment {}: {e}", comment.id);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+
+                let items =
+                    build_fix_items_from_review_comments(&review_comments, &reactions_by_comment);
                 print!("{}", format_fix_items_for_display(&items));
                 return;
             }
