@@ -760,9 +760,12 @@ fn cleanup_stale_rockets(items: &[FixItem], submission: &(impl SubmissionBackend
 
 /// Update reactions on the finding's review comment and post a reply.
 ///
-/// - Remove all 🚀 reactions
 /// - Add 👍 (fixed) or 😕 (won't fix)
 /// - Post a reply with details
+/// - Remove all 🚀 reactions
+///
+/// The outcome emoji and reply are added before removing 🚀 so that observers
+/// always see the result before the queuing signal disappears.
 fn update_reactions_and_reply(
     ctx: &FixContext<'_>,
     submission: &(impl SubmissionBackend + ?Sized),
@@ -770,17 +773,6 @@ fn update_reactions_and_reply(
 ) {
     let comment_id = ctx.item.comment_id;
     let finding_id = &ctx.item.finding.id;
-
-    // Remove all 🚀 reactions (best-effort)
-    for reaction_id in &ctx.item.rocket_reaction_ids {
-        if let Err(e) = submission.delete_review_comment_reaction(comment_id, *reaction_id) {
-            warn!(
-                %finding_id, comment_id, reaction_id,
-                error = %e,
-                "failed to remove 🚀 reaction (may have been removed already)"
-            );
-        }
-    }
 
     // Add result reaction (best-effort)
     let (reaction, reply_body) = match fix_result {
@@ -811,6 +803,18 @@ fn update_reactions_and_reply(
             error = %e,
             "failed to post fix reply"
         );
+    }
+
+    // Remove all 🚀 reactions (best-effort) — done last so the outcome is visible
+    // before the queuing signal disappears.
+    for reaction_id in &ctx.item.rocket_reaction_ids {
+        if let Err(e) = submission.delete_review_comment_reaction(comment_id, *reaction_id) {
+            warn!(
+                %finding_id, comment_id, reaction_id,
+                error = %e,
+                "failed to remove 🚀 reaction (may have been removed already)"
+            );
+        }
     }
 }
 
