@@ -324,7 +324,8 @@ fn run_gh(args: &[&str], label: &str) -> Result<String> {
         return Err(Error::Submission(format!("{label} failed: {stderr}")));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    String::from_utf8(output.stdout)
+        .map_err(|e| Error::Submission(format!("{label}: non-UTF-8 stdout: {e}")))
 }
 
 fn parse_gh_json<T: DeserializeOwned>(stdout: &str) -> Result<T> {
