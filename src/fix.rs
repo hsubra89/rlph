@@ -24,7 +24,9 @@ use crate::fix_comment::{
 use crate::fix_deps::{FindingDeps, resolved_finding_ids};
 use crate::orchestrator::{CorrectionRunner, retry_with_correction};
 use crate::prompts::PromptEngine;
-use crate::review_schema::{SchemaName, StandaloneFixOutput, parse_standalone_fix_output};
+use crate::review_schema::{
+    FINDING_MARKER, SchemaName, StandaloneFixOutput, parse_standalone_fix_output,
+};
 use crate::runner::{AgentRunner, Phase, RunResult, build_runner};
 use crate::submission::SubmissionBackend;
 use crate::worktree::{WorktreeManager, git_in_dir, resolve_setup_script, validate_branch_name};
@@ -354,9 +356,7 @@ pub fn fetch_and_parse_items(
     // Only fetch reactions for comments that contain the finding marker
     let finding_comments: Vec<_> = comments
         .iter()
-        .filter(|c| {
-            c.in_reply_to_id.is_none() && c.body.contains(crate::review_schema::FINDING_MARKER)
-        })
+        .filter(|c| c.in_reply_to_id.is_none() && c.body.contains(FINDING_MARKER))
         .collect();
 
     // Fetch reactions in parallel across threads
