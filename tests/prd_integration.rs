@@ -27,7 +27,6 @@ fn test_config(source: &str) -> Config {
         agent_timeout_retries: 2,
         review_phases: default_review_phases(),
         review_aggregate: default_review_step("review-aggregate"),
-        review_fix: default_review_step("review-fix"),
         fix: default_review_step("fix"),
         worktree_setup_script: None,
         linear: None,

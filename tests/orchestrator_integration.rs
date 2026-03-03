@@ -145,12 +145,6 @@ impl AgentRunner for MockRunner {
                 stderr: String::new(),
                 session_id: None,
             }),
-            Phase::ReviewFix => Ok(RunResult {
-                exit_code: 0,
-                stdout: r#"{"status":"fixed","summary":"applied fixes","files_changed":["src/main.rs"]}"#.into(),
-                stderr: String::new(),
-                session_id: None,
-            }),
             Phase::Fix => Ok(RunResult {
                 exit_code: 0,
                 stdout: r#"{"status":"fixed","commit_message":"fix: done"}"#.into(),
@@ -289,12 +283,6 @@ impl AgentRunner for CountingRunner {
                 stderr: String::new(),
                 session_id: None,
             }),
-            Phase::ReviewFix => Ok(RunResult {
-                exit_code: 0,
-                stdout: r#"{"status":"fixed","summary":"done","files_changed":[]}"#.into(),
-                stderr: String::new(),
-                session_id: None,
-            }),
             Phase::Fix => Ok(RunResult {
                 exit_code: 0,
                 stdout: r#"{"status":"fixed","commit_message":"fix: done"}"#.into(),
@@ -348,12 +336,6 @@ impl AgentRunner for FailAtPhaseRunner {
             Phase::ReviewAggregate => Ok(RunResult {
                 exit_code: 0,
                 stdout: APPROVED_AGGREGATOR_JSON.into(),
-                stderr: String::new(),
-                session_id: None,
-            }),
-            Phase::ReviewFix => Ok(RunResult {
-                exit_code: 0,
-                stdout: r#"{"status":"fixed","summary":"done","files_changed":[]}"#.into(),
                 stderr: String::new(),
                 session_id: None,
             }),
@@ -468,7 +450,6 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
             Box::pin(async move {
                 let stdout = match phase {
                     Phase::ReviewAggregate => r#"{"verdict":"approved","comment":"All good.","findings":[],"fix_instructions":null}"#.to_string(),
-                    Phase::ReviewFix => r#"{"status":"fixed","summary":"done","files_changed":[]}"#.to_string(),
                     _ => String::new(),
                 };
                 Ok(RunResult {
@@ -511,7 +492,6 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
                     Phase::ReviewAggregate => {
                         r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"id":"issue-found","file":"src/main.rs","line":1,"severity":"warning","description":"issue"}],"fix_instructions":"fix everything"}"#.to_string()
                     }
-                    Phase::ReviewFix => r#"{"status":"fixed","summary":"attempted fixes","files_changed":["src/main.rs"]}"#.to_string(),
                     _ => String::new(),
                 };
                 Ok(RunResult {
@@ -1938,7 +1918,6 @@ impl ReviewRunnerFactory for MalformedPhaseFactory {
             Box::pin(async move {
                 let stdout = match phase {
                     Phase::ReviewAggregate => r#"{"verdict":"approved","comment":"All good.","findings":[],"fix_instructions":null}"#.to_string(),
-                    Phase::ReviewFix => r#"{"status":"fixed","summary":"done","files_changed":[]}"#.to_string(),
                     _ => String::new(),
                 };
                 Ok(RunResult {
@@ -1985,9 +1964,6 @@ impl ReviewRunnerFactory for MalformedAggregatorFactory {
                 Box::pin(async move {
                     let stdout = match phase {
                         Phase::ReviewAggregate => agg_stdout,
-                        Phase::ReviewFix => {
-                            r#"{"status":"fixed","summary":"done","files_changed":[]}"#.to_string()
-                        }
                         _ => String::new(),
                     };
                     Ok(RunResult {

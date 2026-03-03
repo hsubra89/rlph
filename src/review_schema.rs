@@ -205,14 +205,6 @@ pub fn parse_aggregator_output(raw: &str) -> Result<AggregatorOutput> {
         .map_err(|e| Error::Orchestrator(format!("failed to parse aggregator JSON: {e}")))
 }
 
-/// Status returned by the review-fix agent.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum FixStatus {
-    Fixed,
-    Error,
-}
-
 /// Structured output from the standalone `rlph fix` agent.
 ///
 /// Uses a tagged union so `"status": "fixed"` includes `commit_message`
@@ -222,21 +214,6 @@ pub enum FixStatus {
 pub enum StandaloneFixOutput {
     Fixed { commit_message: String },
     WontFix { reason: String },
-}
-
-/// Structured output from the review-fix agent.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct FixOutput {
-    pub status: FixStatus,
-    pub summary: String,
-    pub files_changed: Vec<String>,
-}
-
-/// Parse the fix agent's JSON output into `FixOutput`.
-pub fn parse_fix_output(raw: &str) -> Result<FixOutput> {
-    let json = strip_markdown_fences(raw);
-    serde_json::from_str(&json)
-        .map_err(|e| Error::Orchestrator(format!("failed to parse fix JSON: {e}")))
 }
 
 /// Parse the standalone fix agent's JSON output into `StandaloneFixOutput`.
@@ -251,7 +228,6 @@ pub fn parse_standalone_fix_output(raw: &str) -> Result<StandaloneFixOutput> {
 pub enum SchemaName {
     Phase,
     Aggregator,
-    Fix,
     StandaloneFix,
 }
 
@@ -264,9 +240,6 @@ impl SchemaName {
             }
             SchemaName::Aggregator => {
                 r#"{"verdict": "approved", "comment": "summary", "findings": [{"id": "example-issue", "file": "src/main.rs", "line": 1, "severity": "warning", "description": "issue", "category": "style", "depends_on": []}], "fix_instructions": null}"#
-            }
-            SchemaName::Fix => {
-                r#"{"status": "fixed", "summary": "what was done", "files_changed": ["src/main.rs"]}"#
             }
             SchemaName::StandaloneFix => {
                 r#"{"status": "fixed", "commit_message": "finding-id: description of fix"}"#
@@ -630,79 +603,6 @@ mod tests {
         );
     }
 
-    // ---- FixOutput tests ----
-
-    #[test]
-    fn test_parse_fix_output_valid() {
-        let json = r#"{
-            "status": "fixed",
-            "summary": "Applied SQL injection fix",
-            "files_changed": ["src/main.rs", "src/db.rs"]
-        }"#;
-        let output = parse_fix_output(json).unwrap();
-        assert_eq!(output.status, FixStatus::Fixed);
-        assert_eq!(output.summary, "Applied SQL injection fix");
-        assert_eq!(output.files_changed, vec!["src/main.rs", "src/db.rs"]);
-    }
-
-    #[test]
-    fn test_parse_fix_output_empty_files_changed() {
-        let json = r#"{
-            "status": "fixed",
-            "summary": "No code changes needed",
-            "files_changed": []
-        }"#;
-        let output = parse_fix_output(json).unwrap();
-        assert!(output.files_changed.is_empty());
-    }
-
-    #[test]
-    fn test_parse_fix_output_missing_fields_errors() {
-        // missing summary
-        let json = r#"{"status": "fixed", "files_changed": []}"#;
-        assert!(parse_fix_output(json).is_err());
-
-        // missing status
-        let json = r#"{"summary": "done", "files_changed": []}"#;
-        assert!(parse_fix_output(json).is_err());
-
-        // missing files_changed
-        let json = r#"{"status": "fixed", "summary": "done"}"#;
-        assert!(parse_fix_output(json).is_err());
-    }
-
-    #[test]
-    fn test_parse_fix_output_fenced_json() {
-        let input = "```json\n{\"status\": \"fixed\", \"summary\": \"done\", \"files_changed\": [\"a.rs\"]}\n```";
-        let output = parse_fix_output(input).unwrap();
-        assert_eq!(output.status, FixStatus::Fixed);
-        assert_eq!(output.files_changed, vec!["a.rs"]);
-    }
-
-    #[test]
-    fn test_parse_fix_output_error_status() {
-        let json = r#"{
-            "status": "error",
-            "summary": "Could not apply fix",
-            "files_changed": []
-        }"#;
-        let output = parse_fix_output(json).unwrap();
-        assert_eq!(output.status, FixStatus::Error);
-        assert_eq!(output.summary, "Could not apply fix");
-        assert!(output.files_changed.is_empty());
-    }
-
-    #[test]
-    fn test_parse_fix_output_invalid_status_errors() {
-        let json = r#"{"status": "unknown", "summary": "done", "files_changed": []}"#;
-        assert!(parse_fix_output(json).is_err());
-    }
-
-    #[test]
-    fn test_parse_fix_output_invalid_json_errors() {
-        assert!(parse_fix_output("not json").is_err());
-    }
-
     // ---- id and depends_on tests ----
 
     #[test]
@@ -810,17 +710,6 @@ mod tests {
         assert!(prompt.contains("fix_instructions"));
         let example = SchemaName::Aggregator.example_json();
         assert!(serde_json::from_str::<AggregatorOutput>(example).is_ok());
-    }
-
-    #[test]
-    fn test_correction_prompt_contains_schema_example_fix() {
-        let prompt = correction_prompt(SchemaName::Fix, "trailing comma");
-        assert!(prompt.contains("could not be parsed"));
-        assert!(prompt.contains("trailing comma"));
-        assert!(prompt.contains("status"));
-        assert!(prompt.contains("files_changed"));
-        let example = SchemaName::Fix.example_json();
-        assert!(serde_json::from_str::<FixOutput>(example).is_ok());
     }
 
     // ---- Severity ordering tests ----

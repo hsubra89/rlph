@@ -10,7 +10,7 @@ A ralph loop is a fully autonomous cycle where an AI agent picks up a task, impl
 fetch task → choose → implement → self-review → submit PR → repeat
 ```
 
-Each iteration is self-contained: the agent works in an isolated git worktree, so the main branch stays clean regardless of what the agent produces. If the self-review fails, the agent iterates on its own changes up to a configurable number of rounds before giving up.
+Each iteration is self-contained: the agent works in an isolated git worktree, so the main branch stays clean regardless of what the agent produces.
 
 In practice, you label issues in your tracker (GitHub, Linear), point `rlph` at the repo, and walk away. The tool handles task selection (including dependency ordering), worktree lifecycle, agent orchestration across choose/implement/review phases, branch pushing, and PR creation.
 
@@ -116,7 +116,6 @@ Options:
       --implement-timeout <SECONDS>      Implement phase timeout in seconds (default: 1800)
       --agent-effort <LEVEL>             Effort level: low, medium, high (Claude/Codex only)
       --agent-variant <VARIANT>          Variant: low, high (OpenCode only)
-      --max-review-rounds <N>            Max review-fix rounds per task
       --agent-timeout-retries <N>        Retries on agent timeout (session resume)
   -h, --help                             Print help
   -V, --version                          Print version
@@ -142,7 +141,7 @@ Specify one of `--once`, `--continuous`, or `--max-iterations`. `--continuous` a
 
 ### `rlph review <PR>`
 
-Runs the review pipeline directly on an existing PR (accepts PR number or full GitHub URL). Creates a worktree from the PR's head branch, runs all review phases, posts findings, and pushes any fix commits.
+Runs the review pipeline directly on an existing PR (accepts PR number or full GitHub URL). Creates a worktree from the PR's head branch, runs all review phases, and posts findings.
 
 ### `rlph fix <PR>`
 

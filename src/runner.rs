@@ -52,7 +52,6 @@ pub enum Phase {
     Implement,
     Review,
     ReviewAggregate,
-    ReviewFix,
     Fix,
 }
 
@@ -63,7 +62,6 @@ impl fmt::Display for Phase {
             Phase::Implement => write!(f, "implement"),
             Phase::Review => write!(f, "review"),
             Phase::ReviewAggregate => write!(f, "review-aggregate"),
-            Phase::ReviewFix => write!(f, "review-fix"),
             Phase::Fix => write!(f, "fix"),
         }
     }
@@ -1296,7 +1294,6 @@ mod tests {
         assert_eq!(Phase::Implement.to_string(), "implement");
         assert_eq!(Phase::Review.to_string(), "review");
         assert_eq!(Phase::ReviewAggregate.to_string(), "review-aggregate");
-        assert_eq!(Phase::ReviewFix.to_string(), "review-fix");
         assert_eq!(Phase::Fix.to_string(), "fix");
     }
 
