@@ -100,7 +100,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 
     let mut join_set = tokio::task::JoinSet::new();
 
-    let reply_map = collect_reply_bodies(&comments);
+    let mut reply_map = collect_reply_bodies(&comments);
     let mut skipped: usize = 0;
     for item in &eligible_refs {
         let item = (*item).clone();
@@ -110,7 +110,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
             pr_number,
             &shared.fix_config,
             prompt_engine,
-            &reply_map,
+            &mut reply_map,
         ) else {
             skipped += 1;
             continue;
@@ -292,7 +292,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
         // Spawn fix agents for newly queued items — build reply map lazily
         // to avoid cloning every reply body on cycles with no new work.
-        let reply_map = if newly_queued.is_empty() {
+        let mut reply_map = if newly_queued.is_empty() {
             ReplyMap::new()
         } else {
             collect_reply_bodies(&comments)
@@ -306,7 +306,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
                 pr_number,
                 &shared.fix_config,
                 prompt_engine,
-                &reply_map,
+                &mut reply_map,
             ) else {
                 failed.insert(finding_id);
                 skipped += 1;
@@ -624,7 +624,7 @@ fn prepare_fix_item(
     pr_number: u64,
     fix_config: &ReviewStepConfig,
     prompt_engine: &PromptEngine,
-    reply_map: &ReplyMap,
+    reply_map: &mut ReplyMap,
 ) -> Option<PreparedFixItem> {
     let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
     if let Err(e) = validate_branch_name(&fix_branch) {
@@ -650,7 +650,7 @@ fn prepare_fix_item(
     );
 
     let comment_id = item.comment_id;
-    let replies = reply_map.get(&comment_id).cloned().unwrap_or_default();
+    let replies = reply_map.remove(&comment_id).unwrap_or_default();
 
     Some(PreparedFixItem {
         item,
