@@ -28,7 +28,7 @@ use tokio::sync::watch;
 // --- Shared test JSON literals ---
 
 const APPROVED_AGGREGATOR_JSON: &str =
-    r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#;
+    r#"{"verdict":"approved","comment":"All looks good.","findings":[]}"#;
 
 // --- Shared tracking state ---
 
@@ -461,7 +461,7 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
             Box::pin(async move {
                 let stdout = match phase {
-                    Phase::ReviewAggregate => r#"{"verdict":"approved","comment":"All good.","findings":[],"fix_instructions":null}"#.to_string(),
+                    Phase::ReviewAggregate => APPROVED_AGGREGATOR_JSON.to_string(),
                     _ => String::new(),
                 };
                 Ok(RunResult {
@@ -502,7 +502,7 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
             Box::pin(async move {
                 let stdout = match phase {
                     Phase::ReviewAggregate => {
-                        r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"id":"issue-found","file":"src/main.rs","line":1,"severity":"warning","description":"issue"}],"fix_instructions":"fix everything"}"#.to_string()
+                        r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"id":"issue-found","file":"src/main.rs","line":1,"severity":"warning","description":"issue"}]}"#.to_string()
                     }
                     _ => String::new(),
                 };
@@ -1575,7 +1575,7 @@ async fn test_review_reports_summary() {
             _ => None,
         })
         .expect("should have ReviewSummary event");
-    assert_eq!(summary, "All good.");
+    assert_eq!(summary, "All looks good.");
 }
 
 #[tokio::test]
@@ -1932,7 +1932,7 @@ impl ReviewRunnerFactory for MalformedPhaseFactory {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
             Box::pin(async move {
                 let stdout = match phase {
-                    Phase::ReviewAggregate => r#"{"verdict":"approved","comment":"All good.","findings":[],"fix_instructions":null}"#.to_string(),
+                    Phase::ReviewAggregate => APPROVED_AGGREGATOR_JSON.to_string(),
                     _ => String::new(),
                 };
                 Ok(RunResult {
@@ -2136,14 +2136,12 @@ async fn test_aggregator_malformed_json_correction_succeeds() {
         agg_stdout: "BROKEN AGG JSON".into(),
     };
     // Correction returns valid aggregator JSON (approved)
-    let correction = MockCorrectionRunner::new(vec![
-        Ok(RunResult {
-            exit_code: 0,
-            stdout: r#"{"verdict":"approved","comment":"Corrected review.","findings":[],"fix_instructions":null}"#.into(),
-            stderr: String::new(),
-            session_id: Some("sess-agg-456".into()),
-        }),
-    ]);
+    let correction = MockCorrectionRunner::new(vec![Ok(RunResult {
+        exit_code: 0,
+        stdout: r#"{"verdict":"approved","comment":"Corrected review.","findings":[]}"#.into(),
+        stderr: String::new(),
+        session_id: Some("sess-agg-456".into()),
+    })]);
 
     let (fut, events) = build_correction_test_orchestrator(
         repo_dir.path(),
