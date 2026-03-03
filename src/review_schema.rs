@@ -467,8 +467,7 @@ mod tests {
                     "severity": "warning",
                     "description": "Unused import"
                 }
-            ],
-            "fix_instructions": "Fix the SQL injection in main.rs line 42."
+            ]
         }"#;
         let output = parse_aggregator_output(json).unwrap();
         assert_eq!(output.verdict, Verdict::NeedsFix);
@@ -537,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_fenced_json() {
-        let fenced = "```json\n{\n  \"verdict\": \"needs_fix\",\n  \"comment\": \"Fix it.\",\n  \"findings\": [{\"id\": \"nit-issue\", \"file\": \"a.rs\", \"line\": 1, \"severity\": \"info\", \"description\": \"nit\"}],\n  \"fix_instructions\": \"do the thing\"\n}\n```";
+        let fenced = "```json\n{\n  \"verdict\": \"needs_fix\",\n  \"comment\": \"Fix it.\",\n  \"findings\": [{\"id\": \"nit-issue\", \"file\": \"a.rs\", \"line\": 1, \"severity\": \"info\", \"description\": \"nit\"}]\n}\n```";
         let output = parse_aggregator_output(fenced).unwrap();
         assert_eq!(output.verdict, Verdict::NeedsFix);
         assert_eq!(output.findings.len(), 1);
