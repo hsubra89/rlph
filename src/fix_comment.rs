@@ -275,11 +275,7 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
         if cycle > 0 {
             sub.push(format!("{cycle} cycle"));
         }
-        if sub.is_empty() {
-            parts.push(format!("{queued} queued"));
-        } else {
-            parts.push(format!("{queued} queued ({})", sub.join(", ")));
-        }
+        parts.push(format!("{queued} queued ({})", sub.join(", ")));
     }
     if fixed > 0 {
         parts.push(format!("{fixed} fixed"));
