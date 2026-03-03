@@ -87,7 +87,6 @@ pub struct AggregatorOutput {
     pub verdict: Verdict,
     pub comment: String,
     pub findings: Vec<ReviewFinding>,
-    pub fix_instructions: Option<String>,
 }
 
 /// Per-phase structured output: a list of findings returned by each review agent.
@@ -239,7 +238,7 @@ impl SchemaName {
                 r#"{"findings": [{"id": "example-issue", "file": "src/main.rs", "line": 42, "severity": "critical", "description": "issue description", "category": "style", "depends_on": []}]}"#
             }
             SchemaName::Aggregator => {
-                r#"{"verdict": "approved", "comment": "summary", "findings": [{"id": "example-issue", "file": "src/main.rs", "line": 1, "severity": "warning", "description": "issue", "category": "style", "depends_on": []}], "fix_instructions": null}"#
+                r#"{"verdict": "approved", "comment": "summary", "findings": [{"id": "example-issue", "file": "src/main.rs", "line": 1, "severity": "warning", "description": "issue", "category": "style", "depends_on": []}]}"#
             }
             SchemaName::StandaloneFix => {
                 r#"{"status": "fixed", "commit_message": "finding-id: description of fix"}"#
@@ -319,14 +318,12 @@ mod tests {
         let json = r#"{
             "verdict": "approved",
             "comment": "All looks good.",
-            "findings": [],
-            "fix_instructions": null
+            "findings": []
         }"#;
         let output = parse_aggregator_output(json).unwrap();
         assert_eq!(output.verdict, Verdict::Approved);
         assert_eq!(output.comment, "All looks good.");
         assert!(output.findings.is_empty());
-        assert!(output.fix_instructions.is_none());
     }
 
     #[test]
@@ -364,10 +361,6 @@ mod tests {
             "SQL injection vulnerability"
         );
         assert_eq!(output.findings[1].severity, Severity::Warning);
-        assert_eq!(
-            output.fix_instructions.as_deref(),
-            Some("Fix the SQL injection in main.rs line 42.")
-        );
     }
 
     #[test]
@@ -375,8 +368,7 @@ mod tests {
         let json = r#"{
             "verdict": "approved",
             "comment": "Clean.",
-            "findings": [],
-            "fix_instructions": null
+            "findings": []
         }"#;
         let output = parse_aggregator_output(json).unwrap();
         assert!(output.findings.is_empty());
@@ -393,8 +385,7 @@ mod tests {
         let json = r#"{
             "verdict": "maybe",
             "comment": "hmm",
-            "findings": [],
-            "fix_instructions": null
+            "findings": []
         }"#;
         assert!(parse_aggregator_output(json).is_err());
     }
@@ -438,36 +429,10 @@ mod tests {
             ("approved", Verdict::Approved),
             ("needs_fix", Verdict::NeedsFix),
         ] {
-            let json = format!(
-                r#"{{"verdict": "{variant}", "comment": "x", "findings": [], "fix_instructions": null}}"#
-            );
+            let json = format!(r#"{{"verdict": "{variant}", "comment": "x", "findings": []}}"#);
             let output = parse_aggregator_output(&json).unwrap();
             assert_eq!(output.verdict, expected);
         }
-    }
-
-    #[test]
-    fn test_fix_instructions_null_is_none() {
-        let json =
-            r#"{"verdict": "approved", "comment": "ok", "findings": [], "fix_instructions": null}"#;
-        assert!(
-            parse_aggregator_output(json)
-                .unwrap()
-                .fix_instructions
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn test_fix_instructions_absent_is_none() {
-        // serde_json treats missing Option fields as None
-        let json = r#"{"verdict": "approved", "comment": "ok", "findings": []}"#;
-        assert!(
-            parse_aggregator_output(json)
-                .unwrap()
-                .fix_instructions
-                .is_none()
-        );
     }
 
     // ---- PhaseOutput tests ----
@@ -707,7 +672,6 @@ mod tests {
         assert!(prompt.contains("could not be parsed"));
         assert!(prompt.contains("EOF while parsing"));
         assert!(prompt.contains("verdict"));
-        assert!(prompt.contains("fix_instructions"));
         let example = SchemaName::Aggregator.example_json();
         assert!(serde_json::from_str::<AggregatorOutput>(example).is_ok());
     }
