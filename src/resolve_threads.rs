@@ -280,6 +280,8 @@ fn resolve_thread(thread_id: &str) -> Result<()> {
 
     check_graphql_errors(&response)?;
 
+    // Response data (isResolved confirmation) intentionally discarded —
+    // a successful mutation with no GraphQL errors is sufficient.
     Ok(())
 }
 
