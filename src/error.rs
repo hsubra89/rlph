@@ -47,6 +47,9 @@ pub enum Error {
     #[error("orchestrator error: {0}")]
     Orchestrator(String),
 
+    #[error(transparent)]
+    DiffPositionMapper(#[from] crate::diff_position_mapper::DiffPositionMapperError),
+
     #[error("interrupted by signal")]
     Interrupted,
 }
