@@ -180,7 +180,7 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
 mod tests {
     use super::*;
     use crate::review_schema::{Severity, render_inline_finding_comment_for_github};
-    use crate::test_helpers::make_reactions;
+    use crate::test_helpers::{make_reactions, make_review_comment};
 
     fn make_finding(id: &str, severity: Severity, category: &str) -> ReviewFinding {
         ReviewFinding {
@@ -191,15 +191,6 @@ mod tests {
             description: format!("{id} description"),
             category: Some(category.to_string()),
             depends_on: vec![],
-        }
-    }
-
-    fn make_review_comment(id: u64, finding: &ReviewFinding) -> PrReviewComment {
-        let body = render_inline_finding_comment_for_github(finding, &[], None);
-        PrReviewComment {
-            id,
-            body,
-            in_reply_to_id: None,
         }
     }
 
