@@ -940,15 +940,12 @@ mod tests {
     use super::*;
     use crate::fix_comment::{FindingState, build_fix_items_from_review_comments};
     use crate::fix_deps::{FindingDeps, resolved_finding_ids};
-    use crate::review_schema::render_inline_finding_comment_for_github;
+    use crate::review_schema::{ReviewFinding, render_inline_finding_comment_for_github};
     use crate::submission::{PrReviewComment, Reaction};
     use crate::test_helpers::{make_finding, make_finding_with_deps};
 
     /// Helper to create a PrReviewComment from a ReviewFinding.
-    fn make_review_comment(
-        id: u64,
-        finding: &crate::review_schema::ReviewFinding,
-    ) -> PrReviewComment {
+    fn make_review_comment(id: u64, finding: &ReviewFinding) -> PrReviewComment {
         PrReviewComment {
             id,
             body: render_inline_finding_comment_for_github(finding, &[], None),
