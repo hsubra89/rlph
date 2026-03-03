@@ -62,12 +62,21 @@ impl PartialOrd for Severity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Verdict {
     Approved,
     #[serde(rename = "needs_fix")]
     NeedsFix,
+}
+
+impl Verdict {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Verdict::Approved => "approved",
+            Verdict::NeedsFix => "needs_fix",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -187,13 +196,125 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
             if !f.depends_on.is_empty() {
                 write!(body, " *(depends on: {})*", f.depends_on.join(", ")).unwrap();
             }
-            let json = serde_json::to_string(f).expect("ReviewFinding serializes to JSON");
-            let json = json.replace("--", r"\u002d\u002d");
+            let json = escaped_finding_marker_json(f);
             write!(body, " {FINDING_MARKER}{json} -->").unwrap();
         }
     }
 
     body
+}
+
+/// Render a compact summary issue comment body with verdict and finding counts.
+///
+/// The body intentionally excludes per-finding payloads so finding metadata stays
+/// in inline review comments only.
+pub fn render_summary_for_github(
+    verdict: Verdict,
+    findings: &[ReviewFinding],
+    summary: &str,
+) -> String {
+    let mut body = if summary.trim().is_empty() {
+        "Review complete.".to_string()
+    } else {
+        summary.trim().to_string()
+    };
+
+    let (mut critical, mut warning, mut info) = (0usize, 0usize, 0usize);
+    for finding in findings {
+        match finding.severity {
+            Severity::Critical => critical += 1,
+            Severity::Warning => warning += 1,
+            Severity::Info => info += 1,
+        }
+    }
+
+    write!(
+        body,
+        "\n\n- Verdict: `{}`\n- Findings: {} total (`critical`: {}, `warning`: {}, `info`: {})",
+        verdict.label(),
+        findings.len(),
+        critical,
+        warning,
+        info
+    )
+    .unwrap();
+
+    body.push_str("\n\n### Category Breakdown");
+    if findings.is_empty() {
+        body.push_str("\n- none");
+        return body;
+    }
+
+    let groups = group_by_category(findings, |f| f.category.as_deref());
+    for (category, group) in groups {
+        write!(body, "\n- {}: {}", category, group.len()).unwrap();
+    }
+
+    body
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FallbackContext {
+    Line(u32),
+    File { file: String, line: u32 },
+}
+
+/// Render a single inline PR review comment body for one finding.
+pub fn render_inline_finding_comment_for_github(
+    finding: &ReviewFinding,
+    dependency_descriptions: &[&str],
+    fallback: Option<FallbackContext>,
+) -> String {
+    let category_part = finding
+        .category
+        .as_deref()
+        .map(|c| format!(" ({c})"))
+        .unwrap_or_default();
+    let mut body = format!(
+        "**{}**{} `{}`: {}",
+        finding.severity.label(),
+        category_part,
+        finding.id,
+        finding.description
+    );
+
+    if !dependency_descriptions.is_empty() {
+        write!(
+            body,
+            "\n\nDepends on: {}.",
+            dependency_descriptions.join("; ")
+        )
+        .unwrap();
+    }
+
+    match &fallback {
+        Some(FallbackContext::Line(target_line)) => {
+            write!(
+                body,
+                "\n\nNote: this finding applies to line {target_line} but is shown here because that line is not in the diff."
+            )
+            .unwrap();
+        }
+        Some(FallbackContext::File { file, line }) => {
+            write!(
+                body,
+                "\n\nNote: this finding applies to `{file}:{line}` but is shown here because that file is not in the diff."
+            )
+            .unwrap();
+        }
+        None => {}
+    }
+
+    let json = escaped_finding_marker_json(finding);
+    write!(body, "\n\n{FINDING_MARKER}{json} -->").unwrap();
+    body
+}
+
+/// Serialize a finding JSON payload suitable for embedding inside HTML comments.
+fn escaped_finding_marker_json(finding: &ReviewFinding) -> String {
+    serde_json::to_string(finding)
+        .expect("ReviewFinding serializes to JSON")
+        .replace("--", r"\u002d\u002d")
 }
 
 /// Strip markdown code fences (` ```json ... ``` `) that Claude sometimes wraps output in,
@@ -899,6 +1020,96 @@ mod tests {
             "Outputs --> and --!> unescaped -- dangerous"
         );
         assert_eq!(parsed.depends_on, vec!["html--parse"]);
+    }
+
+    #[test]
+    fn test_render_summary_for_github_includes_verdict_counts_and_categories() {
+        let findings = vec![
+            ReviewFinding {
+                id: "a".to_string(),
+                file: "src/a.rs".to_string(),
+                line: 1,
+                severity: Severity::Critical,
+                description: "critical bug".to_string(),
+                category: Some("correctness".to_string()),
+                depends_on: vec![],
+            },
+            ReviewFinding {
+                id: "b".to_string(),
+                file: "src/b.rs".to_string(),
+                line: 2,
+                severity: Severity::Warning,
+                description: "warning bug".to_string(),
+                category: Some("style".to_string()),
+                depends_on: vec![],
+            },
+        ];
+
+        let body = render_summary_for_github(Verdict::NeedsFix, &findings, "Issues found.");
+        assert!(body.contains("Issues found."));
+        assert!(body.contains("Verdict: `needs_fix`"));
+        assert!(body.contains("Findings: 2 total (`critical`: 1, `warning`: 1, `info`: 0)"));
+        assert!(body.contains("### Category Breakdown"));
+        assert!(body.contains("- correctness: 1"));
+        assert!(body.contains("- style: 1"));
+        assert!(!body.contains(FINDING_MARKER));
+    }
+
+    #[test]
+    fn test_render_inline_finding_comment_with_dependency_and_line_fallback_note() {
+        let finding = ReviewFinding {
+            id: "dep-finding".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 88,
+            severity: Severity::Warning,
+            description: "Potential null dereference".to_string(),
+            category: Some("correctness".to_string()),
+            depends_on: vec!["check-null".to_string()],
+        };
+
+        let body = render_inline_finding_comment_for_github(
+            &finding,
+            &["Missing null guard in constructor"],
+            Some(FallbackContext::Line(88)),
+        );
+
+        assert!(
+            body.contains("**WARNING** (correctness) `dep-finding`: Potential null dereference")
+        );
+        assert!(body.contains("Depends on: Missing null guard in constructor."));
+        assert!(body.contains(
+            "Note: this finding applies to line 88 but is shown here because that line is not in the diff."
+        ));
+        let json = extract_finding_json(&body).expect("finding marker is present");
+        let parsed: ReviewFinding = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.id, "dep-finding");
+    }
+
+    #[test]
+    fn test_render_inline_finding_comment_with_file_fallback_note() {
+        let finding = ReviewFinding {
+            id: "file-fallback".to_string(),
+            file: "src/missing.rs".to_string(),
+            line: 42,
+            severity: Severity::Critical,
+            description: "Issue in missing file".to_string(),
+            category: Some("correctness".to_string()),
+            depends_on: vec![],
+        };
+
+        let body = render_inline_finding_comment_for_github(
+            &finding,
+            &[],
+            Some(FallbackContext::File {
+                file: "src/missing.rs".to_string(),
+                line: 42,
+            }),
+        );
+
+        assert!(body.contains("**CRITICAL** (correctness) `file-fallback`: Issue in missing file"));
+        assert!(body.contains(
+            "Note: this finding applies to `src/missing.rs:42` but is shown here because that file is not in the diff."
+        ));
     }
 
     // ---- StandaloneFixOutput tests ----

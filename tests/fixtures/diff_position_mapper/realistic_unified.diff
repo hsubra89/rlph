@@ -42,3 +42,10 @@ index aaaaaaa..bbbbbbb 100644
 -old1
 -old2
  }
+diff --git a/src/sub/nested.rs b/src/sub/nested.rs
+index ccccccc..ddddddd 100644
+--- a/src/sub/nested.rs
++++ b/src/sub/nested.rs
+@@ -1,0 +1,2 @@
++added1
++added2

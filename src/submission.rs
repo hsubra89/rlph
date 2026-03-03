@@ -1,6 +1,8 @@
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use serde::Deserialize;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tracing::{debug, info};
 
@@ -70,6 +72,17 @@ pub trait SubmissionBackend: Send + Sync {
     /// If a previous rlph review comment exists, updates it; otherwise creates a new one.
     fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()>;
 
+    /// Post a single batched PR review with one or more inline comments.
+    fn submit_inline_pr_review(
+        &self,
+        pr_number: u64,
+        event: PullRequestReviewEvent,
+        comments: &[InlineReviewComment],
+    ) -> Result<()>;
+
+    /// Fetch the full PR diff used for inline comment line mapping.
+    fn fetch_pr_diff(&self, pr_number: u64) -> Result<String>;
+
     /// Fetch all comments on a PR/issue thread.
     fn fetch_pr_comments(&self, pr_number: u64) -> Result<Vec<PrComment>>;
 
@@ -79,6 +92,43 @@ pub trait SubmissionBackend: Send + Sync {
 
 /// HTML marker injected into review comments so we can find and update them.
 pub const REVIEW_MARKER: &str = "<!-- rlph-review -->";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestReviewEvent {
+    Comment,
+    RequestChanges,
+}
+
+impl PullRequestReviewEvent {
+    fn as_api_value(self) -> &'static str {
+        match self {
+            PullRequestReviewEvent::Comment => "COMMENT",
+            PullRequestReviewEvent::RequestChanges => "REQUEST_CHANGES",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineReviewComment {
+    pub path: String,
+    pub line: u32,
+    pub body: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewCreateRequest {
+    body: String,
+    event: String,
+    comments: Vec<ReviewInlineCommentRequest>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewInlineCommentRequest {
+    path: String,
+    line: u32,
+    side: String,
+    body: String,
+}
 
 /// GitHub PR submission via `gh` CLI.
 #[derive(Default)]
@@ -324,6 +374,85 @@ impl SubmissionBackend for GitHubSubmission {
             info!(pr_number = pr_number, "created review comment on PR");
         }
         Ok(())
+    }
+
+    fn submit_inline_pr_review(
+        &self,
+        pr_number: u64,
+        event: PullRequestReviewEvent,
+        comments: &[InlineReviewComment],
+    ) -> Result<()> {
+        if comments.is_empty() {
+            return Ok(());
+        }
+
+        let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews");
+        let body = format!("Review: {} finding(s) across the changes.", comments.len());
+        let payload = ReviewCreateRequest {
+            body,
+            event: event.as_api_value().to_string(),
+            comments: comments
+                .iter()
+                .map(|comment| ReviewInlineCommentRequest {
+                    path: comment.path.clone(),
+                    line: comment.line,
+                    side: "RIGHT".to_string(),
+                    body: comment.body.clone(),
+                })
+                .collect(),
+        };
+        let request_body = serde_json::to_vec(&payload)
+            .map_err(|e| Error::Submission(format!("failed to serialize review payload: {e}")))?;
+
+        let mut child = Command::new("gh")
+            .args(["api", &endpoint, "-X", "POST", "--input", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| Error::Submission("failed to open stdin for gh api".to_string()))?;
+        stdin
+            .write_all(&request_body)
+            .map_err(|e| Error::Submission(format!("failed to write review payload: {e}")))?;
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(Error::Submission(format!(
+                "gh api create review failed: {stderr} {stdout}"
+            )));
+        }
+
+        info!(
+            pr_number,
+            comments = comments.len(),
+            event = event.as_api_value(),
+            "created batched inline PR review"
+        );
+        Ok(())
+    }
+
+    fn fetch_pr_diff(&self, pr_number: u64) -> Result<String> {
+        let pr_number = pr_number.to_string();
+        let output = Command::new("gh")
+            .args(["pr", "diff", &pr_number, "--patch"])
+            .output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Submission(format!("gh pr diff failed: {stderr}")));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     fn fetch_pr_comments(&self, pr_number: u64) -> Result<Vec<PrComment>> {
