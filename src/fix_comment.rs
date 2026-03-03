@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -212,19 +213,19 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
                 FindingState::WontFix => "😕",
             };
 
-            let dep_status = if item.state == FindingState::Queued {
+            let dep_status: Cow<'static, str> = if item.state == FindingState::Queued {
                 if deps.in_cycle(&item.finding.id) {
-                    " [cycle]".to_string()
+                    " [cycle]".into()
                 } else {
                     let unresolved = deps.unresolved_deps(&item.finding.id, &resolved);
                     if unresolved.is_empty() {
-                        " [eligible]".to_string()
+                        " [eligible]".into()
                     } else {
-                        format!(" [blocked by: {}]", unresolved.join(", "))
+                        format!(" [blocked by: {}]", unresolved.join(", ")).into()
                     }
                 }
             } else {
-                String::new()
+                "".into()
             };
 
             out.push_str(&format!(
