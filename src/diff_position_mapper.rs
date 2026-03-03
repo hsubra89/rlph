@@ -75,8 +75,7 @@ impl PendingFile {
 
     fn primary_path(&self) -> String {
         self.rename_to
-            .as_ref()
-            .cloned()
+            .clone()
             .unwrap_or_else(|| self.new_path.clone())
     }
 }
