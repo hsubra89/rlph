@@ -104,8 +104,7 @@ impl GitHubSubmission {
             ],
             "gh pr list --head",
         )?;
-        let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)
-            .map_err(|e| Error::Submission(format!("failed to parse gh output: {e}")))?;
+        let prs: Vec<serde_json::Value> = parse_gh_json(&stdout)?;
 
         if let Some(pr) = prs.first()
             && let Some(url) = pr.get("url").and_then(|v| v.as_str())
@@ -131,8 +130,7 @@ impl GitHubSubmission {
             ],
             "gh pr list --state open",
         )?;
-        let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)
-            .map_err(|e| Error::Submission(format!("failed to parse gh output: {e}")))?;
+        let prs: Vec<serde_json::Value> = parse_gh_json(&stdout)?;
 
         for pr in prs {
             let Some(number) = pr.get("number").and_then(|v| v.as_u64()) else {
@@ -329,10 +327,14 @@ fn run_gh(args: &[&str], label: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn parse_gh_json<T: DeserializeOwned>(stdout: &str) -> Result<T> {
+    serde_json::from_str(stdout)
+        .map_err(|e| Error::Submission(format!("failed to parse gh output: {e}")))
+}
+
 pub(crate) fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
     let stdout = run_gh(&["api", endpoint], &format!("gh api {endpoint}"))?;
-    serde_json::from_str(&stdout)
-        .map_err(|e| Error::Submission(format!("failed to parse gh api response: {e}")))
+    parse_gh_json(&stdout)
 }
 
 /// Parse PR number from a URL like `https://github.com/owner/repo/pull/123`.
