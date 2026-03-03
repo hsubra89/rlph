@@ -618,6 +618,10 @@ fn detect_owner_repo() -> Result<(String, String)> {
 ///
 /// Supports HTTPS (`https://github.com/owner/repo.git`) and SSH
 /// (`git@github.com:owner/repo.git`) formats.
+///
+/// NOTE: Only handles standard github.com URLs. SSH URLs with custom ports
+/// (e.g. `ssh://git@github.com:2222/owner/repo`) or GitHub Enterprise hosts
+/// are not supported.
 fn parse_owner_repo_from_remote(url: &str) -> Result<(String, String)> {
     // Try SSH format: git@github.com:owner/repo.git
     let path = if let Some(rest) = url.strip_prefix("git@github.com:") {
