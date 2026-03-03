@@ -432,13 +432,11 @@ fn handle_join_result(
     match result {
         Ok((finding_id, Ok(()))) => {
             info!(%finding_id, "fix completed");
-            task_finding_ids.retain(|_, v| v != &finding_id);
             in_flight.remove(&finding_id);
             completed.insert(finding_id);
         }
         Ok((finding_id, Err(e))) => {
             warn!(%finding_id, error = %e, "fix failed");
-            task_finding_ids.retain(|_, v| v != &finding_id);
             in_flight.remove(&finding_id);
             failed.insert(finding_id);
         }
