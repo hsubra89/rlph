@@ -50,7 +50,7 @@ struct ReviewThreadConnection {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct ReviewThreadNode {
+struct ReviewThreadNode {
     pub id: String,
     #[serde(rename = "isResolved")]
     pub is_resolved: bool,
@@ -58,23 +58,23 @@ pub(crate) struct ReviewThreadNode {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct CommentConnection {
+struct CommentConnection {
     pub nodes: Vec<CommentNode>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct CommentNode {
+struct CommentNode {
     pub body: String,
     pub reactions: ReactionConnection,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct ReactionConnection {
+struct ReactionConnection {
     pub nodes: Vec<ReactionNode>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct ReactionNode {
+struct ReactionNode {
     pub content: String,
 }
 
@@ -89,7 +89,7 @@ pub(crate) struct ReactionNode {
 /// 1. It is not already resolved
 /// 2. Its first comment body contains the `<!-- rlph-finding:` marker
 /// 3. Its first comment has a THUMBS_UP or CONFUSED reaction
-pub(crate) fn find_completed_rlph_thread_ids(threads: &[ReviewThreadNode]) -> Vec<&str> {
+fn find_completed_rlph_thread_ids(threads: &[ReviewThreadNode]) -> Vec<&str> {
     threads
         .iter()
         .filter(|thread| {
