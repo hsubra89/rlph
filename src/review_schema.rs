@@ -253,11 +253,17 @@ pub fn render_summary_for_github(
     body
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FallbackContext {
+    Line(u32),
+    File { file: String, line: u32 },
+}
+
 /// Render a single inline PR review comment body for one finding.
 pub fn render_inline_finding_comment_for_github(
     finding: &ReviewFinding,
     dependency_descriptions: &[&str],
-    fallback_target_line: Option<u32>,
+    fallback: Option<FallbackContext>,
 ) -> String {
     let mut body = format!("**{}**: {}", finding.severity.label(), finding.description);
 
@@ -270,12 +276,22 @@ pub fn render_inline_finding_comment_for_github(
         .unwrap();
     }
 
-    if let Some(target_line) = fallback_target_line {
-        write!(
-            body,
-            "\n\nNote: this finding applies to line {target_line} but is shown here because that line is not in the diff."
-        )
-        .unwrap();
+    match &fallback {
+        Some(FallbackContext::Line(target_line)) => {
+            write!(
+                body,
+                "\n\nNote: this finding applies to line {target_line} but is shown here because that line is not in the diff."
+            )
+            .unwrap();
+        }
+        Some(FallbackContext::File { file, line }) => {
+            write!(
+                body,
+                "\n\nNote: this finding applies to `{file}:{line}` but is shown here because that file is not in the diff."
+            )
+            .unwrap();
+        }
+        None => {}
     }
 
     let json = escaped_finding_marker_json(finding);
@@ -1029,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_inline_finding_comment_with_dependency_and_fallback_note() {
+    fn test_render_inline_finding_comment_with_dependency_and_line_fallback_note() {
         let finding = ReviewFinding {
             id: "dep-finding".to_string(),
             file: "src/main.rs".to_string(),
@@ -1043,7 +1059,7 @@ mod tests {
         let body = render_inline_finding_comment_for_github(
             &finding,
             &["Missing null guard in constructor"],
-            Some(88),
+            Some(FallbackContext::Line(88)),
         );
 
         assert!(body.contains("**WARNING**: Potential null dereference"));
@@ -1054,6 +1070,33 @@ mod tests {
         let json = extract_finding_json(&body).expect("finding marker is present");
         let parsed: ReviewFinding = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.id, "dep-finding");
+    }
+
+    #[test]
+    fn test_render_inline_finding_comment_with_file_fallback_note() {
+        let finding = ReviewFinding {
+            id: "file-fallback".to_string(),
+            file: "src/missing.rs".to_string(),
+            line: 42,
+            severity: Severity::Critical,
+            description: "Issue in missing file".to_string(),
+            category: Some("correctness".to_string()),
+            depends_on: vec![],
+        };
+
+        let body = render_inline_finding_comment_for_github(
+            &finding,
+            &[],
+            Some(FallbackContext::File {
+                file: "src/missing.rs".to_string(),
+                line: 42,
+            }),
+        );
+
+        assert!(body.contains("**CRITICAL**: Issue in missing file"));
+        assert!(body.contains(
+            "Note: this finding applies to `src/missing.rs:42` but is shown here because that file is not in the diff."
+        ));
     }
 
     // ---- StandaloneFixOutput tests ----

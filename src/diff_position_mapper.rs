@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -21,16 +22,24 @@ static HUNK_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@").expect("hunk header regex is valid")
 });
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackKind {
+    None,
+    Line,
+    File,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffPosition {
     pub file: String,
     pub line: u32,
-    pub used_fallback: bool,
+    pub fallback: FallbackKind,
 }
 
 #[derive(Debug, Clone)]
 pub struct DiffPositionMapper {
     file_hunks: HashMap<String, Vec<Hunk>>,
+    primary_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -107,24 +116,34 @@ fn parse_u32(value: &str, context: &str) -> Result<u32, DiffPositionMapperError>
     })
 }
 
-fn finalize_pending_file(file: PendingFile, file_hunks: &mut HashMap<String, Vec<Hunk>>) {
+fn finalize_pending_file(
+    file: PendingFile,
+    file_hunks: &mut HashMap<String, Vec<Hunk>>,
+) -> (String, bool) {
+    let primary = file.primary_path();
     let aliases = file.aliases();
     let mut hunks = file.hunks;
     hunks.sort_by_key(|h| h.start);
+    let has_mappable_hunks = !hunks.is_empty();
     for alias in aliases {
         file_hunks.insert(alias, hunks.clone());
     }
+    (primary, has_mappable_hunks)
 }
 
 impl DiffPositionMapper {
     pub fn from_diff(diff: &str) -> Result<Self, DiffPositionMapperError> {
         let mut file_hunks: HashMap<String, Vec<Hunk>> = HashMap::new();
+        let mut primary_paths: Vec<String> = Vec::new();
         let mut pending: Option<PendingFile> = None;
 
         for line in diff.lines() {
             if let Some(caps) = DIFF_HEADER_RE.captures(line) {
                 if let Some(previous) = pending.take() {
-                    finalize_pending_file(previous, &mut file_hunks);
+                    let (primary, has_hunks) = finalize_pending_file(previous, &mut file_hunks);
+                    if has_hunks {
+                        primary_paths.push(primary);
+                    }
                 }
 
                 let old_path =
@@ -170,7 +189,10 @@ impl DiffPositionMapper {
         }
 
         if let Some(previous) = pending {
-            finalize_pending_file(previous, &mut file_hunks);
+            let (primary, has_hunks) = finalize_pending_file(previous, &mut file_hunks);
+            if has_hunks {
+                primary_paths.push(primary);
+            }
         }
 
         if !diff.trim().is_empty() && file_hunks.is_empty() {
@@ -179,7 +201,11 @@ impl DiffPositionMapper {
             ));
         }
 
-        Ok(Self { file_hunks })
+        primary_paths.sort();
+        Ok(Self {
+            file_hunks,
+            primary_paths,
+        })
     }
 
     pub fn map(&self, file: &str, line: u32) -> Result<DiffPosition, DiffPositionMapperError> {
@@ -197,7 +223,7 @@ impl DiffPositionMapper {
             return Ok(DiffPosition {
                 file: normalized_file,
                 line,
-                used_fallback: false,
+                fallback: FallbackKind::None,
             });
         }
 
@@ -216,14 +242,66 @@ impl DiffPositionMapper {
         Ok(DiffPosition {
             file: normalized_file,
             line: mapped_line,
-            used_fallback: true,
+            fallback: FallbackKind::Line,
         })
+    }
+
+    pub fn map_with_file_fallback(
+        &self,
+        file: &str,
+        line: u32,
+    ) -> Result<DiffPosition, DiffPositionMapperError> {
+        match self.map(file, line) {
+            Ok(pos) => Ok(pos),
+            Err(
+                DiffPositionMapperError::FileNotFound(_)
+                | DiffPositionMapperError::NoMappableLines(_),
+            ) => {
+                if let Some(nearby) = self.find_nearest_file(file) {
+                    let hunks = self
+                        .file_hunks
+                        .get(&nearby)
+                        .expect("nearest file exists in file_hunks");
+                    let fallback_line = hunks[0].start;
+                    Ok(DiffPosition {
+                        file: nearby,
+                        line: fallback_line,
+                        fallback: FallbackKind::File,
+                    })
+                } else {
+                    // Re-run to get the original error variant
+                    self.map(file, line)
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn find_nearest_file(&self, file: &str) -> Option<String> {
+        let path = Path::new(file);
+        let mut dir = path.parent();
+        while let Some(current_dir) = dir {
+            let mut candidates: Vec<&str> = self
+                .primary_paths
+                .iter()
+                .filter(|p| {
+                    Path::new(p.as_str()).parent() == Some(current_dir) && p.as_str() != file
+                })
+                .map(|p| p.as_str())
+                .collect();
+            if !candidates.is_empty() {
+                candidates.sort();
+                return Some(candidates[0].to_string());
+            }
+            dir = current_dir.parent();
+        }
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffPositionMapper, DiffPositionMapperError};
+    use super::{DiffPositionMapper, DiffPositionMapperError, FallbackKind};
 
     const REALISTIC_UNIFIED_DIFF: &str =
         include_str!("../tests/fixtures/diff_position_mapper/realistic_unified.diff");
@@ -235,7 +313,7 @@ mod tests {
 
         assert_eq!(mapped.file, "src/foo.rs");
         assert_eq!(mapped.line, 4);
-        assert!(!mapped.used_fallback);
+        assert_eq!(mapped.fallback, FallbackKind::None);
     }
 
     #[test]
@@ -255,7 +333,7 @@ mod tests {
         let mapped = mapper.map("src/foo.rs", 1).unwrap();
 
         assert_eq!(mapped.line, 3);
-        assert!(mapped.used_fallback);
+        assert_eq!(mapped.fallback, FallbackKind::Line);
     }
 
     #[test]
@@ -264,7 +342,7 @@ mod tests {
         let mapped = mapper.map("src/foo.rs", 10).unwrap();
 
         assert_eq!(mapped.line, 7);
-        assert!(mapped.used_fallback);
+        assert_eq!(mapped.fallback, FallbackKind::Line);
     }
 
     #[test]
@@ -273,7 +351,7 @@ mod tests {
         let mapped = mapper.map("src/foo.rs", 99).unwrap();
 
         assert_eq!(mapped.line, 23);
-        assert!(mapped.used_fallback);
+        assert_eq!(mapped.fallback, FallbackKind::Line);
     }
 
     #[test]
@@ -282,11 +360,11 @@ mod tests {
 
         let first = mapper.map("src/foo.rs", 3).unwrap();
         assert_eq!(first.line, 3);
-        assert!(!first.used_fallback);
+        assert_eq!(first.fallback, FallbackKind::None);
 
         let last = mapper.map("src/foo.rs", 7).unwrap();
         assert_eq!(last.line, 7);
-        assert!(!last.used_fallback);
+        assert_eq!(last.fallback, FallbackKind::None);
     }
 
     #[test]
@@ -295,11 +373,11 @@ mod tests {
 
         let exact = mapper.map("src/single.rs", 42).unwrap();
         assert_eq!(exact.line, 42);
-        assert!(!exact.used_fallback);
+        assert_eq!(exact.fallback, FallbackKind::None);
 
         let fallback = mapper.map("src/single.rs", 44).unwrap();
         assert_eq!(fallback.line, 42);
-        assert!(fallback.used_fallback);
+        assert_eq!(fallback.fallback, FallbackKind::Line);
     }
 
     #[test]
@@ -309,12 +387,12 @@ mod tests {
         let mapped_new_path = mapper.map("src/new_name.rs", 8).unwrap();
         assert_eq!(mapped_new_path.file, "src/new_name.rs");
         assert_eq!(mapped_new_path.line, 8);
-        assert!(!mapped_new_path.used_fallback);
+        assert_eq!(mapped_new_path.fallback, FallbackKind::None);
 
         let mapped_old_path = mapper.map("src/old_name.rs", 7).unwrap();
         assert_eq!(mapped_old_path.file, "src/old_name.rs");
         assert_eq!(mapped_old_path.line, 7);
-        assert!(!mapped_old_path.used_fallback);
+        assert_eq!(mapped_old_path.fallback, FallbackKind::None);
     }
 
     #[test]
@@ -349,7 +427,7 @@ mod tests {
         let mapped = mapper.map("src/file with spaces.rs", 2).unwrap();
         assert_eq!(mapped.file, "src/file with spaces.rs");
         assert_eq!(mapped.line, 2);
-        assert!(!mapped.used_fallback);
+        assert_eq!(mapped.fallback, FallbackKind::None);
     }
 
     #[test]
@@ -366,12 +444,12 @@ diff --git a/a/src/lib.rs b/a/src/lib.rs
         let mapped_root = mapper.map("src/lib.rs", 1).unwrap();
         assert_eq!(mapped_root.file, "src/lib.rs");
         assert_eq!(mapped_root.line, 1);
-        assert!(!mapped_root.used_fallback);
+        assert_eq!(mapped_root.fallback, FallbackKind::None);
 
         let mapped_nested = mapper.map("a/src/lib.rs", 10).unwrap();
         assert_eq!(mapped_nested.file, "a/src/lib.rs");
         assert_eq!(mapped_nested.line, 10);
-        assert!(!mapped_nested.used_fallback);
+        assert_eq!(mapped_nested.fallback, FallbackKind::None);
     }
 
     #[test]
@@ -388,11 +466,68 @@ diff --git a/b/src/main.rs b/b/src/main.rs
         let mapped_root = mapper.map("src/main.rs", 1).unwrap();
         assert_eq!(mapped_root.file, "src/main.rs");
         assert_eq!(mapped_root.line, 1);
-        assert!(!mapped_root.used_fallback);
+        assert_eq!(mapped_root.fallback, FallbackKind::None);
 
         let mapped_nested = mapper.map("b/src/main.rs", 20).unwrap();
         assert_eq!(mapped_nested.file, "b/src/main.rs");
         assert_eq!(mapped_nested.line, 20);
-        assert!(!mapped_nested.used_fallback);
+        assert_eq!(mapped_nested.fallback, FallbackKind::None);
+    }
+
+    #[test]
+    fn test_map_with_file_fallback_finds_sibling_file() {
+        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
+        let mapped = mapper.map_with_file_fallback("src/missing.rs", 50).unwrap();
+
+        assert_eq!(mapped.file, "src/foo.rs");
+        assert_eq!(mapped.line, 3);
+        assert_eq!(mapped.fallback, FallbackKind::File);
+    }
+
+    #[test]
+    fn test_map_with_file_fallback_traverses_up() {
+        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
+        let mapped = mapper
+            .map_with_file_fallback("src/deep/nested/missing.rs", 10)
+            .unwrap();
+
+        // No files in src/deep/nested/ or src/deep/, traverses up to src/ → picks src/foo.rs (first alphabetically)
+        assert_eq!(mapped.file, "src/foo.rs");
+        assert_eq!(mapped.line, 3);
+        assert_eq!(mapped.fallback, FallbackKind::File);
+    }
+
+    #[test]
+    fn test_map_with_file_fallback_errors_when_no_files_anywhere() {
+        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
+        let err = mapper
+            .map_with_file_fallback("completely/different/tree.rs", 1)
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            DiffPositionMapperError::FileNotFound("completely/different/tree.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_map_with_file_fallback_skips_deletion_only_files() {
+        let diff = "\
+diff --git a/src/deletions_only.rs b/src/deletions_only.rs
+@@ -10,2 +10,0 @@ fn gone() {
+-old1
+-old2
+diff --git a/src/real.rs b/src/real.rs
+@@ -1,0 +1,2 @@
++a
++b
+";
+        let mapper = DiffPositionMapper::from_diff(diff).unwrap();
+        let mapped = mapper.map_with_file_fallback("src/missing.rs", 5).unwrap();
+
+        // src/deletions_only.rs has no mappable hunks so it shouldn't be a fallback target
+        assert_eq!(mapped.file, "src/real.rs");
+        assert_eq!(mapped.line, 1);
+        assert_eq!(mapped.fallback, FallbackKind::File);
     }
 }

@@ -11,12 +11,13 @@ use tracing::{info, warn};
 use crate::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
 use crate::deps::DependencyGraph;
 use crate::diff_position_mapper::DiffPositionMapper;
+use crate::diff_position_mapper::FallbackKind;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
-    ReviewFinding, SchemaName, Verdict, correction_prompt, parse_aggregator_output,
-    parse_phase_output, render_findings_for_prompt, render_inline_finding_comment_for_github,
-    render_summary_for_github,
+    FallbackContext, ReviewFinding, SchemaName, Verdict, correction_prompt,
+    parse_aggregator_output, parse_phase_output, render_findings_for_prompt,
+    render_inline_finding_comment_for_github, render_summary_for_github,
 };
 use crate::runner::{
     AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, resume_with_correction,
@@ -1028,7 +1029,7 @@ fn build_inline_review_comments(
     Ok(findings
         .iter()
         .filter_map(|finding| {
-            let mapped = match mapper.map(&finding.file, finding.line) {
+            let mapped = match mapper.map_with_file_fallback(&finding.file, finding.line) {
                 Ok(m) => m,
                 Err(e) => {
                     warn!(
@@ -1053,13 +1054,22 @@ fn build_inline_review_comments(
             let dependency_descriptions: Vec<&str> =
                 dependency_descriptions.iter().map(|c| c.as_ref()).collect();
 
+            let fallback = match mapped.fallback {
+                FallbackKind::None => None,
+                FallbackKind::Line => Some(FallbackContext::Line(finding.line)),
+                FallbackKind::File => Some(FallbackContext::File {
+                    file: finding.file.clone(),
+                    line: finding.line,
+                }),
+            };
+
             Some(InlineReviewComment {
                 path: mapped.file,
                 line: mapped.line,
                 body: render_inline_finding_comment_for_github(
                     finding,
                     &dependency_descriptions,
-                    mapped.used_fallback.then_some(finding.line),
+                    fallback,
                 ),
             })
         })
@@ -1228,6 +1238,31 @@ mod tests {
         assert_eq!(comments[0].line, 11);
         assert!(comments[0].body.contains(
             "applies to line 100 but is shown here because that line is not in the diff"
+        ));
+    }
+
+    #[test]
+    fn test_build_inline_review_comments_adds_file_fallback_note() {
+        let submission = InlineReviewTestSubmission {
+            diff: "diff --git a/src/lib.rs b/src/lib.rs\n@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3\n"
+                .to_string(),
+        };
+        let finding = ReviewFinding {
+            id: "other-file".to_string(),
+            file: "src/missing.rs".to_string(),
+            line: 50,
+            severity: Severity::Warning,
+            description: "Issue in file not in diff".to_string(),
+            category: Some("correctness".to_string()),
+            depends_on: vec![],
+        };
+
+        let comments = build_inline_review_comments(&submission, 9, &[finding]).unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].path, "src/lib.rs");
+        assert_eq!(comments[0].line, 1);
+        assert!(comments[0].body.contains(
+            "applies to `src/missing.rs:50` but is shown here because that file is not in the diff"
         ));
     }
 }
