@@ -157,7 +157,7 @@ impl GitHubSubmission {
                 "api",
                 &endpoint,
                 "--jq",
-                ".[] | select(.body | contains(\"<!-- rlph-review -->\")) | .id",
+                &format!(".[] | select(.body | contains(\"{REVIEW_MARKER}\")) | .id"),
             ],
             "gh api list comments",
         )?;
