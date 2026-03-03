@@ -623,7 +623,7 @@ fn prepare_fix_item(
     pr_number: u64,
     fix_config: &ReviewStepConfig,
     prompt_engine: &PromptEngine,
-    reply_map: &HashMap<u64, Vec<String>>,
+    reply_map: &ReplyMap,
 ) -> Option<PreparedFixItem> {
     let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
     if let Err(e) = validate_branch_name(&fix_branch) {
