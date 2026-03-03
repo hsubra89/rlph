@@ -425,8 +425,9 @@ impl SubmissionBackend for GitHubSubmission {
             .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
             return Err(Error::Submission(format!(
-                "gh api create review failed: {stderr}"
+                "gh api create review failed: {stderr} {stdout}"
             )));
         }
 

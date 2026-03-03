@@ -1443,7 +1443,7 @@ async fn test_review_only_needs_fix_completes_successfully() {
     assert_eq!(submission_data.reviews[0].pr_number, 99);
     assert_eq!(
         submission_data.reviews[0].event,
-        PullRequestReviewEvent::RequestChanges
+        PullRequestReviewEvent::Comment
     );
     assert_eq!(submission_data.reviews[0].comments.len(), 1);
     let inline_comment = &submission_data.reviews[0].comments[0];

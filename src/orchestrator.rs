@@ -838,10 +838,9 @@ impl<
             if !agg_output.findings.is_empty() {
                 match build_inline_review_comments(&self.submission, pr_num, &agg_output.findings) {
                     Ok(inline_comments) => {
-                        let review_event = match agg_output.verdict {
-                            Verdict::NeedsFix => PullRequestReviewEvent::RequestChanges,
-                            Verdict::Approved => PullRequestReviewEvent::Comment,
-                        };
+                        // Always use COMMENT event: the GitHub API returns 422
+                        // when the PR author uses REQUEST_CHANGES on their own PR.
+                        let review_event = PullRequestReviewEvent::Comment;
                         if let Err(e) = self.submission.submit_inline_pr_review(
                             pr_num,
                             review_event,
