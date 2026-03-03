@@ -264,7 +264,10 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             }
             None => finding_deps.insert(FindingDeps::build(&items)),
         };
-        let resolved = resolved_finding_ids(&items);
+        let mut resolved = resolved_finding_ids(&items);
+        // Union locally completed IDs so dependents unblock even if the ✅
+        // reaction was not persisted to GitHub.
+        resolved.extend(completed.iter().map(String::as_str));
 
         // Filter: queued AND not already tracked AND deps met
         let (eligible_refs, dep_blocked) = dep_eligible(
