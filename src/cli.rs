@@ -79,10 +79,6 @@ pub struct Cli {
     #[arg(long)]
     pub agent_variant: Option<String>,
 
-    /// Maximum review rounds per task
-    #[arg(long)]
-    pub max_review_rounds: Option<u32>,
-
     /// Maximum retries when agent times out (session resume)
     #[arg(long)]
     pub agent_timeout_retries: Option<u32>,

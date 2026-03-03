@@ -95,11 +95,9 @@ pub struct ConfigFile {
     pub implement_timeout: Option<u64>,
     pub agent_effort: Option<String>,
     pub agent_variant: Option<String>,
-    pub max_review_rounds: Option<u32>,
     pub agent_timeout_retries: Option<u32>,
     pub review_phases: Option<Vec<ReviewPhaseConfigFile>>,
     pub review_aggregate: Option<ReviewStepConfigFile>,
-    pub review_fix: Option<ReviewStepConfigFile>,
     pub fix: Option<ReviewStepConfigFile>,
     pub worktree_setup_script: Option<String>,
     pub linear: Option<LinearConfigFile>,
@@ -124,11 +122,9 @@ pub struct Config {
     pub implement_timeout: Option<u64>,
     pub agent_effort: Option<String>,
     pub agent_variant: Option<String>,
-    pub max_review_rounds: u32,
     pub agent_timeout_retries: u32,
     pub review_phases: Vec<ReviewPhaseConfig>,
     pub review_aggregate: ReviewStepConfig,
-    pub review_fix: ReviewStepConfig,
     pub fix: ReviewStepConfig,
     pub worktree_setup_script: Option<String>,
     pub linear: Option<LinearConfig>,
@@ -412,7 +408,6 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         };
 
     let review_aggregate = resolve_step(file.review_aggregate, "review-aggregate")?;
-    let review_fix = resolve_step(file.review_fix, "review-fix")?;
     let fix = resolve_step(file.fix, "fix")?;
 
     let config = Config {
@@ -453,17 +448,12 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         implement_timeout,
         agent_effort: global_effort,
         agent_variant: global_variant,
-        max_review_rounds: cli
-            .max_review_rounds
-            .or(file.max_review_rounds)
-            .unwrap_or(1),
         agent_timeout_retries: cli
             .agent_timeout_retries
             .or(file.agent_timeout_retries)
             .unwrap_or(2),
         review_phases,
         review_aggregate,
-        review_fix,
         fix,
         worktree_setup_script: file.worktree_setup_script,
         linear,
@@ -527,12 +517,6 @@ fn validate(config: &Config) -> Result<()> {
         config.review_aggregate.runner,
         &config.review_aggregate.agent_effort,
         &config.review_aggregate.agent_variant,
-    )?;
-    validate_runner_flags(
-        "review_fix",
-        config.review_fix.runner,
-        &config.review_fix.agent_effort,
-        &config.review_fix.agent_variant,
     )?;
     validate_runner_flags(
         "fix",
@@ -969,8 +953,6 @@ prompt = "check-review"
 prompt = "my-aggregate"
 agent_model = "claude-opus-4-6"
 
-[review_fix]
-prompt = "my-fix"
 "#,
         )
         .unwrap();
@@ -981,7 +963,6 @@ prompt = "my-fix"
             config.review_aggregate.agent_model.as_deref(),
             Some("claude-opus-4-6")
         );
-        assert_eq!(config.review_fix.prompt, "my-fix");
     }
 
     #[test]
@@ -990,9 +971,7 @@ prompt = "my-fix"
         let cli = Cli::parse_from(["rlph", "--once"]);
         let config = Config::load_from(&cli, tmp.path()).unwrap();
         assert_eq!(config.review_aggregate.prompt, "review-aggregate");
-        assert_eq!(config.review_fix.prompt, "review-fix");
         assert_eq!(config.review_aggregate.runner, RunnerKind::Claude);
-        assert_eq!(config.review_fix.runner, RunnerKind::Claude);
     }
 
     #[test]
@@ -1197,9 +1176,6 @@ prompt = "check-review"
 
 [review_aggregate]
 prompt = "review-aggregate"
-
-[review_fix]
-prompt = "review-fix"
 "#,
         )
         .unwrap();
@@ -1215,13 +1191,6 @@ prompt = "review-fix"
             config.review_aggregate.agent_effort.as_deref(),
             Some("medium")
         );
-
-        assert_eq!(config.review_fix.agent_binary, "/opt/agent-proxy");
-        assert_eq!(
-            config.review_fix.agent_model.as_deref(),
-            Some("custom-model-v1")
-        );
-        assert_eq!(config.review_fix.agent_effort.as_deref(), Some("medium"));
     }
 
     #[test]
@@ -1322,9 +1291,6 @@ prompt = "check-review"
 
 [review_aggregate]
 prompt = "review-aggregate"
-
-[review_fix]
-prompt = "review-fix"
 "#,
         )
         .unwrap();
@@ -1338,7 +1304,6 @@ prompt = "review-fix"
             config.review_aggregate.agent_variant.as_deref(),
             Some("high")
         );
-        assert_eq!(config.review_fix.agent_variant.as_deref(), Some("high"));
     }
 
     #[test]
@@ -1385,9 +1350,6 @@ runner = "opencode"
 
 [review_aggregate]
 prompt = "review-aggregate"
-
-[review_fix]
-prompt = "review-fix"
 "#,
         )
         .unwrap();
@@ -1417,10 +1379,6 @@ runner = "claude"
 
 [review_aggregate]
 prompt = "review-aggregate"
-runner = "opencode"
-
-[review_fix]
-prompt = "review-fix"
 runner = "opencode"
 "#,
         )
@@ -1480,9 +1438,6 @@ prompt = "check-review"
 [review_aggregate]
 prompt = "review-aggregate"
 runner = "opencode"
-
-[review_fix]
-prompt = "review-fix"
 "#,
         )
         .unwrap();

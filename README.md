@@ -10,7 +10,7 @@ A ralph loop is a fully autonomous cycle where an AI agent picks up a task, impl
 fetch task → choose → implement → self-review → submit PR → repeat
 ```
 
-Each iteration is self-contained: the agent works in an isolated git worktree, so the main branch stays clean regardless of what the agent produces. If the self-review fails, the agent iterates on its own changes up to a configurable number of rounds before giving up.
+Each iteration is self-contained: the agent works in an isolated git worktree, so the main branch stays clean regardless of what the agent produces.
 
 In practice, you label issues in your tracker (GitHub, Linear), point `rlph` at the repo, and walk away. The tool handles task selection (including dependency ordering), worktree lifecycle, agent orchestration across choose/implement/review phases, branch pushing, and PR creation.
 
@@ -74,7 +74,6 @@ implement_timeout = 1800       # Implement phase timeout in seconds (30 min)
 agent_effort = "high"          # Effort level: low, medium, high (Claude/Codex only)
 agent_variant = "high"         # Variant: low, high (OpenCode only)
 agent_timeout_retries = 1      # Retries on agent timeout (resumes session)
-max_review_rounds = 1          # Max review-fix rounds per task
 worktree_setup_script = ".rlph/worktree-setup.sh"  # Script to run after worktree creation (see below)
 ```
 
@@ -117,7 +116,6 @@ Options:
       --implement-timeout <SECONDS>      Implement phase timeout in seconds (default: 1800)
       --agent-effort <LEVEL>             Effort level: low, medium, high (Claude/Codex only)
       --agent-variant <VARIANT>          Variant: low, high (OpenCode only)
-      --max-review-rounds <N>            Max review-fix rounds per task
       --agent-timeout-retries <N>        Retries on agent timeout (session resume)
   -h, --help                             Print help
   -V, --version                          Print version
@@ -138,12 +136,12 @@ Specify one of `--once`, `--continuous`, or `--max-iterations`. `--continuous` a
 1. **Fetch** — Pulls eligible tasks from the configured source (GitHub issues, Linear tickets) filtered by label. Respects dependency ordering so blocked tasks are skipped. Auto-selects when only one task is eligible.
 2. **Worktree** — Creates an isolated git worktree for the task. Runs the worktree setup script if present.
 3. **Implement** — Runs an AI agent to implement the task. Agent output streams to stderr in real time. If the agent times out, `rlph` resumes the session automatically (up to `agent_timeout_retries` times).
-4. **Review** — Parallel multi-phase review: independent agents evaluate correctness, security, and hygiene concurrently, then an aggregator consolidates findings into a verdict. If the verdict is "needs fix", a review-fix agent iterates up to `max_review_rounds`.
+4. **Review** — Parallel multi-phase review: independent agents evaluate correctness, security, and hygiene concurrently, then an aggregator consolidates findings into a verdict. Findings are posted as a PR comment.
 5. **Submit** — Opens a pull request and posts structured review findings as a PR comment with per-finding checkboxes.
 
 ### `rlph review <PR>`
 
-Runs the review pipeline directly on an existing PR (accepts PR number or full GitHub URL). Creates a worktree from the PR's head branch, runs all review phases, posts findings, and pushes any fix commits.
+Runs the review pipeline directly on an existing PR (accepts PR number or full GitHub URL). Creates a worktree from the PR's head branch, runs all review phases, and posts findings.
 
 ### `rlph fix <PR>`
 

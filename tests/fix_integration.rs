@@ -75,7 +75,6 @@ fn make_fix_step_config(agent_binary: String) -> ReviewStepConfig {
 
 fn make_config() -> Config {
     Config {
-        max_review_rounds: 1,
         agent_timeout_retries: 0,
         ..default_test_config()
     }

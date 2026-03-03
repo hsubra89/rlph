@@ -12,8 +12,8 @@ use crate::deps::DependencyGraph;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
-    SchemaName, Verdict, correction_prompt, parse_aggregator_output, parse_fix_output,
-    parse_phase_output, render_findings_for_github, render_findings_for_prompt,
+    SchemaName, Verdict, correction_prompt, parse_aggregator_output, parse_phase_output,
+    render_findings_for_github, render_findings_for_prompt,
 };
 use crate::runner::{
     AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, resume_with_correction,
@@ -21,7 +21,7 @@ use crate::runner::{
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
 use crate::submission::{REVIEW_MARKER, SubmissionBackend, format_pr_comments_for_prompt};
-use crate::worktree::{WorktreeInfo, WorktreeManager, validate_branch_name};
+use crate::worktree::{WorktreeInfo, WorktreeManager};
 
 #[derive(Debug)]
 struct ReviewPhaseOutput {
@@ -47,7 +47,6 @@ pub struct ReviewInvocation {
     pub worktree_info: WorktreeInfo,
     pub vars: HashMap<String, String>,
     pub comment_pr_number: Option<u64>,
-    pub push_remote_branch: Option<String>,
 }
 
 /// Factory for creating review-phase runners. Defaults to `build_runner`.
@@ -418,8 +417,6 @@ impl<
                 &invocation.vars,
                 &invocation.worktree_info,
                 invocation.comment_pr_number,
-                invocation.push_remote_branch.as_deref(),
-                true,
             )
             .await;
 
@@ -634,7 +631,7 @@ impl<
             self.source.mark_in_review(&task.id)?;
         }
 
-        self.run_review_pipeline(&vars, worktree_info, pr_number, None, false)
+        self.run_review_pipeline(&vars, worktree_info, pr_number)
             .await
     }
 
@@ -643,19 +640,10 @@ impl<
         vars: &HashMap<String, String>,
         worktree_info: &WorktreeInfo,
         pr_number: Option<u64>,
-        push_remote_branch: Option<&str>,
-        review_only: bool,
     ) -> Result<()> {
         self.state_mgr.update_phase("review")?;
-        let max_reviews = if review_only {
-            1
-        } else {
-            self.config.max_review_rounds
-        };
-        let mut review_passed = false;
-        let mut last_json_failure: Option<String> = None;
 
-        // Report phase names once before the loop (they don't change between rounds).
+        // Report phase names
         let phase_names: Vec<String> = self
             .config
             .review_phases
@@ -664,296 +652,189 @@ impl<
             .collect();
         self.reporter.phases_started(&phase_names);
 
-        for round in 1..=max_reviews {
-            info!(round, max_reviews, "review round");
+        info!("running review");
 
-            // Fetch current PR comments for this round
-            let (pr_comments_text, has_pr_comments) = if let Some(pr_num) = pr_number {
-                match self.submission.fetch_pr_comments(pr_num) {
-                    Ok(comments) => {
-                        let has = !comments.is_empty();
-                        (format_pr_comments_for_prompt(&comments, pr_num), has)
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "failed to fetch PR comments");
-                        ("Failed to fetch PR comments.".to_string(), false)
-                    }
-                }
-            } else {
-                ("No PR associated with this review.".to_string(), false)
-            };
-
-            let pr_number_str = pr_number.map(|n| n.to_string()).unwrap_or_default();
-
-            let mut join_set = tokio::task::JoinSet::new();
-            for phase_config in &self.config.review_phases {
-                let phase_runner = self
-                    .review_factory
-                    .create_phase_runner(phase_config, self.config.agent_timeout_retries);
-
-                let mut phase_vars = vars.clone();
-                phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());
-                phase_vars.insert("pr_comments".to_string(), pr_comments_text.clone());
-                phase_vars.insert("pr_number".to_string(), pr_number_str.clone());
-                // upon templates treat empty strings as falsy in {% if has_pr_comments %}
-                phase_vars.insert(
-                    "has_pr_comments".to_string(),
-                    if has_pr_comments {
-                        "true".to_string()
-                    } else {
-                        String::new()
-                    },
-                );
-
-                let prompt = self
-                    .prompt_engine
-                    .render_phase(&phase_config.prompt, &phase_vars)?;
-                let working_dir = worktree_info.path.clone();
-                let phase_name = phase_config.name.clone();
-
-                join_set.spawn(async move {
-                    let result = phase_runner
-                        .run(Phase::Review, &prompt, &working_dir)
-                        .await?;
-                    Ok::<ReviewPhaseOutput, Error>(ReviewPhaseOutput {
-                        name: phase_name,
-                        stdout: result.stdout,
-                        session_id: result.session_id,
-                    })
-                });
-            }
-
-            let mut review_outputs = Vec::new();
-            while let Some(result) = join_set.join_next().await {
-                let output = result.map_err(|e| Error::AgentRunner(e.to_string()))??;
-                self.reporter.phase_complete(&output.name);
-                review_outputs.push(output);
-            }
-
-            let mut review_texts = Vec::new();
-            let mut phase_parse_failed = false;
-            for o in &review_outputs {
-                let rendered = match parse_phase_output(&o.stdout) {
-                    Ok(phase) => render_findings_for_prompt(&phase.findings, Some(&o.name)),
-                    Err(e) => {
-                        // Try correction via session resume
-                        let phase_config =
-                            self.config.review_phases.iter().find(|p| p.name == o.name);
-                        let recovered = if let Some(pc) = phase_config {
-                            retry_with_correction(
-                                &self.correction_runner,
-                                o.session_id.as_deref(),
-                                pc.runner,
-                                &pc.agent_binary,
-                                pc.agent_model.as_deref(),
-                                pc.agent_effort.as_deref(),
-                                pc.agent_variant.as_deref(),
-                                pc.agent_timeout,
-                                SchemaName::Phase,
-                                &e.to_string(),
-                                &worktree_info.path,
-                                parse_phase_output,
-                            )
-                            .await
-                        } else {
-                            None
-                        };
-                        match recovered {
-                            Some(phase) => {
-                                render_findings_for_prompt(&phase.findings, Some(&o.name))
-                            }
-                            None => {
-                                warn!(phase = %o.name, error = %e, "phase JSON correction exhausted — retrying round");
-                                last_json_failure =
-                                    Some(format!("review phase '{}' malformed JSON: {e}", o.name));
-                                phase_parse_failed = true;
-                                break;
-                            }
-                        }
-                    }
-                };
-                review_texts.push(format!("## Review Phase: {}\n\n{}", o.name, rendered));
-            }
-            if phase_parse_failed {
-                continue;
-            }
-            let review_outputs_text = review_texts.join("\n\n---\n\n");
-
-            let agg_config = &self.config.review_aggregate;
-            let agg_runner = self.review_factory.create_step_runner(
-                agg_config,
-                self.config.agent_timeout_retries,
-                "aggregate",
-            );
-
-            let mut agg_vars = vars.clone();
-            agg_vars.insert("review_outputs".to_string(), review_outputs_text);
-            agg_vars.insert("pr_comments".to_string(), pr_comments_text.clone());
-            agg_vars.insert("pr_number".to_string(), pr_number_str.clone());
-
-            let agg_prompt = self
-                .prompt_engine
-                .render_phase(&agg_config.prompt, &agg_vars)?;
-            let agg_result = agg_runner
-                .run(Phase::ReviewAggregate, &agg_prompt, &worktree_info.path)
-                .await?;
-
-            let agg_output = match parse_aggregator_output(&agg_result.stdout) {
-                Ok(output) => output,
-                Err(e) => {
-                    // Attempt session resume with correction prompt
-                    let recovered = retry_with_correction(
-                        &self.correction_runner,
-                        agg_result.session_id.as_deref(),
-                        agg_config.runner,
-                        &agg_config.agent_binary,
-                        agg_config.agent_model.as_deref(),
-                        agg_config.agent_effort.as_deref(),
-                        agg_config.agent_variant.as_deref(),
-                        agg_config.agent_timeout,
-                        SchemaName::Aggregator,
-                        &e.to_string(),
-                        &worktree_info.path,
-                        parse_aggregator_output,
-                    )
-                    .await;
-                    match recovered {
-                        Some(output) => output,
-                        None => {
-                            warn!(error = %e, "aggregator JSON correction failed — retrying round");
-                            last_json_failure = Some(format!("aggregator malformed JSON: {e}"));
-                            continue;
-                        }
-                    }
-                }
-            };
-
-            let comment_body = format!(
-                "{REVIEW_MARKER}\n{}",
-                render_findings_for_github(&agg_output.findings, &agg_output.comment),
-            );
-            let summary = agg_output.comment.trim();
-            if !summary.is_empty() {
-                self.reporter.review_summary(summary);
-            }
-
-            if let Some(pr_num) = pr_number
-                && !self.config.dry_run
-                && let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body)
-            {
-                warn!(error = %e, "failed to comment on PR");
-            }
-
-            if agg_output.verdict == Verdict::Approved {
-                info!(round, "review approved");
-                review_passed = true;
-                break;
-            }
-
-            if review_only {
-                info!("review-only mode — skipping fix phase");
-                break;
-            }
-
-            let fix_instructions = match agg_output.fix_instructions {
-                Some(instructions) if !instructions.trim().is_empty() => instructions,
-                _ => {
-                    warn!(
-                        "aggregator verdict is needs_fix but fix_instructions is empty — retrying"
-                    );
-                    continue;
-                }
-            };
-
-            info!(round, "review needs fix, running fix agent");
-
-            let fix_config = &self.config.review_fix;
-            let fix_runner = self.review_factory.create_step_runner(
-                fix_config,
-                self.config.agent_timeout_retries,
-                "fix",
-            );
-
-            let mut fix_vars = vars.clone();
-            fix_vars.insert("fix_instructions".to_string(), fix_instructions);
-
-            let fix_prompt = self
-                .prompt_engine
-                .render_phase(&fix_config.prompt, &fix_vars)?;
-            let fix_result = fix_runner
-                .run(Phase::ReviewFix, &fix_prompt, &worktree_info.path)
-                .await?;
-
-            match parse_fix_output(&fix_result.stdout) {
-                Ok(fix_output) => {
-                    info!(
-                        status = ?fix_output.status,
-                        summary = fix_output.summary,
-                        files_changed = ?fix_output.files_changed,
-                        "fix agent complete"
-                    );
+        // Fetch current PR comments
+        let (pr_comments_text, has_pr_comments) = if let Some(pr_num) = pr_number {
+            match self.submission.fetch_pr_comments(pr_num) {
+                Ok(comments) => {
+                    let has = !comments.is_empty();
+                    (format_pr_comments_for_prompt(&comments, pr_num), has)
                 }
                 Err(e) => {
-                    // Attempt session resume with correction prompt for fix output
-                    let recovered = retry_with_correction(
-                        &self.correction_runner,
-                        fix_result.session_id.as_deref(),
-                        fix_config.runner,
-                        &fix_config.agent_binary,
-                        fix_config.agent_model.as_deref(),
-                        fix_config.agent_effort.as_deref(),
-                        fix_config.agent_variant.as_deref(),
-                        fix_config.agent_timeout,
-                        SchemaName::Fix,
-                        &e.to_string(),
-                        &worktree_info.path,
-                        parse_fix_output,
-                    )
-                    .await;
-                    match recovered {
-                        Some(fix_output) => {
-                            info!(
-                                status = ?fix_output.status,
-                                summary = fix_output.summary,
-                                files_changed = ?fix_output.files_changed,
-                                "fix agent complete (after correction)"
-                            );
-                        }
-                        None => {
-                            warn!(error = %e, "fix agent JSON correction failed — retrying round");
-                            last_json_failure = Some(format!("fix agent malformed JSON: {e}"));
-                            continue;
-                        }
-                    }
+                    warn!(error = %e, "failed to fetch PR comments");
+                    ("Failed to fetch PR comments.".to_string(), false)
                 }
             }
+        } else {
+            ("No PR associated with this review.".to_string(), false)
+        };
 
-            if !self.config.dry_run {
-                let push_result = if let Some(remote_branch) = push_remote_branch {
-                    self.push_branch_to(worktree_info, remote_branch)
+        let pr_number_str = pr_number.map(|n| n.to_string()).unwrap_or_default();
+
+        let mut join_set = tokio::task::JoinSet::new();
+        for phase_config in &self.config.review_phases {
+            let phase_runner = self
+                .review_factory
+                .create_phase_runner(phase_config, self.config.agent_timeout_retries);
+
+            let mut phase_vars = vars.clone();
+            phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());
+            phase_vars.insert("pr_comments".to_string(), pr_comments_text.clone());
+            phase_vars.insert("pr_number".to_string(), pr_number_str.clone());
+            // upon templates treat empty strings as falsy in {% if has_pr_comments %}
+            phase_vars.insert(
+                "has_pr_comments".to_string(),
+                if has_pr_comments {
+                    "true".to_string()
                 } else {
-                    self.push_branch(worktree_info)
-                };
-                if let Err(e) = push_result {
-                    warn!(error = %e, "failed to push review fixes");
-                }
-            }
+                    String::new()
+                },
+            );
+
+            let prompt = self
+                .prompt_engine
+                .render_phase(&phase_config.prompt, &phase_vars)?;
+            let working_dir = worktree_info.path.clone();
+            let phase_name = phase_config.name.clone();
+
+            join_set.spawn(async move {
+                let result = phase_runner
+                    .run(Phase::Review, &prompt, &working_dir)
+                    .await?;
+                Ok::<ReviewPhaseOutput, Error>(ReviewPhaseOutput {
+                    name: phase_name,
+                    stdout: result.stdout,
+                    session_id: result.session_id,
+                })
+            });
         }
 
-        // Report PR URL once after the review loop.
+        let mut review_outputs = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            let output = result.map_err(|e| Error::AgentRunner(e.to_string()))??;
+            self.reporter.phase_complete(&output.name);
+            review_outputs.push(output);
+        }
+
+        let mut review_texts = Vec::new();
+        for o in &review_outputs {
+            let rendered = match parse_phase_output(&o.stdout) {
+                Ok(phase) => render_findings_for_prompt(&phase.findings, Some(&o.name)),
+                Err(e) => {
+                    // Try correction via session resume
+                    let phase_config = self.config.review_phases.iter().find(|p| p.name == o.name);
+                    let recovered = if let Some(pc) = phase_config {
+                        retry_with_correction(
+                            &self.correction_runner,
+                            o.session_id.as_deref(),
+                            pc.runner,
+                            &pc.agent_binary,
+                            pc.agent_model.as_deref(),
+                            pc.agent_effort.as_deref(),
+                            pc.agent_variant.as_deref(),
+                            pc.agent_timeout,
+                            SchemaName::Phase,
+                            &e.to_string(),
+                            &worktree_info.path,
+                            parse_phase_output,
+                        )
+                        .await
+                    } else {
+                        None
+                    };
+                    match recovered {
+                        Some(phase) => render_findings_for_prompt(&phase.findings, Some(&o.name)),
+                        None => {
+                            warn!(phase = %o.name, error = %e, "phase JSON correction exhausted");
+                            return Err(Error::Orchestrator(format!(
+                                "review phase '{}' malformed JSON: {e}",
+                                o.name
+                            )));
+                        }
+                    }
+                }
+            };
+            review_texts.push(format!("## Review Phase: {}\n\n{}", o.name, rendered));
+        }
+        let review_outputs_text = review_texts.join("\n\n---\n\n");
+
+        let agg_config = &self.config.review_aggregate;
+        let agg_runner = self.review_factory.create_step_runner(
+            agg_config,
+            self.config.agent_timeout_retries,
+            "aggregate",
+        );
+
+        let mut agg_vars = vars.clone();
+        agg_vars.insert("review_outputs".to_string(), review_outputs_text);
+        agg_vars.insert("pr_comments".to_string(), pr_comments_text);
+        agg_vars.insert("pr_number".to_string(), pr_number_str);
+
+        let agg_prompt = self
+            .prompt_engine
+            .render_phase(&agg_config.prompt, &agg_vars)?;
+        let agg_result = agg_runner
+            .run(Phase::ReviewAggregate, &agg_prompt, &worktree_info.path)
+            .await?;
+
+        let agg_output = match parse_aggregator_output(&agg_result.stdout) {
+            Ok(output) => output,
+            Err(e) => {
+                // Attempt session resume with correction prompt
+                let recovered = retry_with_correction(
+                    &self.correction_runner,
+                    agg_result.session_id.as_deref(),
+                    agg_config.runner,
+                    &agg_config.agent_binary,
+                    agg_config.agent_model.as_deref(),
+                    agg_config.agent_effort.as_deref(),
+                    agg_config.agent_variant.as_deref(),
+                    agg_config.agent_timeout,
+                    SchemaName::Aggregator,
+                    &e.to_string(),
+                    &worktree_info.path,
+                    parse_aggregator_output,
+                )
+                .await;
+                match recovered {
+                    Some(output) => output,
+                    None => {
+                        return Err(Error::Orchestrator(format!(
+                            "aggregator malformed JSON: {e}"
+                        )));
+                    }
+                }
+            }
+        };
+
+        let comment_body = format!(
+            "{REVIEW_MARKER}\n{}",
+            render_findings_for_github(&agg_output.findings, &agg_output.comment),
+        );
+        let summary = agg_output.comment.trim();
+        if !summary.is_empty() {
+            self.reporter.review_summary(summary);
+        }
+
+        if let Some(pr_num) = pr_number
+            && !self.config.dry_run
+            && let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body)
+        {
+            warn!(error = %e, "failed to comment on PR");
+        }
+
+        // Report PR URL after the review
         if let Some(url) = vars.get("pr_url")
             && !url.is_empty()
         {
             self.reporter.pr_url(url);
         }
 
-        if !review_passed {
-            let reason = last_json_failure
-                .map(|f| format!(" (last failure: {f})"))
-                .unwrap_or_default();
-            return Err(Error::Orchestrator(format!(
-                "review did not complete after {max_reviews} round(s){reason}"
-            )));
+        if agg_output.verdict == Verdict::Approved {
+            info!("review approved");
+        } else {
+            info!("review needs fix; findings posted");
         }
 
         Ok(())
@@ -1003,26 +884,6 @@ impl<
         }
 
         info!(branch = worktree.branch, "pushed branch");
-        Ok(())
-    }
-
-    fn push_branch_to(&self, worktree: &WorktreeInfo, remote_branch: &str) -> Result<()> {
-        validate_branch_name(remote_branch)
-            .map_err(|e| Error::Orchestrator(format!("invalid remote branch name: {e}")))?;
-
-        let refspec = format!("HEAD:{remote_branch}");
-        let output = Command::new("git")
-            .args(["push", "-u", "origin", &refspec])
-            .current_dir(&worktree.path)
-            .output()
-            .map_err(|e| Error::Orchestrator(format!("failed to run git push: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Orchestrator(format!("git push failed: {stderr}")));
-        }
-
-        info!(branch = worktree.branch, remote_branch, "pushed branch");
         Ok(())
     }
 }
@@ -1153,22 +1014,20 @@ mod tests {
     fn test_parse_aggregator_approved_json() {
         use crate::review_schema::{Verdict, parse_aggregator_output};
 
-        let json = r#"{"verdict":"approved","comment":"All looks good.","findings":[],"fix_instructions":null}"#;
+        let json = r#"{"verdict":"approved","comment":"All looks good.","findings":[]}"#;
         let output = parse_aggregator_output(json).unwrap();
         assert_eq!(output.verdict, Verdict::Approved);
         assert_eq!(output.comment, "All looks good.");
         assert!(output.findings.is_empty());
-        assert!(output.fix_instructions.is_none());
     }
 
     #[test]
     fn test_parse_aggregator_needs_fix_json() {
         use crate::review_schema::{Verdict, parse_aggregator_output};
 
-        let json = r#"{"verdict":"needs_fix","comment":"Issues found.","findings":[{"id":"bug-main","file":"src/main.rs","line":42,"severity":"critical","description":"bug"}],"fix_instructions":"Fix the bug."}"#;
+        let json = r#"{"verdict":"needs_fix","comment":"Issues found.","findings":[{"id":"bug-main","file":"src/main.rs","line":42,"severity":"critical","description":"bug"}]}"#;
         let output = parse_aggregator_output(json).unwrap();
         assert_eq!(output.verdict, Verdict::NeedsFix);
-        assert_eq!(output.fix_instructions.as_deref(), Some("Fix the bug."));
     }
 
     #[test]

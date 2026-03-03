@@ -236,7 +236,6 @@ async fn main() {
                 worktree_info,
                 vars,
                 comment_pr_number: Some(pr_context.number),
-                push_remote_branch: Some(pr_context.head_branch),
             };
 
             if let Err(e) = orchestrator.run_review_for_existing_pr(invocation).await {

@@ -10,7 +10,6 @@ const DEFAULT_CORRECTNESS_REVIEW: &str =
 const DEFAULT_SECURITY_REVIEW: &str = include_str!("default_prompts/security-review-issue.md");
 const DEFAULT_HYGIENE_REVIEW: &str = include_str!("default_prompts/hygiene-review-issue.md");
 const DEFAULT_REVIEW_AGGREGATE: &str = include_str!("default_prompts/review-aggregate-issue.md");
-const DEFAULT_REVIEW_FIX: &str = include_str!("default_prompts/review-fix-issue.md");
 const DEFAULT_FIX: &str = include_str!("default_prompts/fix-issue.md");
 const DEFAULT_PRD: &str = include_str!("default_prompts/prd.md");
 const FINDINGS_SCHEMA: &str = include_str!("default_prompts/_findings-schema.md");
@@ -23,7 +22,6 @@ fn default_template(phase: &str) -> Option<&'static str> {
         "security-review" => Some(DEFAULT_SECURITY_REVIEW),
         "hygiene-review" => Some(DEFAULT_HYGIENE_REVIEW),
         "review-aggregate" => Some(DEFAULT_REVIEW_AGGREGATE),
-        "review-fix" => Some(DEFAULT_REVIEW_FIX),
         "fix" => Some(DEFAULT_FIX),
         "prd" => Some(DEFAULT_PRD),
         _ => None,
@@ -158,14 +156,6 @@ mod tests {
         let template = engine.load_template("review-aggregate").unwrap();
         assert!(template.contains("Review Aggregation Agent"));
         assert!(template.contains("{{review_outputs}}"));
-    }
-
-    #[test]
-    fn test_load_default_review_fix() {
-        let engine = PromptEngine::new(None);
-        let template = engine.load_template("review-fix").unwrap();
-        assert!(template.contains("Review Fix Agent"));
-        assert!(template.contains("{{fix_instructions}}"));
     }
 
     #[test]
