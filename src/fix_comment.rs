@@ -203,8 +203,13 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
     let groups = group_by_category(items, |item| item.finding.category.as_deref());
 
     let mut out = String::new();
-    let (mut queued, mut eligible, mut blocked, mut fixed, mut wontfix, mut pending, mut cycle) =
-        (0, 0, 0, 0, 0, 0, 0);
+    let mut queued = 0;
+    let mut eligible = 0;
+    let mut blocked = 0;
+    let mut fixed = 0;
+    let mut wontfix = 0;
+    let mut pending = 0;
+    let mut cycle = 0;
     for (category, group) in &groups {
         out.push_str(&format!("\n{}\n", capitalize_first(category)));
         for item in group {
