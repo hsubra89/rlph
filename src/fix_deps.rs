@@ -83,6 +83,27 @@ impl FindingDeps {
         deps.iter().all(|dep| resolved.contains(dep.as_str()))
     }
 
+    /// Returns the unresolved dependency IDs for a finding, sorted.
+    ///
+    /// Only returns deps that are in the graph but not yet in `resolved`.
+    /// Findings with no dependencies return an empty vec.
+    pub fn unresolved_deps<'a>(
+        &'a self,
+        finding_id: &str,
+        resolved: &HashSet<&str>,
+    ) -> Vec<&'a str> {
+        let Some(deps) = self.edges.get(finding_id) else {
+            return vec![];
+        };
+        let mut unresolved: Vec<&str> = deps
+            .iter()
+            .filter(|dep| !resolved.contains(dep.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+        unresolved.sort();
+        unresolved
+    }
+
     /// Returns `true` if any finding has dependencies.
     #[cfg(test)]
     fn has_any_deps(&self) -> bool {
@@ -381,6 +402,53 @@ mod tests {
         let deps = FindingDeps::build(&items);
         let resolved = resolved_finding_ids(&items);
         assert!(deps.deps_met("b", &resolved));
+    }
+
+    // --- unresolved_deps ---
+
+    #[test]
+    fn test_unresolved_deps_no_deps() {
+        let items = vec![queued("a", &[])];
+        let deps = FindingDeps::build(&items);
+        let resolved = resolved_finding_ids(&items);
+        assert!(deps.unresolved_deps("a", &resolved).is_empty());
+    }
+
+    #[test]
+    fn test_unresolved_deps_all_unresolved() {
+        let items = vec![queued("a", &[]), queued("b", &["a"])];
+        let deps = FindingDeps::build(&items);
+        let resolved = resolved_finding_ids(&items);
+        assert_eq!(deps.unresolved_deps("b", &resolved), vec!["a"]);
+    }
+
+    #[test]
+    fn test_unresolved_deps_partially_resolved() {
+        let items = vec![fixed("a", &[]), queued("b", &[]), queued("c", &["a", "b"])];
+        let deps = FindingDeps::build(&items);
+        let resolved = resolved_finding_ids(&items);
+        assert_eq!(deps.unresolved_deps("c", &resolved), vec!["b"]);
+    }
+
+    #[test]
+    fn test_unresolved_deps_all_resolved() {
+        let items = vec![fixed("a", &[]), queued("b", &["a"])];
+        let deps = FindingDeps::build(&items);
+        let resolved = resolved_finding_ids(&items);
+        assert!(deps.unresolved_deps("b", &resolved).is_empty());
+    }
+
+    #[test]
+    fn test_unresolved_deps_sorted() {
+        let items = vec![
+            queued("z", &[]),
+            queued("m", &[]),
+            queued("a", &[]),
+            queued("x", &["z", "m", "a"]),
+        ];
+        let deps = FindingDeps::build(&items);
+        let resolved = resolved_finding_ids(&items);
+        assert_eq!(deps.unresolved_deps("x", &resolved), vec!["a", "m", "z"]);
     }
 
     // --- Staleness detection ---

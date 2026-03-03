@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::fix_deps::{FindingDeps, resolved_finding_ids};
 use crate::review_schema::{
     FINDING_MARKER, ReviewFinding, capitalize_first, extract_finding_json, group_by_category,
 };
@@ -186,10 +187,16 @@ pub fn format_review_context(comment_body: &str, replies: &[String]) -> String {
 }
 
 /// Format parsed fix items for terminal display, grouped by category.
+///
+/// Shows finding details, state icons, and dependency status for queued items
+/// (eligible, blocked, or cycle). Includes a summary line.
 pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
     if items.is_empty() {
-        return "No findings in review comments.".to_string();
+        return "No findings in review comments.\n".to_string();
     }
+
+    let deps = FindingDeps::build(items);
+    let resolved = resolved_finding_ids(items);
 
     // Group by category
     let groups = group_by_category(items, |item| item.finding.category.as_deref());
@@ -204,17 +211,89 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
                 FindingState::Fixed => "👍",
                 FindingState::WontFix => "😕",
             };
+
+            let dep_status = if item.state == FindingState::Queued {
+                if deps.in_cycle(&item.finding.id) {
+                    " [cycle]".to_string()
+                } else {
+                    let unresolved = deps.unresolved_deps(&item.finding.id, &resolved);
+                    if unresolved.is_empty() {
+                        " [eligible]".to_string()
+                    } else {
+                        format!(" [blocked by: {}]", unresolved.join(", "))
+                    }
+                }
+            } else {
+                String::new()
+            };
+
             out.push_str(&format!(
-                "  {} ({}) {} `{}` L{}: {}\n",
+                "  {} ({}) {} `{}` L{}: {}{}\n",
                 state_icon,
                 item.finding.id,
                 item.finding.severity.label(),
                 item.finding.file,
                 item.finding.line,
                 item.finding.description,
+                dep_status,
             ));
         }
     }
+
+    // Summary
+    let (mut queued, mut eligible, mut blocked, mut fixed, mut wontfix, mut pending, mut cycle) =
+        (0, 0, 0, 0, 0, 0, 0);
+    for item in items {
+        match item.state {
+            FindingState::Queued => {
+                queued += 1;
+                if deps.in_cycle(&item.finding.id) {
+                    cycle += 1;
+                } else if deps.deps_met(&item.finding.id, &resolved) {
+                    eligible += 1;
+                } else {
+                    blocked += 1;
+                }
+            }
+            FindingState::Fixed => fixed += 1,
+            FindingState::WontFix => wontfix += 1,
+            FindingState::Pending => pending += 1,
+        }
+    }
+
+    let mut parts = Vec::new();
+    if queued > 0 {
+        let mut sub = Vec::new();
+        if eligible > 0 {
+            sub.push(format!("{eligible} eligible"));
+        }
+        if blocked > 0 {
+            sub.push(format!("{blocked} blocked"));
+        }
+        if cycle > 0 {
+            sub.push(format!("{cycle} cycle"));
+        }
+        if sub.is_empty() {
+            parts.push(format!("{queued} queued"));
+        } else {
+            parts.push(format!("{queued} queued ({})", sub.join(", ")));
+        }
+    }
+    if fixed > 0 {
+        parts.push(format!("{fixed} fixed"));
+    }
+    if wontfix > 0 {
+        parts.push(format!("{wontfix} won't fix"));
+    }
+    if pending > 0 {
+        parts.push(format!("{pending} pending"));
+    }
+
+    out.push_str(&format!(
+        "\n{} findings: {}\n",
+        items.len(),
+        parts.join(", ")
+    ));
     out
 }
 
@@ -427,7 +506,7 @@ mod tests {
     #[test]
     fn test_display_empty_items() {
         let out = format_fix_items_for_display(&[]);
-        assert_eq!(out, "No findings in review comments.");
+        assert_eq!(out, "No findings in review comments.\n");
     }
 
     #[test]
@@ -454,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn test_display_shows_state_icons() {
+    fn test_display_shows_state_icons_and_eligible() {
         let items = vec![
             FixItem {
                 finding: make_finding("a", Severity::Critical, "test"),
@@ -482,9 +561,96 @@ mod tests {
             },
         ];
         let out = format_fix_items_for_display(&items);
-        assert!(out.contains("🚀"));
-        assert!(out.contains("👍"));
-        assert!(out.contains("😕"));
+        assert!(out.contains("🚀 (b)"), "queued icon");
+        assert!(out.contains("[eligible]"), "eligible annotation");
+        assert!(out.contains("👍 (c)"), "fixed icon");
+        assert!(out.contains("😕 (d)"), "wontfix icon");
+        // Fixed/WontFix lines should not have dep annotations
+        let fixed_line = out.lines().find(|l| l.contains("(c)")).unwrap();
+        assert!(!fixed_line.contains('['));
+    }
+
+    #[test]
+    fn test_display_blocked_by_deps() {
+        let mut dep_finding = make_finding("a", Severity::Critical, "correctness");
+        dep_finding.depends_on = vec![];
+        let mut blocked_finding = make_finding("b", Severity::Warning, "correctness");
+        blocked_finding.depends_on = vec!["a".to_string()];
+
+        let items = vec![
+            FixItem {
+                finding: dep_finding,
+                state: FindingState::Queued,
+                comment_id: 1,
+                rocket_reaction_ids: vec![],
+            },
+            FixItem {
+                finding: blocked_finding,
+                state: FindingState::Queued,
+                comment_id: 2,
+                rocket_reaction_ids: vec![],
+            },
+        ];
+        let out = format_fix_items_for_display(&items);
+        let a_line = out.lines().find(|l| l.contains("(a)")).unwrap();
+        let b_line = out.lines().find(|l| l.contains("(b)")).unwrap();
+        assert!(a_line.contains("[eligible]"));
+        assert!(b_line.contains("[blocked by: a]"));
+    }
+
+    #[test]
+    fn test_display_cycle_annotation() {
+        let mut f1 = make_finding("x", Severity::Critical, "correctness");
+        f1.depends_on = vec!["y".to_string()];
+        let mut f2 = make_finding("y", Severity::Critical, "correctness");
+        f2.depends_on = vec!["x".to_string()];
+
+        let items = vec![
+            FixItem {
+                finding: f1,
+                state: FindingState::Queued,
+                comment_id: 1,
+                rocket_reaction_ids: vec![],
+            },
+            FixItem {
+                finding: f2,
+                state: FindingState::Queued,
+                comment_id: 2,
+                rocket_reaction_ids: vec![],
+            },
+        ];
+        let out = format_fix_items_for_display(&items);
+        assert!(out.contains("[cycle]"));
+        assert!(out.contains("2 queued (2 cycle)"));
+    }
+
+    #[test]
+    fn test_display_summary_line() {
+        let items = vec![
+            FixItem {
+                finding: make_finding("a", Severity::Critical, "test"),
+                state: FindingState::Queued,
+                comment_id: 1,
+                rocket_reaction_ids: vec![],
+            },
+            FixItem {
+                finding: make_finding("b", Severity::Warning, "test"),
+                state: FindingState::Fixed,
+                comment_id: 2,
+                rocket_reaction_ids: vec![],
+            },
+            FixItem {
+                finding: make_finding("c", Severity::Info, "test"),
+                state: FindingState::Pending,
+                comment_id: 3,
+                rocket_reaction_ids: vec![],
+            },
+        ];
+        let out = format_fix_items_for_display(&items);
+        assert!(
+            out.contains("3 findings: 1 queued (1 eligible), 1 fixed, 1 pending"),
+            "got: {out}"
+        );
     }
 
     // ---- FindingState Display ----
