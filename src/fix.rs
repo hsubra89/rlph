@@ -393,7 +393,13 @@ pub fn fetch_and_parse_items(
                 })
             })
             .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .map_err(|_| Error::Submission("reaction-fetch thread panicked".into()))?
+            })
+            .collect()
     });
 
     let mut collected = Vec::with_capacity(reactions_by_comment.len());
