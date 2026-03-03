@@ -13,8 +13,8 @@ use crate::diff_position_mapper::DiffPositionMapper;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
-    SchemaName, Verdict, correction_prompt, parse_aggregator_output, parse_phase_output,
-    render_findings_for_prompt, render_inline_finding_comment_for_github,
+    ReviewFinding, SchemaName, Verdict, correction_prompt, parse_aggregator_output,
+    parse_phase_output, render_findings_for_prompt, render_inline_finding_comment_for_github,
     render_summary_for_github,
 };
 use crate::runner::{
@@ -1014,12 +1014,12 @@ pub fn build_task_vars(
 fn build_inline_review_comments(
     submission: &(impl SubmissionBackend + ?Sized),
     pr_number: u64,
-    findings: &[crate::review_schema::ReviewFinding],
+    findings: &[ReviewFinding],
 ) -> Result<Vec<InlineReviewComment>> {
     let diff = submission.fetch_pr_diff(pr_number)?;
     let mapper = DiffPositionMapper::from_diff(&diff)?;
 
-    let findings_by_id: HashMap<&str, &crate::review_schema::ReviewFinding> = findings
+    let findings_by_id: HashMap<&str, &ReviewFinding> = findings
         .iter()
         .map(|finding| (finding.id.as_str(), finding))
         .collect();
