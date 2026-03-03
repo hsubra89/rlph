@@ -461,9 +461,7 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
             Box::pin(async move {
                 let stdout = match phase {
-                    Phase::ReviewAggregate => {
-                        r#"{"verdict":"approved","comment":"All good.","findings":[]}"#.to_string()
-                    }
+                    Phase::ReviewAggregate => APPROVED_AGGREGATOR_JSON.to_string(),
                     _ => String::new(),
                 };
                 Ok(RunResult {
@@ -1577,7 +1575,7 @@ async fn test_review_reports_summary() {
             _ => None,
         })
         .expect("should have ReviewSummary event");
-    assert_eq!(summary, "All good.");
+    assert_eq!(summary, "All looks good.");
 }
 
 #[tokio::test]
@@ -1934,9 +1932,7 @@ impl ReviewRunnerFactory for MalformedPhaseFactory {
         AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
             Box::pin(async move {
                 let stdout = match phase {
-                    Phase::ReviewAggregate => {
-                        r#"{"verdict":"approved","comment":"All good.","findings":[]}"#.to_string()
-                    }
+                    Phase::ReviewAggregate => APPROVED_AGGREGATOR_JSON.to_string(),
                     _ => String::new(),
                 };
                 Ok(RunResult {
