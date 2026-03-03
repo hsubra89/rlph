@@ -28,7 +28,7 @@ use crate::review_schema::{
     FINDING_MARKER, SchemaName, StandaloneFixOutput, parse_standalone_fix_output,
 };
 use crate::runner::{AgentRunner, Phase, RunResult, build_runner};
-use crate::submission::SubmissionBackend;
+use crate::submission::{Reaction, SubmissionBackend};
 use crate::worktree::{WorktreeManager, git_in_dir, resolve_setup_script, validate_branch_name};
 
 /// Run the standalone fix flow for ALL 🚀-reacted findings on a PR concurrently.
@@ -360,21 +360,20 @@ pub fn fetch_and_parse_items(
         .collect();
 
     // Fetch reactions in parallel across threads
-    let reactions_by_comment: Vec<Result<(u64, Vec<crate::submission::Reaction>)>> =
-        std::thread::scope(|s| {
-            let handles: Vec<_> = finding_comments
-                .iter()
-                .map(|comment| {
-                    let id = comment.id;
-                    s.spawn(move || {
-                        submission
-                            .list_review_comment_reactions(id)
-                            .map(|reactions| (id, reactions))
-                    })
+    let reactions_by_comment: Vec<Result<(u64, Vec<Reaction>)>> = std::thread::scope(|s| {
+        let handles: Vec<_> = finding_comments
+            .iter()
+            .map(|comment| {
+                let id = comment.id;
+                s.spawn(move || {
+                    submission
+                        .list_review_comment_reactions(id)
+                        .map(|reactions| (id, reactions))
                 })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        });
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
 
     let mut collected = Vec::with_capacity(reactions_by_comment.len());
     for result in reactions_by_comment {
