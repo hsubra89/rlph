@@ -284,7 +284,7 @@ pub fn render_inline_finding_comment_for_github(
 }
 
 /// Serialize a finding JSON payload suitable for embedding inside HTML comments.
-pub fn escaped_finding_marker_json(finding: &ReviewFinding) -> String {
+fn escaped_finding_marker_json(finding: &ReviewFinding) -> String {
     serde_json::to_string(finding)
         .expect("ReviewFinding serializes to JSON")
         .replace("--", r"\u002d\u002d")
