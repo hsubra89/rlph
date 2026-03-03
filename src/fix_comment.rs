@@ -216,48 +216,48 @@ mod tests {
     // ---- determine_finding_state tests ----
 
     #[test]
-    fn state_pending_when_no_reactions() {
+    fn test_state_pending_when_no_reactions() {
         assert_eq!(determine_finding_state(&[]), FindingState::Pending);
     }
 
     #[test]
-    fn state_queued_when_rocket() {
+    fn test_state_queued_when_rocket() {
         let reactions = make_reactions(&[("rocket", 1)]);
         assert_eq!(determine_finding_state(&reactions), FindingState::Queued);
     }
 
     #[test]
-    fn state_fixed_when_check() {
+    fn test_state_fixed_when_check() {
         let reactions = make_reactions(&[("+1", 1)]);
         assert_eq!(determine_finding_state(&reactions), FindingState::Fixed);
     }
 
     #[test]
-    fn state_wontfix_when_confused() {
+    fn test_state_wontfix_when_confused() {
         let reactions = make_reactions(&[("confused", 1)]);
         assert_eq!(determine_finding_state(&reactions), FindingState::WontFix);
     }
 
     #[test]
-    fn state_fixed_takes_precedence_over_rocket() {
+    fn test_state_fixed_takes_precedence_over_rocket() {
         let reactions = make_reactions(&[("rocket", 1), ("+1", 2)]);
         assert_eq!(determine_finding_state(&reactions), FindingState::Fixed);
     }
 
     #[test]
-    fn state_wontfix_takes_precedence_over_rocket() {
+    fn test_state_wontfix_takes_precedence_over_rocket() {
         let reactions = make_reactions(&[("rocket", 1), ("confused", 2)]);
         assert_eq!(determine_finding_state(&reactions), FindingState::WontFix);
     }
 
     #[test]
-    fn state_fixed_takes_precedence_over_confused() {
+    fn test_state_fixed_takes_precedence_over_confused() {
         let reactions = make_reactions(&[("+1", 1), ("confused", 2)]);
         assert_eq!(determine_finding_state(&reactions), FindingState::Fixed);
     }
 
     #[test]
-    fn state_ignores_irrelevant_reactions() {
+    fn test_state_ignores_irrelevant_reactions() {
         let reactions = make_reactions(&[("heart", 1), ("eyes", 2)]);
         assert_eq!(determine_finding_state(&reactions), FindingState::Pending);
     }
@@ -265,13 +265,13 @@ mod tests {
     // ---- rocket_reaction_ids tests ----
 
     #[test]
-    fn rocket_ids_empty_when_no_rockets() {
+    fn test_rocket_ids_empty_when_no_rockets() {
         let reactions = make_reactions(&[("heart", 1), ("+1", 2)]);
         assert!(rocket_reaction_ids(&reactions).is_empty());
     }
 
     #[test]
-    fn rocket_ids_collects_all_rocket_reactions() {
+    fn test_rocket_ids_collects_all_rocket_reactions() {
         let reactions = make_reactions(&[("rocket", 10), ("heart", 20), ("rocket", 30)]);
         let ids = rocket_reaction_ids(&reactions);
         assert_eq!(ids, vec![10, 30]);
@@ -280,7 +280,7 @@ mod tests {
     // ---- build_fix_items_from_review_comments tests ----
 
     #[test]
-    fn build_items_from_comments_with_finding() {
+    fn test_build_items_from_comments_with_finding() {
         let finding = make_finding("bug-1", Severity::Critical, "correctness");
         let comment = make_review_comment(100, &finding);
         let reactions = vec![(100u64, make_reactions(&[("rocket", 1)]))];
@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn build_items_skips_comments_without_marker() {
+    fn test_build_items_skips_comments_without_marker() {
         let comment = PrReviewComment {
             id: 100,
             body: "Just a regular comment".to_string(),
@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn build_items_skips_reply_comments() {
+    fn test_build_items_skips_reply_comments() {
         let finding = make_finding("bug-1", Severity::Critical, "correctness");
         let body = render_inline_finding_comment_for_github(&finding, &[], None);
         let comment = PrReviewComment {
@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn build_items_mixed_states() {
+    fn test_build_items_mixed_states() {
         let f1 = make_finding("a", Severity::Critical, "correctness");
         let f2 = make_finding("b", Severity::Warning, "correctness");
         let f3 = make_finding("c", Severity::Info, "style");
@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn build_items_no_reactions_for_comment() {
+    fn test_build_items_no_reactions_for_comment() {
         let finding = make_finding("bug-1", Severity::Critical, "correctness");
         let comment = make_review_comment(100, &finding);
 
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn build_items_malformed_json_skipped() {
+    fn test_build_items_malformed_json_skipped() {
         let comment = PrReviewComment {
             id: 100,
             body: "**CRITICAL** `f.rs` L1: bug <!-- rlph-finding:{bad json} -->".to_string(),
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn build_items_with_depends_on() {
+    fn test_build_items_with_depends_on() {
         let f = ReviewFinding {
             id: "deref".to_string(),
             file: "src/main.rs".to_string(),
@@ -390,13 +390,13 @@ mod tests {
     // ---- Display format tests ----
 
     #[test]
-    fn display_empty_items() {
+    fn test_display_empty_items() {
         let out = format_fix_items_for_display(&[]);
         assert_eq!(out, "No findings in review comments.");
     }
 
     #[test]
-    fn display_groups_by_category() {
+    fn test_display_groups_by_category() {
         let items = vec![
             FixItem {
                 finding: make_finding("s1", Severity::Info, "style"),
@@ -419,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn display_shows_state_icons() {
+    fn test_display_shows_state_icons() {
         let items = vec![
             FixItem {
                 finding: make_finding("a", Severity::Critical, "test"),
@@ -455,7 +455,7 @@ mod tests {
     // ---- FindingState Display ----
 
     #[test]
-    fn finding_state_display() {
+    fn test_finding_state_display() {
         assert_eq!(FindingState::Pending.to_string(), "pending");
         assert_eq!(FindingState::Queued.to_string(), "🚀");
         assert_eq!(FindingState::Fixed.to_string(), "👍");

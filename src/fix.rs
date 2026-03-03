@@ -337,7 +337,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
 /// Fetch all inline review comments on a PR, check reactions for each that
 /// contains a finding marker, and build `FixItem`s.
-fn fetch_and_parse_items(
+pub fn fetch_and_parse_items(
     pr_number: u64,
     submission: &(impl SubmissionBackend + ?Sized),
 ) -> Result<Vec<FixItem>> {
@@ -351,16 +351,29 @@ fn fetch_and_parse_items(
         })
         .collect();
 
-    let mut reactions_by_comment = Vec::with_capacity(finding_comments.len());
-    for comment in &finding_comments {
-        let reactions = submission.list_review_comment_reactions(comment.id)?;
-        reactions_by_comment.push((comment.id, reactions));
+    // Fetch reactions in parallel across threads
+    let reactions_by_comment: Vec<Result<(u64, Vec<crate::submission::Reaction>)>> =
+        std::thread::scope(|s| {
+            let handles: Vec<_> = finding_comments
+                .iter()
+                .map(|comment| {
+                    let id = comment.id;
+                    s.spawn(move || {
+                        submission
+                            .list_review_comment_reactions(id)
+                            .map(|reactions| (id, reactions))
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+    let mut collected = Vec::with_capacity(reactions_by_comment.len());
+    for result in reactions_by_comment {
+        collected.push(result?);
     }
 
-    Ok(build_fix_items_from_review_comments(
-        &comments,
-        &reactions_by_comment,
-    ))
+    Ok(build_fix_items_from_review_comments(&comments, &collected))
 }
 
 /// Filter pre-screened items through the dependency gate.
@@ -699,8 +712,8 @@ async fn run_fix_agent_and_apply(
         }
     };
 
-    // Update reactions and post reply
-    update_reactions_and_reply(ctx, submission, &fix_result)?;
+    // Update reactions and post reply (best-effort — don't fail on already-pushed code)
+    update_reactions_and_reply(ctx, submission, &fix_result);
 
     Ok(())
 }
@@ -714,11 +727,11 @@ fn update_reactions_and_reply(
     ctx: &FixContext<'_>,
     submission: &(impl SubmissionBackend + ?Sized),
     fix_result: &FixResultKind,
-) -> Result<()> {
+) {
     let comment_id = ctx.item.comment_id;
     let finding_id = &ctx.item.finding.id;
 
-    // Remove all 🚀 reactions
+    // Remove all 🚀 reactions (best-effort)
     for reaction_id in &ctx.item.rocket_reaction_ids {
         if let Err(e) = submission.delete_review_comment_reaction(comment_id, *reaction_id) {
             warn!(
@@ -729,7 +742,7 @@ fn update_reactions_and_reply(
         }
     }
 
-    // Add result reaction and post reply
+    // Add result reaction (best-effort)
     let (reaction, reply_body) = match fix_result {
         FixResultKind::Fixed { commit_message } => {
             (REACTION_CHECK, format!("Fixed: {commit_message}"))
@@ -737,17 +750,28 @@ fn update_reactions_and_reply(
         FixResultKind::WontFix { reason } => (REACTION_CONFUSED, format!("Won't fix: {reason}")),
     };
 
-    submission.add_review_comment_reaction(comment_id, reaction)?;
+    if let Err(e) = submission.add_review_comment_reaction(comment_id, reaction) {
+        warn!(
+            %finding_id, comment_id, reaction,
+            error = %e,
+            "failed to add result reaction"
+        );
+    }
 
+    // Post reply (best-effort)
     info!(
         pr_number = ctx.pr_number,
         %finding_id,
         comment_id,
         "posting fix reply to review comment"
     );
-    submission.reply_to_review_comment(ctx.pr_number, comment_id, &reply_body)?;
-
-    Ok(())
+    if let Err(e) = submission.reply_to_review_comment(ctx.pr_number, comment_id, &reply_body) {
+        warn!(
+            %finding_id, comment_id,
+            error = %e,
+            "failed to post fix reply"
+        );
+    }
 }
 
 /// Parse fix output with up to 2 retries via session resume.
