@@ -293,15 +293,17 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             };
 
             in_flight.insert(finding_id.clone());
-            let finding_id_for_map = finding_id.clone();
 
             let shared = shared.clone();
 
-            let abort_handle = join_set.spawn(async move {
-                let result = acquire_and_run_fix(&shared, prepared, pr_number).await;
-                (finding_id, result)
+            let abort_handle = join_set.spawn({
+                let finding_id = finding_id.clone();
+                async move {
+                    let result = acquire_and_run_fix(&shared, prepared, pr_number).await;
+                    (finding_id, result)
+                }
             });
-            task_finding_ids.insert(abort_handle.id(), finding_id_for_map);
+            task_finding_ids.insert(abort_handle.id(), finding_id);
         }
 
         if skipped > 0 {
