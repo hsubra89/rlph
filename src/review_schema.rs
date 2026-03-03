@@ -256,7 +256,7 @@ pub fn render_summary_for_github(
 /// Render a single inline PR review comment body for one finding.
 pub fn render_inline_finding_comment_for_github(
     finding: &ReviewFinding,
-    dependency_descriptions: &[String],
+    dependency_descriptions: &[&str],
     fallback_target_line: Option<u32>,
 ) -> String {
     let mut body = format!("**{}**: {}", finding.severity.label(), finding.description);
@@ -1042,7 +1042,7 @@ mod tests {
 
         let body = render_inline_finding_comment_for_github(
             &finding,
-            &["Missing null guard in constructor".to_string()],
+            &["Missing null guard in constructor"],
             Some(88),
         );
 

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1039,16 +1040,18 @@ fn build_inline_review_comments(
                     return None;
                 }
             };
-            let dependency_descriptions = finding
+            let dependency_descriptions: Vec<Cow<'_, str>> = finding
                 .depends_on
                 .iter()
                 .map(|dep_id| {
                     findings_by_id
                         .get(dep_id.as_str())
-                        .map(|dep| dep.description.clone())
-                        .unwrap_or_else(|| format!("finding `{dep_id}`"))
+                        .map(|dep| Cow::Borrowed(dep.description.as_str()))
+                        .unwrap_or_else(|| Cow::Owned(format!("finding `{dep_id}`")))
                 })
-                .collect::<Vec<_>>();
+                .collect();
+            let dependency_descriptions: Vec<&str> =
+                dependency_descriptions.iter().map(|c| c.as_ref()).collect();
 
             Some(InlineReviewComment {
                 path: mapped.file,
