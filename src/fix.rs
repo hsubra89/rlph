@@ -767,6 +767,24 @@ async fn run_fix_agent_and_apply(
     Ok(())
 }
 
+/// Remove 🚀 reactions from a single review comment (best-effort).
+fn remove_rocket_reactions(
+    finding_id: &str,
+    comment_id: u64,
+    rocket_reaction_ids: &[u64],
+    submission: &(impl SubmissionBackend + ?Sized),
+) {
+    for reaction_id in rocket_reaction_ids {
+        if let Err(e) = submission.delete_review_comment_reaction(comment_id, *reaction_id) {
+            warn!(
+                finding_id, comment_id, reaction_id,
+                error = %e,
+                "failed to remove 🚀 reaction"
+            );
+        }
+    }
+}
+
 /// Remove stale 🚀 reactions from items that are already resolved (Fixed or WontFix).
 ///
 /// When a finding has both 🚀 and 👍/😕, the state is correctly resolved as Fixed/WontFix,
@@ -782,19 +800,12 @@ fn cleanup_stale_rockets(items: &[FixItem], submission: &(impl SubmissionBackend
                 rockets = item.rocket_reaction_ids.len(),
                 "cleaning up stale 🚀 reactions on resolved finding"
             );
-            for reaction_id in &item.rocket_reaction_ids {
-                if let Err(e) =
-                    submission.delete_review_comment_reaction(item.comment_id, *reaction_id)
-                {
-                    warn!(
-                        finding_id = %item.finding.id,
-                        comment_id = item.comment_id,
-                        reaction_id,
-                        error = %e,
-                        "failed to remove stale 🚀 reaction"
-                    );
-                }
-            }
+            remove_rocket_reactions(
+                &item.finding.id,
+                item.comment_id,
+                &item.rocket_reaction_ids,
+                submission,
+            );
         }
     }
 }
@@ -848,15 +859,12 @@ fn update_reactions_and_reply(
 
     // Remove all 🚀 reactions (best-effort) — done last so the outcome is visible
     // before the queuing signal disappears.
-    for reaction_id in &ctx.item.rocket_reaction_ids {
-        if let Err(e) = submission.delete_review_comment_reaction(comment_id, *reaction_id) {
-            warn!(
-                %finding_id, comment_id, reaction_id,
-                error = %e,
-                "failed to remove 🚀 reaction (may have been removed already)"
-            );
-        }
-    }
+    remove_rocket_reactions(
+        finding_id,
+        comment_id,
+        &ctx.item.rocket_reaction_ids,
+        submission,
+    );
 }
 
 /// Parse fix output with up to 2 retries via session resume.
