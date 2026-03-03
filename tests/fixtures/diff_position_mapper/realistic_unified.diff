@@ -1,0 +1,44 @@
+diff --git a/src/foo.rs b/src/foo.rs
+index 1111111..2222222 100644
+--- a/src/foo.rs
++++ b/src/foo.rs
+@@ -3,4 +3,5 @@ fn alpha() {
+ line3
+ line4
++line5
+ line6
+ }
+@@ -20,2 +21,3 @@ fn beta() {
+ old1
++new1
+ old2
++new2
+ }
+diff --git a/src/single.rs b/src/single.rs
+index 3333333..4444444 100644
+--- a/src/single.rs
++++ b/src/single.rs
+@@ -42 +42 @@ fn only() {
+-old
++new
+ }
+diff --git a/src/old_name.rs b/src/new_name.rs
+similarity index 88%
+rename from src/old_name.rs
+rename to src/new_name.rs
+index 5555555..6666666 100644
+--- a/src/old_name.rs
++++ b/src/new_name.rs
+@@ -7,2 +7,2 @@ fn renamed() {
+-old
++new
+ keep
+ }
+diff --git a/src/deletions_only.rs b/src/deletions_only.rs
+index aaaaaaa..bbbbbbb 100644
+--- a/src/deletions_only.rs
++++ b/src/deletions_only.rs
+@@ -10,2 +10,0 @@ fn gone() {
+-old1
+-old2
+ }

@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod config;
 pub mod deps;
+pub mod diff_position_mapper;
 pub mod error;
 pub mod fix;
 pub mod fix_comment;
