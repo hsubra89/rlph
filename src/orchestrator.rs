@@ -9,18 +9,23 @@ use tracing::{info, warn};
 
 use crate::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
 use crate::deps::DependencyGraph;
+use crate::diff_position_mapper::DiffPositionMapper;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
     SchemaName, Verdict, correction_prompt, parse_aggregator_output, parse_phase_output,
-    render_findings_for_github, render_findings_for_prompt,
+    render_findings_for_prompt, render_inline_finding_comment_for_github,
+    render_summary_for_github,
 };
 use crate::runner::{
     AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, resume_with_correction,
 };
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
-use crate::submission::{REVIEW_MARKER, SubmissionBackend, format_pr_comments_for_prompt};
+use crate::submission::{
+    InlineReviewComment, PullRequestReviewEvent, REVIEW_MARKER, SubmissionBackend,
+    format_pr_comments_for_prompt,
+};
 use crate::worktree::{WorktreeInfo, WorktreeManager};
 
 #[derive(Debug)]
@@ -810,7 +815,11 @@ impl<
 
         let comment_body = format!(
             "{REVIEW_MARKER}\n{}",
-            render_findings_for_github(&agg_output.findings, &agg_output.comment),
+            render_summary_for_github(
+                agg_output.verdict.clone(),
+                &agg_output.findings,
+                &agg_output.comment,
+            ),
         );
         let summary = agg_output.comment.trim();
         if !summary.is_empty() {
@@ -819,9 +828,31 @@ impl<
 
         if let Some(pr_num) = pr_number
             && !self.config.dry_run
-            && let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body)
         {
-            warn!(error = %e, "failed to comment on PR");
+            if let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body) {
+                warn!(error = %e, "failed to upsert summary review comment");
+            }
+
+            if !agg_output.findings.is_empty() {
+                match build_inline_review_comments(&self.submission, pr_num, &agg_output.findings) {
+                    Ok(inline_comments) => {
+                        let review_event = match agg_output.verdict {
+                            Verdict::NeedsFix => PullRequestReviewEvent::RequestChanges,
+                            Verdict::Approved => PullRequestReviewEvent::Comment,
+                        };
+                        if let Err(e) = self.submission.submit_inline_pr_review(
+                            pr_num,
+                            review_event,
+                            &inline_comments,
+                        ) {
+                            warn!(error = %e, "failed to post inline review comments");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "failed to build inline review comments");
+                    }
+                }
+            }
         }
 
         // Report PR URL after the review
@@ -980,6 +1011,47 @@ pub fn build_task_vars(
     ])
 }
 
+fn build_inline_review_comments(
+    submission: &(impl SubmissionBackend + ?Sized),
+    pr_number: u64,
+    findings: &[crate::review_schema::ReviewFinding],
+) -> Result<Vec<InlineReviewComment>> {
+    let diff = submission.fetch_pr_diff(pr_number)?;
+    let mapper = DiffPositionMapper::from_diff(&diff)?;
+
+    let findings_by_id: HashMap<&str, &crate::review_schema::ReviewFinding> = findings
+        .iter()
+        .map(|finding| (finding.id.as_str(), finding))
+        .collect();
+
+    findings
+        .iter()
+        .map(|finding| {
+            let mapped = mapper.map(&finding.file, finding.line)?;
+            let dependency_descriptions = finding
+                .depends_on
+                .iter()
+                .map(|dep_id| {
+                    findings_by_id
+                        .get(dep_id.as_str())
+                        .map(|dep| dep.description.clone())
+                        .unwrap_or_else(|| format!("finding `{dep_id}`"))
+                })
+                .collect::<Vec<_>>();
+
+            Ok(InlineReviewComment {
+                path: mapped.file,
+                line: mapped.line,
+                body: render_inline_finding_comment_for_github(
+                    finding,
+                    &dependency_descriptions,
+                    mapped.used_fallback.then_some(finding.line),
+                ),
+            })
+        })
+        .collect()
+}
+
 /// Extract the issue number from a task ID like "gh-42".
 pub fn parse_issue_number(task_id: &str) -> Result<u64> {
     task_id
@@ -993,6 +1065,55 @@ pub fn parse_issue_number(task_id: &str) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review_schema::{ReviewFinding, Severity};
+    use crate::submission::PrComment;
+
+    struct InlineReviewTestSubmission {
+        diff: String,
+    }
+
+    impl SubmissionBackend for InlineReviewTestSubmission {
+        fn submit(
+            &self,
+            _branch: &str,
+            _base: &str,
+            _title: &str,
+            _body: &str,
+        ) -> Result<crate::submission::SubmitResult> {
+            unreachable!("not used in inline review mapping tests")
+        }
+
+        fn find_existing_pr_for_issue(&self, _issue_number: u64) -> Result<Option<u64>> {
+            Ok(None)
+        }
+
+        fn upsert_review_comment(&self, _pr_number: u64, _body: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn submit_inline_pr_review(
+            &self,
+            _pr_number: u64,
+            _event: PullRequestReviewEvent,
+            _comments: &[InlineReviewComment],
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
+            Ok(self.diff.clone())
+        }
+
+        fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
+            Ok(vec![])
+        }
+
+        fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<PrComment> {
+            Err(Error::Submission(
+                "not used in inline review mapping tests".to_string(),
+            ))
+        }
+    }
 
     #[test]
     fn test_parse_issue_number_valid() {
@@ -1035,5 +1156,64 @@ mod tests {
         use crate::review_schema::parse_aggregator_output;
 
         assert!(parse_aggregator_output("not json at all").is_err());
+    }
+
+    #[test]
+    fn test_build_inline_review_comments_renders_dependency_prose() {
+        let submission = InlineReviewTestSubmission {
+            diff:
+                "diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3\n"
+                    .to_string(),
+        };
+        let dep = ReviewFinding {
+            id: "base-check".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 1,
+            severity: Severity::Warning,
+            description: "Base check missing".to_string(),
+            category: Some("correctness".to_string()),
+            depends_on: vec![],
+        };
+        let finding = ReviewFinding {
+            id: "follow-up".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 2,
+            severity: Severity::Critical,
+            description: "Use after free".to_string(),
+            category: Some("correctness".to_string()),
+            depends_on: vec!["base-check".to_string()],
+        };
+
+        let comments =
+            build_inline_review_comments(&submission, 7, &[dep.clone(), finding.clone()]).unwrap();
+        let body = comments
+            .iter()
+            .find(|c| c.body.contains("Use after free"))
+            .expect("expected follow-up comment");
+        assert!(body.body.contains("Depends on: Base check missing."));
+    }
+
+    #[test]
+    fn test_build_inline_review_comments_adds_fallback_note() {
+        let submission = InlineReviewTestSubmission {
+            diff: "diff --git a/src/lib.rs b/src/lib.rs\n@@ -0,0 +10,2 @@\n+line10\n+line11\n"
+                .to_string(),
+        };
+        let finding = ReviewFinding {
+            id: "outside-hunk".to_string(),
+            file: "src/lib.rs".to_string(),
+            line: 100,
+            severity: Severity::Warning,
+            description: "Reported far from changed lines".to_string(),
+            category: Some("correctness".to_string()),
+            depends_on: vec![],
+        };
+
+        let comments = build_inline_review_comments(&submission, 8, &[finding]).unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].line, 11);
+        assert!(comments[0].body.contains(
+            "applies to line 100 but is shown here because that line is not in the diff"
+        ));
     }
 }

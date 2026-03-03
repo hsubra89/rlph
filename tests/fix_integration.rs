@@ -10,7 +10,10 @@ use rlph::fix::{run_fix, run_fix_loop};
 use rlph::orchestrator::CorrectionRunner;
 use rlph::review_schema::{ReviewFinding, render_findings_for_github};
 use rlph::runner::{RunResult, RunnerKind};
-use rlph::submission::{PrComment, REVIEW_MARKER, SubmissionBackend, SubmitResult};
+use rlph::submission::{
+    InlineReviewComment, PrComment, PullRequestReviewEvent, REVIEW_MARKER, SubmissionBackend,
+    SubmitResult,
+};
 use rlph::test_helpers::make_finding;
 use tokio::sync::watch;
 
@@ -116,6 +119,19 @@ impl SubmissionBackend for MockFixSubmission {
         *self.comment_body.lock().unwrap() = body.to_string();
         self.upsert_calls.lock().unwrap().push(body.to_string());
         Ok(())
+    }
+
+    fn submit_inline_pr_review(
+        &self,
+        _pr_number: u64,
+        _event: PullRequestReviewEvent,
+        _comments: &[InlineReviewComment],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
+        Ok(String::new())
     }
 
     fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
@@ -370,6 +386,19 @@ impl SubmissionBackend for PollingMockSubmission {
 
     fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()> {
         self.base.upsert_review_comment(pr_number, body)
+    }
+
+    fn submit_inline_pr_review(
+        &self,
+        _pr_number: u64,
+        _event: PullRequestReviewEvent,
+        _comments: &[InlineReviewComment],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
+        Ok(String::new())
     }
 
     fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {

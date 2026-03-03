@@ -15,10 +15,13 @@ use rlph::orchestrator::{
     build_task_vars,
 };
 use rlph::prompts::PromptEngine;
+use rlph::review_schema::FINDING_MARKER;
 use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult, RunnerKind};
 use rlph::sources::{Task, TaskSource};
 use rlph::state::StateManager;
-use rlph::submission::{SubmissionBackend, SubmitResult};
+use rlph::submission::{
+    InlineReviewComment, PullRequestReviewEvent, SubmissionBackend, SubmitResult,
+};
 use rlph::worktree::WorktreeManager;
 use tokio::sync::watch;
 
@@ -39,6 +42,14 @@ struct SourceTracker {
 struct SubmissionTracker {
     submissions: Vec<(String, String, String, String)>,
     comments: Vec<(u64, String)>,
+    reviews: Vec<PostedReview>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PostedReview {
+    pr_number: u64,
+    event: PullRequestReviewEvent,
+    comments: Vec<InlineReviewComment>,
 }
 
 // --- Mock implementations ---
@@ -390,6 +401,27 @@ impl SubmissionBackend for MockSubmission {
         Ok(())
     }
 
+    fn submit_inline_pr_review(
+        &self,
+        pr_number: u64,
+        event: PullRequestReviewEvent,
+        comments: &[InlineReviewComment],
+    ) -> Result<()> {
+        self.tracker.lock().unwrap().reviews.push(PostedReview {
+            pr_number,
+            event,
+            comments: comments.to_vec(),
+        });
+        Ok(())
+    }
+
+    fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
+        Ok(
+            "diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,3 @@\n+fn main() {}\n+let x = 1;\n+let y = 2;\n"
+                .to_string(),
+        )
+    }
+
     fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<rlph::submission::PrComment>> {
         Ok(vec![])
     }
@@ -412,6 +444,19 @@ impl SubmissionBackend for FailSubmission {
 
     fn upsert_review_comment(&self, _pr_number: u64, _body: &str) -> Result<()> {
         Ok(())
+    }
+
+    fn submit_inline_pr_review(
+        &self,
+        _pr_number: u64,
+        _event: PullRequestReviewEvent,
+        _comments: &[InlineReviewComment],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
+        Ok("diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,1 @@\n+fn main() {}\n".to_string())
     }
 
     fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<rlph::submission::PrComment>> {
@@ -1264,6 +1309,13 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
     let submission_data = sub_tracker.lock().unwrap();
     assert_eq!(submission_data.comments.len(), 1);
     assert_eq!(submission_data.comments[0].0, 77);
+    assert!(
+        submission_data.comments[0]
+            .1
+            .contains("Verdict: `approved`")
+    );
+    assert!(!submission_data.comments[0].1.contains(FINDING_MARKER));
+    assert!(submission_data.reviews.is_empty());
     drop(submission_data);
 
     let state = StateManager::new(&state_dir).load();
@@ -1360,7 +1412,7 @@ async fn test_review_only_needs_fix_completes_successfully() {
         worktree_mgr,
         StateManager::new(&state_dir),
         PromptEngine::new(None),
-        make_config(true),
+        make_config(false),
         repo_dir.path().to_path_buf(),
     )
     .with_review_factory(NeverApproveReviewFactory);
@@ -1377,6 +1429,28 @@ async fn test_review_only_needs_fix_completes_successfully() {
         .run_review_for_existing_pr(invocation)
         .await
         .unwrap();
+
+    let submission_data = sub_tracker.lock().unwrap();
+    assert_eq!(submission_data.comments.len(), 1);
+    assert!(
+        submission_data.comments[0]
+            .1
+            .contains("Verdict: `needs_fix`")
+    );
+    assert!(!submission_data.comments[0].1.contains(FINDING_MARKER));
+
+    assert_eq!(submission_data.reviews.len(), 1);
+    assert_eq!(submission_data.reviews[0].pr_number, 99);
+    assert_eq!(
+        submission_data.reviews[0].event,
+        PullRequestReviewEvent::RequestChanges
+    );
+    assert_eq!(submission_data.reviews[0].comments.len(), 1);
+    let inline_comment = &submission_data.reviews[0].comments[0];
+    assert_eq!(inline_comment.path, "src/main.rs");
+    assert_eq!(inline_comment.line, 1);
+    assert!(inline_comment.body.contains("**WARNING**: issue"));
+    assert!(inline_comment.body.contains(FINDING_MARKER));
 }
 
 // --- ProgressReporter output tests ---
