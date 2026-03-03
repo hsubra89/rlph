@@ -824,7 +824,7 @@ impl<
             warn!(error = %e, "failed to comment on PR");
         }
 
-        // Report PR URL after the review.
+        // Report PR URL after the review
         if let Some(url) = vars.get("pr_url")
             && !url.is_empty()
         {
