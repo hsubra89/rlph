@@ -180,6 +180,7 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
 mod tests {
     use super::*;
     use crate::review_schema::{Severity, render_inline_finding_comment_for_github};
+    use crate::test_helpers::make_reactions;
 
     fn make_finding(id: &str, severity: Severity, category: &str) -> ReviewFinding {
         ReviewFinding {
@@ -200,16 +201,6 @@ mod tests {
             body,
             in_reply_to_id: None,
         }
-    }
-
-    fn make_reactions(specs: &[(&str, u64)]) -> Vec<Reaction> {
-        specs
-            .iter()
-            .map(|(content, id)| Reaction {
-                id: *id,
-                content: content.to_string(),
-            })
-            .collect()
     }
 
     // ---- classify_reactions tests ----
