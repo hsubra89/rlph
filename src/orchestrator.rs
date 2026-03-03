@@ -1054,7 +1054,7 @@ fn build_inline_review_comments(
                 dependency_descriptions.iter().map(|c| c.as_ref()).collect();
 
             let fallback = match mapped.fallback {
-                FallbackKind::None => None,
+                FallbackKind::Exact => None,
                 FallbackKind::Line => Some(FallbackContext::Line(finding.line)),
                 FallbackKind::File => Some(FallbackContext::File {
                     file: finding.file.clone(),
