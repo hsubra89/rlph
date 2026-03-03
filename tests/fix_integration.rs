@@ -128,11 +128,6 @@ impl MockFixSubmission {
     fn added_reactions(&self) -> Vec<(u64, String)> {
         self.added_reactions.lock().unwrap().clone()
     }
-
-    #[allow(dead_code)]
-    fn replies(&self) -> Vec<(u64, u64, String)> {
-        self.replies.lock().unwrap().clone()
-    }
 }
 
 impl SubmissionBackend for MockFixSubmission {
