@@ -102,7 +102,7 @@ impl GitHubSubmission {
                 "--limit",
                 "1",
             ],
-            "gh pr list",
+            "gh pr list --head",
         )?;
         let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)
             .map_err(|e| Error::Submission(format!("failed to parse gh output: {e}")))?;
@@ -129,7 +129,7 @@ impl GitHubSubmission {
                 "--limit",
                 "100",
             ],
-            "gh pr list",
+            "gh pr list --state open",
         )?;
         let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)
             .map_err(|e| Error::Submission(format!("failed to parse gh output: {e}")))?;
