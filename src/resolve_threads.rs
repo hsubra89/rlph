@@ -192,13 +192,22 @@ pub fn resolve_completed_threads(owner: &str, repo: &str, pr_number: u64) -> Res
         "resolving completed rlph review threads"
     );
 
-    let mut resolved = 0u32;
-    for thread_id in &thread_ids {
-        match resolve_thread(thread_id) {
-            Ok(()) => resolved += 1,
-            Err(e) => warn!(thread_id, error = %e, "failed to resolve review thread"),
+    let resolved = std::thread::scope(|s| {
+        let handles: Vec<_> = thread_ids
+            .iter()
+            .map(|&thread_id| s.spawn(move || (thread_id, resolve_thread(thread_id))))
+            .collect();
+
+        let mut count = 0u32;
+        for handle in handles {
+            let (thread_id, result) = handle.join().expect("resolve thread panicked");
+            match result {
+                Ok(()) => count += 1,
+                Err(e) => warn!(thread_id, error = %e, "failed to resolve review thread"),
+            }
         }
-    }
+        count
+    });
 
     info!(pr_number, resolved, "resolved rlph review threads");
     Ok(resolved)
