@@ -935,6 +935,11 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 &worktree_path,
                 &batch_branch,
                 &shared.pr_branch,
+                &ConflictResolutionCtx {
+                    session_id: session_id.as_deref(),
+                    fix_config: &shared.fix_config,
+                    correction_runner: &*shared.correction_runner,
+                },
             )
             .await
             {
@@ -971,20 +976,46 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     (completed_ids, error)
 }
 
+/// Params only needed for the conflict-resolution branch in [`apply_fix_output`].
+struct ConflictResolutionCtx<'a, C: ?Sized> {
+    session_id: Option<&'a str>,
+    fix_config: &'a ReviewStepConfig,
+    correction_runner: &'a C,
+}
+
 /// Map agent output to a fix result, pushing to the PR branch if the fix was applied.
-async fn apply_fix_output(
+async fn apply_fix_output<C: CorrectionRunner + ?Sized>(
     fix_output: StandaloneFixOutput,
     finding_id: &str,
     worktree_path: &Path,
     fix_branch: &str,
     pr_branch: &str,
+    conflict_ctx: &ConflictResolutionCtx<'_, C>,
 ) -> Result<FixResultKind> {
     match fix_output {
         StandaloneFixOutput::Fixed { commit_message } => {
             eprintln!("[rlph] Fix applied — rebasing and pushing: {finding_id}");
             info!(%finding_id, commit_message, "fix applied — rebasing and pushing");
-            push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await?;
-            Ok(FixResultKind::Fixed { commit_message })
+            match (
+                push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await,
+                conflict_ctx.session_id,
+            ) {
+                (Ok(()), _) => Ok(FixResultKind::Fixed { commit_message }),
+                (Err(Error::RebaseConflict { .. }), Some(sid)) => {
+                    eprintln!("[rlph] Rebase conflict — resuming agent to resolve: {finding_id}");
+                    resolve_conflict_and_push(
+                        worktree_path,
+                        fix_branch,
+                        pr_branch,
+                        sid,
+                        conflict_ctx.fix_config,
+                        conflict_ctx.correction_runner,
+                    )
+                    .await?;
+                    Ok(FixResultKind::Fixed { commit_message })
+                }
+                (Err(e), _) => Err(e),
+            }
         }
         StandaloneFixOutput::WontFix { reason } => {
             eprintln!("[rlph] Finding marked as won't fix: {finding_id}");
@@ -992,6 +1023,57 @@ async fn apply_fix_output(
             Ok(FixResultKind::WontFix { reason })
         }
     }
+}
+
+/// Attempt to resolve rebase conflicts by resuming the agent session.
+///
+/// Starts a rebase (leaving conflicts in the worktree), then resumes the agent
+/// asking it to resolve conflict markers and continue the rebase. On success,
+/// pushes the result.
+///
+/// Skips fetching because this is only called after `push_to_pr_branch_with_retry`
+/// already completed a fetch+rebase cycle.
+async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
+    worktree_path: &Path,
+    fix_branch: &str,
+    pr_branch: &str,
+    session_id: &str,
+    fix_config: &ReviewStepConfig,
+    correction_runner: &C,
+) -> Result<()> {
+    match start_rebase(worktree_path, pr_branch) {
+        Ok(()) => { /* Rebase clean — fall through to push */ }
+        Err(Error::RebaseConflict { .. }) => {
+            // Conflicts in worktree — resume agent to resolve
+            let prompt = "The rebase onto the PR branch has merge conflicts. \
+                Please resolve ALL conflicts:\n\
+                1. Edit each conflicted file to remove conflict markers (<<<<<<< / ======= / >>>>>>>)\n\
+                2. `git add` each resolved file\n\
+                3. `git rebase --continue`\n\
+                Do not abort the rebase.";
+
+            correction_runner
+                .resume(
+                    fix_config.runner,
+                    &fix_config.agent_binary,
+                    fix_config.agent_model.as_deref(),
+                    fix_config.agent_effort.as_deref(),
+                    fix_config.agent_variant.as_deref(),
+                    session_id,
+                    prompt,
+                    worktree_path,
+                    fix_config.agent_timeout.map(Duration::from_secs),
+                )
+                .await
+                .inspect_err(|_| abort_rebase(worktree_path))?;
+        }
+        Err(e) => return Err(e),
+    }
+
+    // Push with retry. If this hits another RebaseConflict we intentionally
+    // propagate the error rather than resuming the agent again to avoid an
+    // infinite conflict-resolution loop.
+    push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await
 }
 
 /// Build the runner used for fix agent invocations.
@@ -1039,6 +1121,11 @@ async fn run_fix_agent_and_apply(
         worktree_path,
         ctx.fix_branch,
         ctx.pr_branch,
+        &ConflictResolutionCtx {
+            session_id: run_result.session_id.as_deref(),
+            fix_config: ctx.fix_config,
+            correction_runner,
+        },
     )
     .await?;
 
@@ -1210,14 +1297,30 @@ async fn fetch_with_retry(cwd: &Path, refspec: &str) -> Result<()> {
     )))
 }
 
-/// Rebase current branch onto origin/<pr-branch>.
+/// Rebase current branch onto origin/<pr-branch>, fetching first.
+///
+/// On conflict the rebase is **not** aborted — the caller decides whether to
+/// resume the agent for conflict resolution or abort itself.
 async fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
     fetch_with_retry(worktree_path, pr_branch).await?;
+    start_rebase(worktree_path, pr_branch)
+}
 
+/// Start a rebase onto origin/<pr-branch> (assumes refs are already fetched).
+///
+/// On conflict the rebase is **not** aborted — the caller decides whether to
+/// resume the agent for conflict resolution or abort itself.
+fn start_rebase(worktree_path: &Path, pr_branch: &str) -> Result<()> {
     let remote_ref = format!("origin/{pr_branch}");
 
     if let Err(stderr) = git_in_dir(worktree_path, &["rebase", &remote_ref]) {
-        let _ = git_in_dir(worktree_path, &["rebase", "--abort"]);
+        if stderr.contains("CONFLICT") || stderr.contains("could not apply") {
+            warn!(remote_ref, stderr = %stderr, "rebase conflict");
+            return Err(Error::RebaseConflict {
+                target_ref: remote_ref,
+            });
+        }
+        warn!(remote_ref, stderr = %stderr, "git rebase failed (non-conflict)");
         return Err(Error::Orchestrator(format!(
             "git rebase onto {remote_ref} failed: {stderr}"
         )));
@@ -1225,6 +1328,11 @@ async fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
 
     info!(remote_ref, "rebased onto latest PR branch");
     Ok(())
+}
+
+/// Best-effort abort of a rebase in progress.
+fn abort_rebase(worktree_path: &Path) {
+    let _ = git_in_dir(worktree_path, &["rebase", "--abort"]);
 }
 
 /// Push fix branch to PR branch with rebase+retry on conflict.
@@ -1240,8 +1348,11 @@ async fn push_to_pr_branch_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=MAX_PUSH_ATTEMPTS {
         // Skip rebase on first attempt: worktree was just created from origin/<pr-branch>
-        if attempt > 1 {
-            rebase_onto(worktree_path, pr_branch).await?;
+        if attempt > 1
+            && let Err(e) = rebase_onto(worktree_path, pr_branch).await
+        {
+            abort_rebase(worktree_path);
+            return Err(e);
         }
 
         match git_in_dir(worktree_path, &["push", "origin", &refspec]) {

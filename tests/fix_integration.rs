@@ -1182,3 +1182,148 @@ async fn test_fix_loop_batch_abort_when_no_session_id() {
         "only warn-a should be fixed (warn-b failed: no session_id for resume)"
     );
 }
+
+/// Test that rebase conflicts during push trigger agent resume for resolution.
+///
+/// The mock agent script pushes a conflicting commit to origin (via a subshell
+/// clone that writes all output to /dev/null), then makes its own conflicting
+/// commit in the worktree. When the push fails and the rebase conflicts,
+/// `resolve_conflict_and_push` is invoked and the mock correction runner
+/// resolves the conflict.
+#[tokio::test]
+async fn test_fix_loop_rebase_conflict_triggers_agent_resume() {
+    let (bare_dir, repo_dir) = setup_git_repo();
+    let repo_root = repo_dir.path();
+
+    let pr_branch = "feature/conflict-test";
+    create_pr_branch(repo_root, pr_branch);
+
+    // Pre-create shared.txt on the PR branch so both sides can conflict on it
+    run_git(repo_root, &["checkout", pr_branch]);
+    std::fs::write(repo_root.join("shared.txt"), "original content").unwrap();
+    run_git(repo_root, &["add", "."]);
+    run_git(repo_root, &["commit", "-m", "add shared.txt"]);
+    run_git(repo_root, &["push", "origin", pr_branch]);
+    run_git(repo_root, &["checkout", "main"]);
+
+    // Agent script: pushes a conflicting commit to origin (from a subshell clone
+    // with all output redirected to /dev/null), then makes a conflicting commit
+    // in the worktree on the same file.
+    let bare_path = bare_dir.path().to_str().unwrap().to_string();
+    let script_path = repo_root.join("mock-conflict-agent.sh");
+    let script = format!(
+        r#"#!/bin/bash
+ID="$$-$RANDOM"
+
+# Push a conflicting commit to origin from a throwaway clone (subshell, all
+# output to /dev/null so it doesn't pollute stdout which the runner parses).
+TMPCLONE=$(mktemp -d)
+(
+  git clone "{bare_path}" "$TMPCLONE"
+  cd "$TMPCLONE"
+  git checkout feature/conflict-test
+  echo "origin-side-change" > shared.txt
+  git add shared.txt
+  git commit -m "conflict: origin-side"
+  git push origin feature/conflict-test
+) >/dev/null 2>&1
+rm -rf "$TMPCLONE"
+
+# Make a conflicting change in the worktree
+echo "worktree-side-change" > shared.txt
+git add shared.txt
+git commit -m "fix: worktree-side-$ID" >/dev/null 2>&1
+
+echo "{{\"session_id\":\"mock-conflict-session\"}}"
+echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"commit_message\\\":\\\"fix: conflict-resolved\\\"}}\"}}"
+"#
+    );
+    std::fs::write(&script_path, &script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let agent_script = script_path.to_str().unwrap().to_string();
+
+    let findings = vec![make_finding("conflict-finding")];
+    let comments = make_review_comments(&findings);
+    let reactions = vec![rocket_reactions(100)];
+
+    let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
+
+    // Mock correction runner: resolves merge conflicts by writing a resolution,
+    // git-adding, and continuing the rebase.
+    let correction_runner = Arc::new(MockCorrectionRunner::with_handler(|working_dir, _n| {
+        std::fs::write(working_dir.join("shared.txt"), "resolved content").unwrap();
+        run_git(working_dir, &["add", "shared.txt"]);
+
+        // Use Command directly to avoid panic if rebase --continue "fails"
+        // (git sometimes exits non-zero for editor-related reasons)
+        let output = std::process::Command::new("git")
+            .args(["rebase", "--continue"])
+            .current_dir(working_dir)
+            .env("GIT_EDITOR", "true")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "rebase --continue failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            session_id: Some("mock-conflict-session".to_string()),
+        })
+    }));
+
+    let wt_dir = tempfile::TempDir::new().unwrap();
+    let mut config = make_config();
+    config.fix = make_fix_step_config(agent_script);
+    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    config.poll_seconds = 1;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let sub_clone = Arc::clone(&submission);
+    let shutdown_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if sub_clone.reply_count() >= 1 {
+                let _ = shutdown_tx.send(true);
+                return;
+            }
+        }
+    });
+
+    let result = run_fix_loop(
+        42,
+        pr_branch,
+        &config,
+        Arc::clone(&submission),
+        &rlph::prompts::PromptEngine::new(None),
+        repo_root,
+        correction_runner,
+        shutdown_rx,
+    )
+    .await;
+
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // The finding should have been fixed (conflict resolved by agent)
+    assert_eq!(
+        submission.reply_count(),
+        1,
+        "expected 1 reply (conflict-finding fixed after resolution)"
+    );
+
+    // Reaction should be +1 (fixed)
+    let reactions = submission.base.added_reactions();
+    assert_eq!(reactions.len(), 1);
+    assert_eq!(reactions[0].1, "+1");
+}

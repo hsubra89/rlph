@@ -47,6 +47,9 @@ pub enum Error {
     #[error("orchestrator error: {0}")]
     Orchestrator(String),
 
+    #[error("rebase conflict onto {target_ref}")]
+    RebaseConflict { target_ref: String },
+
     #[error(transparent)]
     DiffPositionMapper(#[from] crate::diff_position_mapper::DiffPositionMapperError),
 
