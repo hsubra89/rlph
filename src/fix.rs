@@ -12,6 +12,9 @@ const MAX_PUSH_ATTEMPTS: u32 = 3;
 /// Maximum number of fetch retry attempts (git lock contention under concurrency).
 const MAX_FETCH_ATTEMPTS: u32 = 3;
 
+/// Maximum number of attempts for a critical finding before marking it as failed.
+const MAX_CRITICAL_ATTEMPTS: u8 = 2;
+
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
 use crate::fix_comment::{
@@ -346,7 +349,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                     Err(e) => {
                         let attempts = retries.entry(finding_id.clone()).or_insert(0);
                         *attempts += 1;
-                        if *attempts >= 2 {
+                        if *attempts >= MAX_CRITICAL_ATTEMPTS {
                             warn!(
                                 %finding_id,
                                 error = %e,
