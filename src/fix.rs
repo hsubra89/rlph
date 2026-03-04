@@ -355,24 +355,15 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                 eprintln!("[rlph] Critical: scheduling single-finding fix for {finding_id}");
                 info!(%finding_id, "Critical processing mode: scheduling single-finding fix session");
 
-                let Some(item) = queued_items
-                    .iter()
-                    .find(|i| i.finding.id == finding_id)
-                    .cloned()
-                else {
-                    warn!(%finding_id, "scheduler returned unknown finding ID, marking as failed");
-                    failed.insert(finding_id);
-                    continue;
-                };
-
-                let Some(prepared) = prepare_fix_item(
-                    item,
+                let Some(prepared) = lookup_and_prepare(
+                    &finding_id,
+                    queued_items,
                     pr_number,
                     &shared.fix_config,
                     prompt_engine,
                     reply_map,
+                    failed,
                 ) else {
-                    failed.insert(finding_id);
                     continue;
                 };
 
@@ -420,27 +411,16 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                 // Prepare all items, skipping any that fail validation
                 let mut prepared_items = Vec::with_capacity(batch_size);
                 for finding_id in &finding_ids {
-                    let Some(item) = queued_items
-                        .iter()
-                        .find(|i| i.finding.id == *finding_id)
-                        .cloned()
-                    else {
-                        warn!(%finding_id, "scheduler returned unknown finding ID, marking as failed");
-                        failed.insert(finding_id.clone());
-                        continue;
-                    };
-
-                    match prepare_fix_item(
-                        item,
+                    if let Some(prepared) = lookup_and_prepare(
+                        finding_id,
+                        queued_items,
                         pr_number,
                         &shared.fix_config,
                         prompt_engine,
                         reply_map,
+                        failed,
                     ) {
-                        Some(prepared) => prepared_items.push(prepared),
-                        None => {
-                            failed.insert(finding_id.clone());
-                        }
+                        prepared_items.push(prepared);
                     }
                 }
 
@@ -674,6 +654,36 @@ struct PreparedFixItem {
     comment_id: u64,
     /// Reply bodies collected from the review thread.
     replies: Vec<String>,
+}
+
+/// Look up a finding by ID in `queued_items`, then prepare it via [`prepare_fix_item`].
+///
+/// Returns `None` (and inserts into `failed`) when the finding ID is unknown or
+/// preparation fails.
+fn lookup_and_prepare(
+    finding_id: &str,
+    queued_items: &[FixItem],
+    pr_number: u64,
+    fix_config: &ReviewStepConfig,
+    prompt_engine: &PromptEngine,
+    reply_map: &mut ReplyMap,
+    failed: &mut HashSet<String>,
+) -> Option<PreparedFixItem> {
+    let Some(item) = queued_items
+        .iter()
+        .find(|i| i.finding.id == finding_id)
+        .cloned()
+    else {
+        warn!(%finding_id, "scheduler returned unknown finding ID, marking as failed");
+        failed.insert(finding_id.to_owned());
+        return None;
+    };
+
+    let prepared = prepare_fix_item(item, pr_number, fix_config, prompt_engine, reply_map);
+    if prepared.is_none() {
+        failed.insert(finding_id.to_owned());
+    }
+    prepared
 }
 
 /// Validate branch name, render the prompt, and log the spawn.
