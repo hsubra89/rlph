@@ -642,7 +642,7 @@ fn prepare_fix_item(
     );
 
     let comment_id = item.comment_id;
-    let replies = reply_map.remove(&comment_id).unwrap_or_default();
+    let replies = reply_map.get(&comment_id).cloned().unwrap_or_default();
 
     Some(PreparedFixItem {
         item,
