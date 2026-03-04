@@ -249,74 +249,20 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         };
 
         // Scheduler-driven inner loop: process all available work before waiting
-        loop {
-            if *shutdown.borrow() {
-                break;
-            }
-
-            // Build completed set for scheduler: GitHub-resolved + locally completed
-            let mut sched_completed = resolved_finding_ids(&items);
-            sched_completed.extend(completed.iter().map(String::as_str));
-            let sched_failed: HashSet<&str> = failed.iter().map(String::as_str).collect();
-
-            match fix_scheduler::next_action(&queued_items, deps, &sched_completed, &sched_failed) {
-                ScheduleAction::RunCritical(finding_id) => {
-                    info!(%finding_id, "Critical processing mode: scheduling single-finding fix session");
-
-                    let item = queued_items
-                        .iter()
-                        .find(|i| i.finding.id == finding_id)
-                        .expect("scheduler returned unknown finding ID")
-                        .clone();
-
-                    let Some(prepared) = prepare_fix_item(
-                        item,
-                        pr_number,
-                        &shared.fix_config,
-                        prompt_engine,
-                        &mut reply_map,
-                    ) else {
-                        failed.insert(finding_id);
-                        continue;
-                    };
-
-                    match run_prepared_fix(&shared, prepared, pr_number).await {
-                        Ok(()) => {
-                            info!(%finding_id, "Critical fix completed successfully");
-                            completed.insert(finding_id);
-                        }
-                        Err(e) => {
-                            let attempts = retries.entry(finding_id.clone()).or_insert(0);
-                            *attempts += 1;
-                            if *attempts >= 2 {
-                                warn!(
-                                    %finding_id,
-                                    error = %e,
-                                    "CRITICAL fix failed after retry, adding to failed set"
-                                );
-                                failed.insert(finding_id);
-                            } else {
-                                warn!(
-                                    %finding_id,
-                                    error = %e,
-                                    attempt = *attempts,
-                                    "CRITICAL fix failed, will retry"
-                                );
-                            }
-                        }
-                    }
-                }
-                ScheduleAction::RunBatch(_) => {
-                    panic!(
-                        "RunBatch not yet implemented — \
-                         scheduler should only return RunCritical at this stage"
-                    );
-                }
-                ScheduleAction::Idle => {
-                    break;
-                }
-            }
-        }
+        run_scheduler_cycle(
+            &shared,
+            &items,
+            &queued_items,
+            deps,
+            &mut completed,
+            &mut failed,
+            &mut retries,
+            pr_number,
+            prompt_engine,
+            &mut reply_map,
+            &shutdown,
+        )
+        .await;
 
         info!(
             cycle,
@@ -339,6 +285,92 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
     );
 
     Ok(())
+}
+
+/// Run one scheduler cycle: repeatedly ask the scheduler for work and execute
+/// it until it returns `Idle` or a shutdown is requested.
+#[allow(clippy::too_many_arguments)]
+async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
+    shared: &SharedFixState<S, C>,
+    items: &[FixItem],
+    queued_items: &[FixItem],
+    deps: &FindingDeps,
+    completed: &mut HashSet<String>,
+    failed: &mut HashSet<String>,
+    retries: &mut HashMap<String, u8>,
+    pr_number: u64,
+    prompt_engine: &PromptEngine,
+    reply_map: &mut ReplyMap,
+    shutdown: &watch::Receiver<bool>,
+) {
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+
+        // Build completed set for scheduler: GitHub-resolved + locally completed
+        let mut sched_completed = resolved_finding_ids(items);
+        sched_completed.extend(completed.iter().map(String::as_str));
+        let sched_failed: HashSet<&str> = failed.iter().map(String::as_str).collect();
+
+        match fix_scheduler::next_action(queued_items, deps, &sched_completed, &sched_failed) {
+            ScheduleAction::RunCritical(finding_id) => {
+                info!(%finding_id, "Critical processing mode: scheduling single-finding fix session");
+
+                let item = queued_items
+                    .iter()
+                    .find(|i| i.finding.id == finding_id)
+                    .expect("scheduler returned unknown finding ID")
+                    .clone();
+
+                let Some(prepared) = prepare_fix_item(
+                    item,
+                    pr_number,
+                    &shared.fix_config,
+                    prompt_engine,
+                    reply_map,
+                ) else {
+                    failed.insert(finding_id);
+                    continue;
+                };
+
+                match run_prepared_fix(shared, prepared, pr_number).await {
+                    Ok(()) => {
+                        info!(%finding_id, "Critical fix completed successfully");
+                        completed.insert(finding_id);
+                    }
+                    Err(e) => {
+                        let attempts = retries.entry(finding_id.clone()).or_insert(0);
+                        *attempts += 1;
+                        if *attempts >= 2 {
+                            warn!(
+                                %finding_id,
+                                error = %e,
+                                "CRITICAL fix failed after retry, adding to failed set"
+                            );
+                            failed.insert(finding_id);
+                        } else {
+                            warn!(
+                                %finding_id,
+                                error = %e,
+                                attempt = *attempts,
+                                "CRITICAL fix failed, will retry"
+                            );
+                        }
+                    }
+                }
+            }
+            ScheduleAction::RunBatch(_) => {
+                panic!(
+                    "RunBatch not yet implemented — \
+                     scheduler should only return RunCritical at this stage"
+                );
+            }
+            ScheduleAction::Idle => {
+                break;
+            }
+        }
+    }
 }
 
 /// Fetch all inline review comments on a PR, check reactions for each that
