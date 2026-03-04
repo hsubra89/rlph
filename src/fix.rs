@@ -906,7 +906,14 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             // Track session_id for subsequent resumes
             match (&run_result.session_id, idx) {
                 (Some(_), _) => session_id.clone_from(&run_result.session_id),
-                (None, 0) => {} // first iteration, no previous session to go stale
+                (None, 0) if batch_size > 1 => {
+                    let err = Error::Orchestrator(
+                        "agent returned no session_id on first finding, cannot resume batch".into(),
+                    );
+                    warn!(%finding_id, %err, "batch abort");
+                    break 'batch Some((finding_id, err));
+                }
+                (None, 0) => {} // single-item batch, session_id not needed
                 (None, _) => {
                     warn!(
                         %finding_id,
