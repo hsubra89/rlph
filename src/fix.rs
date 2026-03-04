@@ -782,7 +782,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     pr_number: u64,
 ) -> (Vec<String>, Option<crate::error::Error>) {
     let batch_size = prepared_items.len();
-    let mut completed_ids: Vec<String> = Vec::new();
+    let mut completed_ids = Vec::new();
 
     if prepared_items.is_empty() {
         return (completed_ids, None);
