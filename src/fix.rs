@@ -1336,15 +1336,13 @@ async fn push_to_pr_branch_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=MAX_PUSH_ATTEMPTS {
         // Skip rebase on first attempt: worktree was just created from origin/<pr-branch>
-        if attempt > 1 {
-            match rebase_onto(worktree_path, pr_branch).await {
-                Ok(()) => {}
-                Err(e @ Error::RebaseConflict { .. }) => {
-                    abort_rebase(worktree_path);
-                    return Err(e);
-                }
-                Err(e) => return Err(e),
+        if attempt > 1
+            && let Err(e) = rebase_onto(worktree_path, pr_branch).await
+        {
+            if matches!(&e, Error::RebaseConflict { .. }) {
+                abort_rebase(worktree_path);
             }
+            return Err(e);
         }
 
         match git_in_dir(worktree_path, &["push", "origin", &refspec]) {
