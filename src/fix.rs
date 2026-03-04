@@ -1044,8 +1044,8 @@ async fn apply_fix_output<C: CorrectionRunner + ?Sized>(
 /// asking it to resolve conflict markers and continue the rebase. On success,
 /// pushes the result.
 ///
-/// Skips fetching because this is only called after `push_to_pr_branch_with_retry`
-/// already completed a fetch+rebase cycle.
+/// Fetches before rebasing to avoid using a stale ref when a concurrent push
+/// landed between the prior abort and this retry.
 async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
     worktree_path: &Path,
     fix_branch: &str,
@@ -1054,7 +1054,7 @@ async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
     fix_config: &ReviewStepConfig,
     correction_runner: &C,
 ) -> Result<()> {
-    match start_rebase(worktree_path, pr_branch) {
+    match rebase_onto(worktree_path, pr_branch).await {
         Ok(()) => { /* Rebase clean — fall through to push */ }
         Err(Error::RebaseConflict { .. }) => {
             // Conflicts in worktree — resume agent to resolve
