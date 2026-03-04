@@ -524,18 +524,10 @@ pub(crate) async fn wait_or_shutdown(
 /// Run a single fix: create worktree, run agent, push, update reactions, cleanup.
 async fn run_single_fix(
     ctx: FixContext<'_>,
-    worktree_dir: &str,
-    repo_root: &Path,
+    wm: &WorktreeManager,
     submission: &(impl SubmissionBackend + ?Sized),
     correction_runner: &(impl CorrectionRunner + ?Sized),
-    setup_script: Option<&Path>,
 ) -> Result<()> {
-    let wm = WorktreeManager::new(
-        repo_root.to_path_buf(),
-        repo_root.join(worktree_dir),
-        ctx.pr_branch.to_string(),
-    )
-    .with_setup_script(setup_script.map(Path::to_path_buf));
     let worktree_path = wm.create_fresh(ctx.fix_branch, ctx.pr_branch)?.path;
     info!(
         finding_id = %ctx.item.finding.id,
@@ -606,6 +598,17 @@ impl<S, C> SharedFixState<S, C> {
             agent_timeout_retries: config.agent_timeout_retries,
             setup_script,
         }
+    }
+}
+
+impl<S, C> SharedFixState<S, C> {
+    fn make_worktree_manager(&self) -> WorktreeManager {
+        WorktreeManager::new(
+            self.repo_root.to_path_buf(),
+            self.repo_root.join(&*self.worktree_dir),
+            self.pr_branch.to_string(),
+        )
+        .with_setup_script(self.setup_script.as_deref().map(Path::to_path_buf))
     }
 }
 
@@ -782,15 +785,8 @@ async fn run_prepared_fix<S: SubmissionBackend, C: CorrectionRunner>(
         agent_timeout_retries: shared.agent_timeout_retries,
         prompt: &prompt,
     };
-    run_single_fix(
-        ctx,
-        &shared.worktree_dir,
-        &shared.repo_root,
-        &*shared.submission,
-        &*shared.correction_runner,
-        shared.setup_script.as_deref(),
-    )
-    .await
+    let wm = shared.make_worktree_manager();
+    run_single_fix(ctx, &wm, &*shared.submission, &*shared.correction_runner).await
 }
 
 /// Run a batch of WARNING/INFO findings in a single shared agent session.
@@ -821,12 +817,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     let batch_branch = prepared_items[0].fix_branch.clone();
 
     // Create a single worktree for the batch
-    let wm = WorktreeManager::new(
-        shared.repo_root.to_path_buf(),
-        shared.repo_root.join(&*shared.worktree_dir),
-        shared.pr_branch.to_string(),
-    )
-    .with_setup_script(shared.setup_script.as_deref().map(Path::to_path_buf));
+    let wm = shared.make_worktree_manager();
 
     let worktree_path = match wm.create_fresh(&batch_branch, &shared.pr_branch) {
         Ok(info) => info.path,
