@@ -911,31 +911,58 @@ fn extract_codex_result(stdout_lines: &[String]) -> Option<String> {
     last_text
 }
 
+/// Extract context usage percentage from a Codex `turn.completed` event's top-level `usage`.
+///
+/// Computes (input_tokens + cached_input_tokens + output_tokens) / context_window * 100.
+fn extract_codex_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f64> {
+    let usage = val.get("usage")?;
+    let tok = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+    let total = tok("input_tokens") + tok("cached_input_tokens") + tok("output_tokens");
+    if total == 0 {
+        return None;
+    }
+    Some((total as f64 / context_window as f64 * 100.0).min(100.0))
+}
+
 /// Format a single Codex JSON event line and write the result to `sink`.
 ///
-/// Returns `true` if a line was written, `false` if the event was skipped.
-fn format_codex_line(prefix: &str, line: &str, sink: &mut impl std::io::Write) -> bool {
+/// `context_pct` is the latest known context usage percentage.
+///
+/// Returns `(wrote, updated_pct)` — whether any output was written, and the
+/// (possibly refreshed) context usage percentage for the caller to store.
+fn format_codex_line(
+    prefix: &str,
+    line: &str,
+    context_pct: Option<f64>,
+    sink: &mut impl std::io::Write,
+) -> (bool, Option<f64>) {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
-        return false;
+        return (false, context_pct);
     };
     let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
-        return false;
+        return (false, context_pct);
     };
     match event_type {
+        "turn.completed" => {
+            let context_pct =
+                extract_codex_context_pct(&val, DEFAULT_CONTEXT_WINDOW).or(context_pct);
+            (false, context_pct)
+        }
         "item.completed" => {
+            let pct_tag = context_pct.map(|p| format!(" {p:.0}%")).unwrap_or_default();
             let Some(item) = val.get("item") else {
-                return false;
+                return (false, context_pct);
             };
             let Some(item_type) = item.get("type").and_then(|v| v.as_str()) else {
-                return false;
+                return (false, context_pct);
             };
             match item_type {
                 "agent_message" => {
                     if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
                         for text_line in text.lines() {
-                            let _ = writeln!(sink, "[{prefix}] {text_line}");
+                            let _ = writeln!(sink, "[{prefix}{pct_tag}] {text_line}");
                         }
-                        return true;
+                        return (true, context_pct);
                     }
                 }
                 "command_execution" => {
@@ -947,30 +974,32 @@ fn format_codex_line(prefix: &str, line: &str, sink: &mut impl std::io::Write) -
                             ICON_CROSS
                         };
                         for cmd_line in cmd.lines() {
-                            let _ = writeln!(sink, "[{prefix}] {icon} {cmd_line}");
+                            let _ = writeln!(sink, "[{prefix}{pct_tag}] {icon} {cmd_line}");
                         }
-                        return true;
+                        return (true, context_pct);
                     }
                 }
                 _ => {}
             }
+            (false, context_pct)
         }
         "item.started" => {
+            let pct_tag = context_pct.map(|p| format!(" {p:.0}%")).unwrap_or_default();
             let Some(item) = val.get("item") else {
-                return false;
+                return (false, context_pct);
             };
             if item.get("type").and_then(|v| v.as_str()) == Some("command_execution")
                 && let Some(cmd) = item.get("command").and_then(|v| v.as_str())
             {
                 for cmd_line in cmd.lines() {
-                    let _ = writeln!(sink, "[{prefix}] {ICON_PLAY} {cmd_line}");
+                    let _ = writeln!(sink, "[{prefix}{pct_tag}] {ICON_PLAY} {cmd_line}");
                 }
-                return true;
+                return (true, context_pct);
             }
+            (false, context_pct)
         }
-        _ => {}
+        _ => (false, context_pct),
     }
-    false
 }
 
 /// Spawn a task that reads Codex JSON event lines from a channel and prints
@@ -984,8 +1013,10 @@ fn spawn_codex_stream_formatter(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut stderr = std::io::stderr();
+        let mut context_pct: Option<f64> = None;
         while let Some(line) = rx.recv().await {
-            format_codex_line(&prefix, &line, &mut stderr);
+            let (_wrote, updated_pct) = format_codex_line(&prefix, &line, context_pct, &mut stderr);
+            context_pct = updated_pct;
         }
     })
 }
@@ -1819,8 +1850,10 @@ mod tests {
     /// Helper: run `format_codex_line` for each input line and return collected output.
     fn run_codex_formatter(prefix: &str, lines: &[&str]) -> String {
         let mut buf = Vec::new();
+        let mut context_pct: Option<f64> = None;
         for line in lines {
-            format_codex_line(prefix, line, &mut buf);
+            let (_wrote, updated_pct) = format_codex_line(prefix, line, context_pct, &mut buf);
+            context_pct = updated_pct;
         }
         String::from_utf8(buf).unwrap()
     }
@@ -1872,7 +1905,6 @@ mod tests {
             &[
                 r#"{"type":"thread.started","thread_id":"abc"}"#,
                 r#"{"type":"turn.started"}"#,
-                r#"{"type":"turn.completed","usage":{}}"#,
             ],
         );
         assert_eq!(out, "");
@@ -1911,6 +1943,80 @@ mod tests {
             out,
             format!("[test] {ICON_PLAY} echo hello\n[test] {ICON_PLAY} echo world\n")
         );
+    }
+
+    #[test]
+    fn test_codex_formatter_context_pct() {
+        let out = run_codex_formatter(
+            "impl",
+            &[
+                r#"{"type":"turn.completed","usage":{"input_tokens":50000,"cached_input_tokens":0,"output_tokens":50000}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 50%] hi\n");
+    }
+
+    #[test]
+    fn test_codex_formatter_context_pct_persists() {
+        let out = run_codex_formatter(
+            "impl",
+            &[
+                r#"{"type":"turn.completed","usage":{"input_tokens":50000,"cached_input_tokens":0,"output_tokens":50000}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"first"}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"second"}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 50%] first\n[impl 50%] second\n");
+    }
+
+    #[test]
+    fn test_codex_formatter_context_pct_updates() {
+        let out = run_codex_formatter(
+            "impl",
+            &[
+                r#"{"type":"turn.completed","usage":{"input_tokens":50000,"cached_input_tokens":0,"output_tokens":50000}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"first"}}"#,
+                r#"{"type":"turn.completed","usage":{"input_tokens":100000,"cached_input_tokens":0,"output_tokens":50000}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"second"}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 50%] first\n[impl 75%] second\n");
+    }
+
+    #[test]
+    fn test_codex_formatter_no_pct_before_turn_completed() {
+        let out = run_codex_formatter(
+            "impl",
+            &[r#"{"type":"item.completed","item":{"type":"agent_message","text":"early"}}"#],
+        );
+        assert_eq!(out, "[impl] early\n");
+    }
+
+    #[test]
+    fn test_codex_formatter_context_pct_with_cached() {
+        let out = run_codex_formatter(
+            "impl",
+            &[
+                r#"{"type":"turn.completed","usage":{"input_tokens":20000,"cached_input_tokens":30000,"output_tokens":50000}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 50%] hi\n");
+    }
+
+    #[test]
+    fn test_codex_formatter_turn_completed_empty_usage_preserves_pct() {
+        let out = run_codex_formatter(
+            "impl",
+            &[
+                r#"{"type":"turn.completed","usage":{"input_tokens":50000,"cached_input_tokens":0,"output_tokens":50000}}"#,
+                r#"{"type":"turn.completed","usage":{}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}"#,
+            ],
+        );
+        // Empty usage returns None from extract, so .or(context_pct) preserves the 50%.
+        assert_eq!(out, "[impl 50%] hi\n");
     }
 
     // --- Claude stream formatter tests ---

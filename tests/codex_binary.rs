@@ -325,6 +325,7 @@ fn validate_turn_completed(events: &[Value]) -> &Value {
         .get("usage")
         .unwrap_or_else(|| panic!("turn.completed: must have usage object"));
     assert_number(usage, "input_tokens", "turn.completed usage");
+    assert_number(usage, "cached_input_tokens", "turn.completed usage");
     assert_number(usage, "output_tokens", "turn.completed usage");
 
     evt
