@@ -449,11 +449,6 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                     continue;
                 }
 
-                let batch_finding_ids: Vec<String> = prepared_items
-                    .iter()
-                    .map(|p| p.item.finding.id.clone())
-                    .collect();
-
                 let (batch_completed, batch_error) =
                     run_batch_fix(shared, prepared_items, pr_number).await;
 
@@ -463,21 +458,14 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                     completed.insert(id.clone());
                 }
 
-                if let Some(e) = batch_error {
-                    // Mark the first non-completed finding as failed; remaining
-                    // stay Queued and are eligible for pickup on the next poll.
-                    if let Some(failed_id) = batch_finding_ids
-                        .iter()
-                        .find(|id| !batch_completed.contains(id))
-                    {
-                        eprintln!("[rlph] Batch finding failed: {failed_id}: {e}");
-                        warn!(
-                            finding_id = %failed_id,
-                            error = %e,
-                            "batch finding failed, remaining items left as Queued"
-                        );
-                        failed.insert(failed_id.clone());
-                    }
+                if let Some((failed_id, e)) = batch_error {
+                    eprintln!("[rlph] Batch finding failed: {failed_id}: {e}");
+                    warn!(
+                        finding_id = %failed_id,
+                        error = %e,
+                        "batch finding failed, remaining items left as Queued"
+                    );
+                    failed.insert(failed_id);
                 }
             }
             ScheduleAction::Idle => {
@@ -807,13 +795,17 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     shared: &SharedFixState<S, C>,
     prepared_items: Vec<PreparedFixItem>,
     pr_number: u64,
-) -> (Vec<String>, Option<crate::error::Error>) {
+) -> (Vec<String>, Option<(String, crate::error::Error)>) {
     let batch_size = prepared_items.len();
     let mut completed_ids = Vec::new();
 
     if prepared_items.is_empty() {
         return (completed_ids, None);
     }
+
+    // Capture the first finding ID before we move prepared_items, so we can
+    // attribute worktree-creation failures to a specific finding.
+    let first_finding_id = prepared_items[0].item.finding.id.clone();
 
     // Use the first item's fix_branch as the worktree branch for the whole batch
     let batch_branch = prepared_items[0].fix_branch.clone();
@@ -828,7 +820,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
 
     let worktree_path = match wm.create_fresh(&batch_branch, &shared.pr_branch) {
         Ok(info) => info.path,
-        Err(e) => return (completed_ids, Some(e)),
+        Err(e) => return (completed_ids, Some((first_finding_id, e))),
     };
 
     info!(
@@ -843,7 +835,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
 
     // Run each finding sequentially, sharing the session
     let mut session_id: Option<String> = None;
-    let error: Option<Error> = 'batch: {
+    let error: Option<(String, Error)> = 'batch: {
         for (idx, prepared) in prepared_items.into_iter().enumerate() {
             let PreparedFixItem {
                 item,
@@ -876,7 +868,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                         "no session_id from previous finding, cannot resume batch".into(),
                     );
                     warn!(%finding_id, %err, "batch abort");
-                    break 'batch Some(err);
+                    break 'batch Some((finding_id.clone(), err));
                 };
                 info!(%finding_id, session_id = %sid, "resuming batch session");
                 shared
@@ -900,7 +892,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 Err(e) => {
                     eprintln!("[rlph] Batch abort (agent failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: agent failed");
-                    break 'batch Some(e);
+                    break 'batch Some((finding_id.clone(), e));
                 }
             };
 
@@ -929,7 +921,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 Err(e) => {
                     eprintln!("[rlph] Batch abort (parse failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: parse failed");
-                    break 'batch Some(e);
+                    break 'batch Some((finding_id.clone(), e));
                 }
             };
 
@@ -949,7 +941,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 Err(e) => {
                     eprintln!("[rlph] Batch abort (push failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: push failed");
-                    break 'batch Some(e);
+                    break 'batch Some((finding_id.clone(), e));
                 }
             };
 
