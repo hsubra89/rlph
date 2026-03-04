@@ -943,6 +943,7 @@ fn format_codex_line(
     let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
         return (false, context_pct);
     };
+    let pct_tag = context_pct.map(|p| format!(" {p:.0}%")).unwrap_or_default();
     match event_type {
         "turn.completed" => {
             let context_pct =
@@ -950,7 +951,6 @@ fn format_codex_line(
             (false, context_pct)
         }
         "item.completed" => {
-            let pct_tag = context_pct.map(|p| format!(" {p:.0}%")).unwrap_or_default();
             let Some(item) = val.get("item") else {
                 return (false, context_pct);
             };
@@ -985,7 +985,6 @@ fn format_codex_line(
             (false, context_pct)
         }
         "item.started" => {
-            let pct_tag = context_pct.map(|p| format!(" {p:.0}%")).unwrap_or_default();
             let Some(item) = val.get("item") else {
                 return (false, context_pct);
             };
