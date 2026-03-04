@@ -1192,7 +1192,7 @@ async fn test_fix_loop_batch_abort_when_no_session_id() {
 /// resolves the conflict.
 #[tokio::test]
 async fn test_fix_loop_rebase_conflict_triggers_agent_resume() {
-    let (_bare_dir, repo_dir) = setup_git_repo();
+    let (bare_dir, repo_dir) = setup_git_repo();
     let repo_root = repo_dir.path();
 
     let pr_branch = "feature/conflict-test";
@@ -1209,7 +1209,7 @@ async fn test_fix_loop_rebase_conflict_triggers_agent_resume() {
     // Agent script: pushes a conflicting commit to origin (from a subshell clone
     // with all output redirected to /dev/null), then makes a conflicting commit
     // in the worktree on the same file.
-    let bare_path = _bare_dir.path().to_str().unwrap().to_string();
+    let bare_path = bare_dir.path().to_str().unwrap().to_string();
     let script_path = repo_root.join("mock-conflict-agent.sh");
     let script = format!(
         r#"#!/bin/bash
