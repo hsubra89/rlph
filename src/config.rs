@@ -306,7 +306,6 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
         done_state: lc.done_state.unwrap_or_else(|| "Done".to_string()),
     });
 
-    let global_runner = runner;
     let build_binary = build.and_then(|b| b.agent_binary.clone());
     let build_model = build.and_then(|b| b.agent_model.clone());
     let build_effort = build.and_then(|b| b.agent_effort.clone());
@@ -356,7 +355,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
         .map(|p| {
             let effective_runner: RunnerKind = match p.runner {
                 Some(s) => s.parse()?,
-                None => global_runner,
+                None => runner,
             };
             let runner_binary = runner_default_binary(effective_runner);
             let runner_model = runner_default_model(effective_runner);
@@ -388,7 +387,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
             let s = step.unwrap_or_default();
             let effective_runner: RunnerKind = match s.runner {
                 Some(s) => s.parse()?,
-                None => global_runner,
+                None => runner,
             };
             let runner_binary = runner_default_binary(effective_runner);
             let runner_model = runner_default_model(effective_runner);
