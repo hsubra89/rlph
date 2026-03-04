@@ -87,16 +87,14 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     // 3. Pre-compute per-item data and run fixes sequentially
     let setup_script =
         resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?.map(Arc::from);
-    let shared = SharedFixState {
-        fix_config: Arc::new(config.fix.clone()),
-        worktree_dir: Arc::from(config.worktree_dir.as_str()),
-        repo_root: Arc::from(repo_root),
-        pr_branch: Arc::from(pr_branch),
-        submission: Arc::clone(&submission),
-        correction_runner: Arc::clone(&correction_runner),
-        agent_timeout_retries: config.agent_timeout_retries,
+    let shared = SharedFixState::new(
+        config,
+        pr_branch,
+        repo_root,
+        Arc::clone(&submission),
+        Arc::clone(&correction_runner),
         setup_script,
-    };
+    );
 
     let mut reply_map = collect_reply_bodies(&comments);
     let mut skipped: usize = 0;
@@ -170,16 +168,14 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
     let setup_script =
         resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?.map(Arc::from);
-    let shared = SharedFixState {
-        fix_config: Arc::new(config.fix.clone()),
-        worktree_dir: Arc::from(config.worktree_dir.as_str()),
-        repo_root: Arc::from(repo_root),
-        pr_branch: Arc::from(pr_branch),
-        submission: Arc::clone(&submission),
-        correction_runner: Arc::clone(&correction_runner),
-        agent_timeout_retries: config.agent_timeout_retries,
+    let shared = SharedFixState::new(
+        config,
+        pr_branch,
+        repo_root,
+        Arc::clone(&submission),
+        Arc::clone(&correction_runner),
         setup_script,
-    };
+    );
     let poll_duration = Duration::from_secs(config.poll_seconds);
 
     let mut completed: HashSet<String> = HashSet::new();
@@ -533,6 +529,28 @@ struct SharedFixState<S, C> {
     correction_runner: Arc<C>,
     agent_timeout_retries: u32,
     setup_script: Option<Arc<Path>>,
+}
+
+impl<S, C> SharedFixState<S, C> {
+    fn new(
+        config: &Config,
+        pr_branch: &str,
+        repo_root: &Path,
+        submission: Arc<S>,
+        correction_runner: Arc<C>,
+        setup_script: Option<Arc<Path>>,
+    ) -> Self {
+        Self {
+            fix_config: Arc::new(config.fix.clone()),
+            worktree_dir: Arc::from(config.worktree_dir.as_str()),
+            repo_root: Arc::from(repo_root),
+            pr_branch: Arc::from(pr_branch),
+            submission,
+            correction_runner,
+            agent_timeout_retries: config.agent_timeout_retries,
+            setup_script,
+        }
+    }
 }
 
 impl<S, C> Clone for SharedFixState<S, C> {
