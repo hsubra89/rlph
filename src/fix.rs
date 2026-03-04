@@ -361,10 +361,8 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                 }
             }
             ScheduleAction::RunBatch(_) => {
-                panic!(
-                    "RunBatch not yet implemented — \
-                     scheduler should only return RunCritical at this stage"
-                );
+                warn!("RunBatch not yet implemented, skipping batch findings for now");
+                break;
             }
             ScheduleAction::Idle => {
                 break;
