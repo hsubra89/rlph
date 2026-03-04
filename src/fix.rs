@@ -796,6 +796,10 @@ async fn run_prepared_fix<S: SubmissionBackend, C: CorrectionRunner>(
 /// using the session ID from the previous run. Each finding gets its own
 /// commit/push/reaction cycle. Aborts on the first failure.
 ///
+/// # Preconditions
+///
+/// `prepared_items` must be non-empty (caller is responsible for filtering).
+///
 /// Returns `(completed_finding_ids, optional_error)`.
 async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     shared: &SharedFixState<S, C>,
@@ -804,10 +808,6 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
 ) -> (HashSet<String>, Option<(String, crate::error::Error)>) {
     let batch_size = prepared_items.len();
     let mut completed_ids = HashSet::new();
-
-    if prepared_items.is_empty() {
-        return (completed_ids, None);
-    }
 
     // Capture the first finding ID before we move prepared_items, so we can
     // attribute worktree-creation failures to a specific finding.
