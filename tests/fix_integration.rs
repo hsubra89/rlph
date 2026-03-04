@@ -257,17 +257,33 @@ impl CorrectionRunner for MockCorrectionRunner {
 
 /// Create a mock agent script that makes a commit and outputs fix JSON.
 fn create_mock_agent_script(dir: &Path) -> String {
+    create_mock_agent_script_inner(dir, true)
+}
+
+/// Create a mock agent script that omits session_id from output.
+fn create_mock_agent_script_no_session_id(dir: &Path) -> String {
+    create_mock_agent_script_inner(dir, false)
+}
+
+fn create_mock_agent_script_inner(dir: &Path, emit_session_id: bool) -> String {
     let script_path = dir.join("mock-fix-agent.sh");
-    let script = r#"#!/bin/bash
-# Mock fix agent: creates a file, commits it, outputs fix result with session_id
+    let session_line = if emit_session_id {
+        r#"echo "{\"session_id\":\"mock-session-$ID\"}""#
+    } else {
+        ""
+    };
+    let script = format!(
+        r#"#!/bin/bash
+# Mock fix agent: creates a file, commits it, outputs fix result
 ID="$$-$RANDOM"
 echo "fix-$ID" > "fix-$ID.txt"
 git add .
 git commit -m "fix: applied-$ID" 2>/dev/null
-echo "{\"session_id\":\"mock-session-$ID\"}"
-echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit_message\\\":\\\"fix: applied-$ID\\\"}\"}"
-"#;
-    std::fs::write(&script_path, script).unwrap();
+{session_line}
+echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"commit_message\\\":\\\"fix: applied-$ID\\\"}}\"}}"
+"#
+    );
+    std::fs::write(&script_path, &script).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -978,5 +994,75 @@ async fn test_fix_loop_batch_abort_remaining_picked_up_next_poll() {
         f.submission.reply_count(),
         2,
         "warn-a + warn-c should be fixed (warn-b failed on correction resume)"
+    );
+}
+
+/// Test that batch aborts on the second finding when the first finding's agent
+/// returns no session_id (cannot resume without one).
+///
+/// 2 WARNING findings batched. First succeeds but returns no session_id,
+/// so the second finding cannot resume and the batch aborts. The first
+/// non-completed finding (warn-b) is marked as failed.
+#[tokio::test]
+async fn test_fix_loop_batch_abort_when_no_session_id() {
+    let (_bare_dir, repo_dir) = setup_git_repo();
+    let repo_root = repo_dir.path();
+
+    let pr_branch = "feature/no-session-id-test";
+    create_pr_branch(repo_root, pr_branch);
+
+    // Agent script that does NOT emit session_id
+    let agent_script = create_mock_agent_script_no_session_id(repo_root);
+
+    let findings = vec![make_finding("warn-a"), make_finding("warn-b")];
+    let comments = make_review_comments(&findings);
+    let reactions = vec![rocket_reactions(100), rocket_reactions(101)];
+
+    let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
+    let correction_runner = Arc::new(MockCorrectionRunner::noop());
+
+    let wt_dir = tempfile::TempDir::new().unwrap();
+    let mut config = make_config();
+    config.fix = make_fix_step_config(agent_script);
+    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    config.poll_seconds = 1;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let sub_clone = Arc::clone(&submission);
+    let shutdown_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let fetches = sub_clone.fetch_count.load(Ordering::SeqCst);
+            // warn-a fixed in first batch, warn-b marked as failed (no retry).
+            // Wait for at least 1 reply and 2 poll cycles to confirm warn-b is not retried.
+            if sub_clone.reply_count() >= 1 && fetches >= 2 {
+                let _ = shutdown_tx.send(true);
+                return;
+            }
+        }
+    });
+
+    let result = run_fix_loop(
+        42,
+        pr_branch,
+        &config,
+        Arc::clone(&submission),
+        &rlph::prompts::PromptEngine::new(None),
+        repo_root,
+        correction_runner,
+        shutdown_rx,
+    )
+    .await;
+
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // Only warn-a should be fixed; warn-b failed (no session_id to resume)
+    assert_eq!(
+        submission.reply_count(),
+        1,
+        "only warn-a should be fixed (warn-b failed: no session_id for resume)"
     );
 }
