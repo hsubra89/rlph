@@ -9,10 +9,10 @@ Rust binary crate (edition 2024). Autonomous AI dev-loop CLI: fetches tasks, spi
 - **Integration:** `cargo nextest run --profile integration`
 - **Single test:** `cargo nextest run -E 'test(test_name)'`
 
-## Workflow
+## Development Methodology
 
 - TDD (red-green-refactor) for features. Use `/tdd` skill.
-- `cargo clippy` before finishing — zero warnings.
+- `cargo fmt && cargo clippy` before finishing — zero warnings.
 
 ## Docs
 
