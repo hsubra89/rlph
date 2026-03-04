@@ -1028,47 +1028,45 @@ async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
     fix_config: &ReviewStepConfig,
     correction_runner: &C,
 ) -> Result<()> {
-    fetch_with_retry(worktree_path, pr_branch).await?;
-    let remote_ref = format!("origin/{pr_branch}");
-
-    if git_in_dir(worktree_path, &["rebase", &remote_ref]).is_ok() {
-        // Rebase clean this time — just push
-        let refspec = format!("{fix_branch}:{pr_branch}");
-        return git_in_dir(worktree_path, &["push", "origin", &refspec])
-            .map(|_| ())
-            .map_err(|e| Error::Orchestrator(format!("push after clean rebase failed: {e}")));
-    }
-
-    // Conflicts in worktree — resume agent to resolve
-    let prompt = "The rebase onto the PR branch has merge conflicts. \
-        Please resolve ALL conflicts:\n\
-        1. Edit each conflicted file to remove conflict markers (<<<<<<< / ======= / >>>>>>>)\n\
-        2. `git add` each resolved file\n\
-        3. `git rebase --continue`\n\
-        Do not abort the rebase.";
-
-    match correction_runner
-        .resume(
-            fix_config.runner,
-            &fix_config.agent_binary,
-            fix_config.agent_model.as_deref(),
-            fix_config.agent_effort.as_deref(),
-            fix_config.agent_variant.as_deref(),
-            session_id,
-            prompt,
-            worktree_path,
-            fix_config.agent_timeout.map(Duration::from_secs),
-        )
-        .await
-    {
-        Ok(_) => {
-            // Agent should have completed rebase. Push with retry.
+    match rebase_onto(worktree_path, pr_branch).await {
+        Ok(()) => {
+            // Rebase clean — push with retry
             push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await
         }
-        Err(e) => {
-            abort_rebase(worktree_path);
-            Err(e)
+        Err(Error::RebaseConflict { .. }) => {
+            // Conflicts in worktree — resume agent to resolve
+            let prompt = "The rebase onto the PR branch has merge conflicts. \
+                Please resolve ALL conflicts:\n\
+                1. Edit each conflicted file to remove conflict markers (<<<<<<< / ======= / >>>>>>>)\n\
+                2. `git add` each resolved file\n\
+                3. `git rebase --continue`\n\
+                Do not abort the rebase.";
+
+            match correction_runner
+                .resume(
+                    fix_config.runner,
+                    &fix_config.agent_binary,
+                    fix_config.agent_model.as_deref(),
+                    fix_config.agent_effort.as_deref(),
+                    fix_config.agent_variant.as_deref(),
+                    session_id,
+                    prompt,
+                    worktree_path,
+                    fix_config.agent_timeout.map(Duration::from_secs),
+                )
+                .await
+            {
+                Ok(_) => {
+                    // Agent should have completed rebase. Push with retry.
+                    push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await
+                }
+                Err(e) => {
+                    abort_rebase(worktree_path);
+                    Err(e)
+                }
+            }
         }
+        Err(e) => Err(e),
     }
 }
 
