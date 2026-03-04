@@ -472,27 +472,33 @@ pub fn fetch_and_parse_items(
         .filter(|c| c.in_reply_to_id.is_none() && c.body.contains(FINDING_MARKER))
         .collect();
 
-    // Fetch reactions in parallel across threads
-    let reactions_by_comment: Vec<Result<(u64, Vec<Reaction>)>> = std::thread::scope(|s| {
-        let handles: Vec<_> = finding_comments
-            .iter()
-            .map(|comment| {
-                let id = comment.id;
-                s.spawn(move || {
-                    submission
-                        .list_review_comment_reactions(id)
-                        .map(|reactions| (id, reactions))
+    // Fetch reactions in batches to avoid exhausting file descriptors
+    // (each `gh api` call opens multiple fds).
+    const GH_BATCH_SIZE: usize = 10;
+    let mut reactions_by_comment: Vec<Result<(u64, Vec<Reaction>)>> = Vec::new();
+    for chunk in finding_comments.chunks(GH_BATCH_SIZE) {
+        let batch: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|comment| {
+                    let id = comment.id;
+                    s.spawn(move || {
+                        submission
+                            .list_review_comment_reactions(id)
+                            .map(|reactions| (id, reactions))
+                    })
                 })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| {
-                h.join()
-                    .map_err(|_| Error::Submission("reaction-fetch thread panicked".into()))?
-            })
-            .collect()
-    });
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .map_err(|_| Error::Submission("reaction-fetch thread panicked".into()))?
+                })
+                .collect()
+        });
+        reactions_by_comment.extend(batch);
+    }
 
     let collected: Vec<_> = reactions_by_comment.into_iter().collect::<Result<_>>()?;
 
