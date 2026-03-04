@@ -922,7 +922,8 @@ fn extract_codex_context_pct(val: &serde_json::Value, context_window: u64) -> Op
     if total == 0 {
         return None;
     }
-    Some((total as f64 / context_window as f64 * 100.0).min(100.0))
+    let pct = total as f64 / context_window as f64 * 100.0;
+    Some(pct.min(100.0))
 }
 
 /// Format a single Codex JSON event line and write the result to `sink`.
