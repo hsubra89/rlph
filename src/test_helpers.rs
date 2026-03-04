@@ -22,6 +22,14 @@ pub fn make_finding_critical(id: &str) -> ReviewFinding {
     }
 }
 
+/// Create an INFO `ReviewFinding` with sensible defaults for tests.
+pub fn make_finding_info(id: &str) -> ReviewFinding {
+    ReviewFinding {
+        severity: Severity::Info,
+        ..make_finding(id)
+    }
+}
+
 /// Create a `ReviewFinding` with `depends_on` set.
 pub fn make_finding_with_deps(id: &str, deps: &[&str]) -> ReviewFinding {
     ReviewFinding {

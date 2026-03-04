@@ -11,7 +11,9 @@ use rlph::orchestrator::CorrectionRunner;
 use rlph::review_schema::ReviewFinding;
 use rlph::runner::{RunResult, RunnerKind};
 use rlph::submission::{PrReviewComment, Reaction, SubmissionBackend, SubmitResult};
-use rlph::test_helpers::{make_finding, make_finding_critical, make_review_comment};
+use rlph::test_helpers::{
+    make_finding, make_finding_critical, make_finding_info, make_review_comment,
+};
 use tokio::sync::watch;
 
 use common::{default_test_config, run_git, setup_git_repo};
@@ -717,5 +719,81 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit
         f.submission.reply_count(),
         1,
         "in-flight fix should complete during graceful shutdown"
+    );
+}
+
+/// Test that `run_fix_loop` gracefully handles WARNING-only findings (RunBatch path).
+#[tokio::test]
+async fn test_fix_loop_handles_warning_findings_gracefully() {
+    let mut f = FixLoopFixture::new(
+        &[make_finding("warn-a"), make_finding("warn-b")],
+        &[100, 101], // both queued
+        None,
+    );
+
+    let submission = Arc::clone(&f.submission);
+    let shutdown_tx = f.take_shutdown_tx();
+    let shutdown_handle = tokio::spawn(async move {
+        // Wait for at least 2 poll cycles to confirm loop doesn't crash
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let fetches = submission.fetch_count.load(Ordering::SeqCst);
+            if fetches >= 2 {
+                let _ = shutdown_tx.send(true);
+                return;
+            }
+        }
+    });
+
+    let result = f.run().await;
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // RunBatch path warns and breaks — no replies expected
+    assert_eq!(
+        f.submission.reply_count(),
+        0,
+        "WARNING findings should be skipped (RunBatch not yet implemented)"
+    );
+}
+
+/// Test that `run_fix_loop` processes CRITICAL findings and gracefully skips WARNING/INFO.
+#[tokio::test]
+async fn test_fix_loop_processes_criticals_skips_lower_severity() {
+    let mut f = FixLoopFixture::new(
+        &[
+            make_finding_critical("crit-item"),
+            make_finding("warn-item"),
+            make_finding_info("info-item"),
+        ],
+        &[100, 101, 102], // all queued
+        None,
+    );
+
+    let submission = Arc::clone(&f.submission);
+    let shutdown_tx = f.take_shutdown_tx();
+    let shutdown_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let fetches = submission.fetch_count.load(Ordering::SeqCst);
+            // After critical is fixed (1 reply) and at least 2 poll cycles
+            if submission.reply_count() >= 1 && fetches >= 2 {
+                let _ = shutdown_tx.send(true);
+                return;
+            }
+        }
+    });
+
+    let result = f.run().await;
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // Only the CRITICAL finding should have been processed
+    assert_eq!(
+        f.submission.reply_count(),
+        1,
+        "only CRITICAL finding should be fixed (WARNING/INFO skipped via RunBatch)"
     );
 }
