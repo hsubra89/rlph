@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::cli::Cli;
+use crate::cli::{BuildArgs, Cli};
 use crate::error::{Error, Result};
 use crate::runner::RunnerKind;
 use crate::submission::detect_default_branch;
@@ -188,13 +188,13 @@ pub fn default_review_step(prompt: &str) -> ReviewStepConfig {
 }
 
 impl Config {
-    pub fn load(cli: &Cli) -> Result<Self> {
-        Self::load_from(cli, Path::new("."))
+    pub fn load(cli: &Cli, build: Option<&BuildArgs>) -> Result<Self> {
+        Self::load_from(cli, build, Path::new("."))
     }
 
-    pub fn load_from(cli: &Cli, project_dir: &Path) -> Result<Self> {
+    pub fn load_from(cli: &Cli, build: Option<&BuildArgs>, project_dir: &Path) -> Result<Self> {
         let file_config = load_file_config(cli, project_dir)?;
-        merge(file_config, cli)
+        merge(file_config, cli, build)
     }
 }
 
@@ -280,10 +280,10 @@ fn runner_default_effort(runner: RunnerKind) -> Option<&'static str> {
     }
 }
 
-pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
-    let runner: RunnerKind = cli
-        .runner
-        .as_deref()
+pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<Config> {
+    let agent = cli.agent_args();
+    let runner: RunnerKind = agent
+        .and_then(|a| a.runner.as_deref())
         .or(file.runner.as_deref())
         .unwrap_or("claude")
         .parse()?;
@@ -307,11 +307,14 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         done_state: lc.done_state.unwrap_or_else(|| "Done".to_string()),
     });
 
-    let global_runner = runner;
-    let global_binary_override = cli.agent_binary.clone().or(file.agent_binary.clone());
-    let global_model_override = cli.agent_model.clone().or(file.agent_model.clone());
-    let global_effort_override = cli.agent_effort.clone().or(file.agent_effort.clone());
-    let global_variant_override = cli.agent_variant.clone().or(file.agent_variant.clone());
+    let build_binary = agent.and_then(|a| a.agent_binary.clone());
+    let build_model = agent.and_then(|a| a.agent_model.clone());
+    let build_effort = build.and_then(|b| b.agent_effort.clone());
+    let build_variant = build.and_then(|b| b.agent_variant.clone());
+    let global_binary_override = build_binary.or(file.agent_binary);
+    let global_model_override = build_model.or(file.agent_model);
+    let global_effort_override = build_effort.or(file.agent_effort);
+    let global_variant_override = build_variant.or(file.agent_variant);
 
     let global_binary = global_binary_override
         .clone()
@@ -323,9 +326,12 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         .clone()
         .or_else(|| default_effort.map(str::to_string));
     let global_variant = global_variant_override.clone();
-    let global_timeout = cli.agent_timeout.or(file.agent_timeout).or(Some(600));
-    let implement_timeout = cli
-        .implement_timeout
+    let global_timeout = build
+        .and_then(|b| b.agent_timeout)
+        .or(file.agent_timeout)
+        .or(Some(600));
+    let implement_timeout = build
+        .and_then(|b| b.implement_timeout)
         .or(file.implement_timeout)
         .or(Some(1800));
 
@@ -350,7 +356,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
         .map(|p| {
             let effective_runner: RunnerKind = match p.runner {
                 Some(s) => s.parse()?,
-                None => global_runner,
+                None => runner,
             };
             let runner_binary = runner_default_binary(effective_runner);
             let runner_model = runner_default_model(effective_runner);
@@ -382,7 +388,7 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             let s = step.unwrap_or_default();
             let effective_runner: RunnerKind = match s.runner {
                 Some(s) => s.parse()?,
-                None => global_runner,
+                None => runner,
             };
             let runner_binary = runner_default_binary(effective_runner);
             let runner_model = runner_default_model(effective_runner);
@@ -417,9 +423,8 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .or(file.source)
             .unwrap_or_else(|| "github".to_string()),
         runner,
-        submission: cli
-            .submission
-            .clone()
+        submission: build
+            .and_then(|b| b.submission.clone())
             .or(file.submission)
             .unwrap_or_else(|| "github".to_string()),
         label: cli
@@ -427,29 +432,30 @@ pub fn merge(file: ConfigFile, cli: &Cli) -> Result<Config> {
             .clone()
             .or(file.label)
             .unwrap_or_else(|| "rlph".to_string()),
-        poll_seconds: cli.poll_seconds.or(file.poll_seconds).unwrap_or(30),
-        worktree_dir: cli
-            .worktree_dir
-            .clone()
+        poll_seconds: build
+            .and_then(|b| b.poll_seconds)
+            .or(file.poll_seconds)
+            .unwrap_or(30),
+        worktree_dir: build
+            .and_then(|b| b.worktree_dir.clone())
             .or(file.worktree_dir)
             .unwrap_or_else(|| "../rlph-worktrees".to_string()),
-        base_branch: cli
-            .base_branch
-            .clone()
+        base_branch: build
+            .and_then(|b| b.base_branch.clone())
             .or(file.base_branch)
             .unwrap_or_else(detect_default_branch),
-        max_iterations: cli.max_iterations.or(file.max_iterations),
-        dry_run: cli.dry_run || file.dry_run.unwrap_or(false),
-        once: cli.once,
-        continuous: cli.continuous,
+        max_iterations: build.and_then(|b| b.max_iterations).or(file.max_iterations),
+        dry_run: build.is_some_and(|b| b.dry_run) || file.dry_run.unwrap_or(false),
+        once: build.is_some_and(|b| b.once),
+        continuous: build.is_some_and(|b| b.continuous),
         agent_binary: global_binary,
         agent_model: global_model,
         agent_timeout: global_timeout,
         implement_timeout,
         agent_effort: global_effort,
         agent_variant: global_variant,
-        agent_timeout_retries: cli
-            .agent_timeout_retries
+        agent_timeout_retries: build
+            .and_then(|b| b.agent_timeout_retries)
             .or(file.agent_timeout_retries)
             .unwrap_or(2),
         review_phases,
@@ -614,8 +620,8 @@ worktree_dir = "/tmp/wt"
         let cfg_dir = tmp.path().join(".rlph");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.toml"), r#"source = "jira""#).unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown source: jira"));
     }
 
@@ -625,8 +631,8 @@ worktree_dir = "/tmp/wt"
         let cfg_dir = tmp.path().join(".rlph");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.toml"), r#"runner = "podman""#).unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown runner: podman"));
     }
 
@@ -636,8 +642,8 @@ worktree_dir = "/tmp/wt"
         let cfg_dir = tmp.path().join(".rlph");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.toml"), r#"submission = "gitlab""#).unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown submission: gitlab"));
     }
 
@@ -647,8 +653,8 @@ worktree_dir = "/tmp/wt"
         let cfg_dir = tmp.path().join(".rlph");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.toml"), r#"poll_seconds = 0"#).unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("poll_seconds must be > 0"));
     }
 
@@ -674,13 +680,14 @@ worktree_dir = "/tmp/wt"
         };
         let cli = Cli::parse_from([
             "rlph",
+            "build",
             "--once",
             "--source",
             "linear",
             "--label",
             "cli-label",
         ]);
-        let config = merge(file, &cli).unwrap();
+        let config = merge(file, &cli, cli.build_args()).unwrap();
         assert_eq!(config.source, "linear"); // CLI wins
         assert_eq!(config.label, "cli-label"); // CLI wins
         assert_eq!(config.runner, RunnerKind::Claude); // file value kept
@@ -691,8 +698,8 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_defaults_applied() {
         let file = ConfigFile::default();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = merge(file, &cli).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = merge(file, &cli, cli.build_args()).unwrap();
         assert_eq!(config.source, "github");
         assert_eq!(config.runner, RunnerKind::Claude);
         assert_eq!(config.submission, "github");
@@ -712,8 +719,8 @@ worktree_dir = "/tmp/wt"
             agent_timeout: Some(120),
             ..Default::default()
         };
-        let cli = Cli::parse_from(["rlph", "--once", "--agent-timeout", "45"]);
-        let config = merge(file, &cli).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once", "--agent-timeout", "45"]);
+        let config = merge(file, &cli, cli.build_args()).unwrap();
         assert_eq!(config.agent_timeout, Some(45));
     }
 
@@ -722,8 +729,8 @@ worktree_dir = "/tmp/wt"
         // When no --config is provided and .rlph/config.toml doesn't exist,
         // Config::load should succeed with built-in defaults.
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.source, "github");
         assert_eq!(config.runner, RunnerKind::Claude);
         assert_eq!(config.submission, "github");
@@ -739,8 +746,10 @@ worktree_dir = "/tmp/wt"
     fn test_load_missing_default_config_with_cli_overrides() {
         // CLI overrides should still win when default config file is absent.
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once", "--runner", "codex", "--label", "custom"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from([
+            "rlph", "build", "--once", "--runner", "codex", "--label", "custom",
+        ]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.runner, RunnerKind::Codex);
         assert_eq!(config.label, "custom");
         assert_eq!(config.source, "github"); // default
@@ -749,8 +758,14 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_load_explicit_missing_config_errors() {
         // When --config points to a missing file, Config::load should fail.
-        let cli = Cli::parse_from(["rlph", "--once", "--config", "/nonexistent/config.toml"]);
-        let err = Config::load(&cli).unwrap_err();
+        let cli = Cli::parse_from([
+            "rlph",
+            "build",
+            "--once",
+            "--config",
+            "/nonexistent/config.toml",
+        ]);
+        let err = Config::load(&cli, cli.build_args()).unwrap_err();
         assert!(err.to_string().contains("config file not found"));
     }
 
@@ -800,48 +815,48 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_cli_invalid_source_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once", "--source", "jira"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once", "--source", "jira"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown source: jira"));
     }
 
     #[test]
     fn test_cli_invalid_runner_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once", "--runner", "bogus"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "bogus"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown runner: bogus"));
     }
 
     #[test]
     fn test_cli_invalid_submission_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once", "--submission", "gitlab"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once", "--submission", "gitlab"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown submission: gitlab"));
     }
 
     #[test]
     fn test_cli_zero_poll_seconds_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once", "--poll-seconds", "0"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once", "--poll-seconds", "0"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("poll_seconds must be > 0"));
     }
 
     #[test]
     fn test_codex_runner_accepted() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once", "--runner", "codex"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "codex"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.runner, RunnerKind::Codex);
     }
 
     #[test]
     fn test_codex_runner_defaults_binary_to_codex() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once", "--runner", "codex"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "codex"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.agent_binary, "codex");
         assert_eq!(config.agent_model.as_deref(), Some("gpt-5.3-codex"));
     }
@@ -851,29 +866,30 @@ worktree_dir = "/tmp/wt"
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from([
             "rlph",
+            "build",
             "--once",
             "--runner",
             "codex",
             "--agent-binary",
             "/opt/codex",
         ]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.agent_binary, "/opt/codex");
     }
 
     #[test]
     fn test_old_runner_bare_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once", "--runner", "bare"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "bare"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown runner: bare"));
     }
 
     #[test]
     fn test_old_runner_docker_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once", "--runner", "docker"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "docker"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown runner: docker"));
     }
 
@@ -897,8 +913,8 @@ agent_effort = "high"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_phases.len(), 2);
         assert_eq!(config.review_phases[0].name, "correctness");
         assert_eq!(config.review_phases[0].prompt, "correctness-review");
@@ -932,8 +948,8 @@ prompt = "other-review"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("duplicate review phase name"));
     }
 
@@ -956,8 +972,8 @@ agent_model = "claude-opus-4-6"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_aggregate.prompt, "my-aggregate");
         assert_eq!(
             config.review_aggregate.agent_model.as_deref(),
@@ -968,8 +984,8 @@ agent_model = "claude-opus-4-6"
     #[test]
     fn test_review_aggregate_defaults() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_aggregate.prompt, "review-aggregate");
         assert_eq!(config.review_aggregate.runner, RunnerKind::Claude);
     }
@@ -977,8 +993,8 @@ agent_model = "claude-opus-4-6"
     #[test]
     fn test_default_review_phases_provided() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_phases.len(), 3);
         assert_eq!(config.review_phases[0].name, "correctness");
         assert_eq!(config.review_phases[1].name, "security");
@@ -999,8 +1015,8 @@ prompt = "check-review"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("name must not be empty"));
     }
 
@@ -1018,8 +1034,8 @@ prompt = ""
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("prompt must not be empty"));
     }
 
@@ -1038,8 +1054,8 @@ runner = "podman"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown runner: podman"));
     }
 
@@ -1059,8 +1075,8 @@ prompt = "check-review"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_phases[0].runner, RunnerKind::Codex);
         assert_eq!(config.review_phases[0].agent_binary, "codex");
     }
@@ -1082,8 +1098,8 @@ runner = "claude"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_phases[0].runner, RunnerKind::Claude);
         assert_eq!(config.review_phases[0].agent_binary, "claude");
         assert_eq!(
@@ -1115,8 +1131,8 @@ runner = "claude"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_aggregate.runner, RunnerKind::Claude);
         assert_eq!(config.review_aggregate.agent_binary, "claude");
         assert_eq!(
@@ -1144,8 +1160,8 @@ prompt = "check-review"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_phases[0].agent_binary, "/opt/agent-proxy");
         assert_eq!(
             config.review_phases[0].agent_model.as_deref(),
@@ -1179,8 +1195,8 @@ prompt = "review-aggregate"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
 
         assert_eq!(config.review_aggregate.agent_binary, "/opt/agent-proxy");
         assert_eq!(
@@ -1196,8 +1212,8 @@ prompt = "review-aggregate"
     #[test]
     fn test_opencode_runner_accepted() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "--once", "--runner", "opencode"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "opencode"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.runner, RunnerKind::OpenCode);
         assert_eq!(config.agent_binary, "opencode");
         assert_eq!(config.agent_model, None);
@@ -1209,13 +1225,14 @@ prompt = "review-aggregate"
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from([
             "rlph",
+            "build",
             "--once",
             "--runner",
             "opencode",
             "--agent-variant",
             "high",
         ]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.runner, RunnerKind::OpenCode);
         assert_eq!(config.agent_variant.as_deref(), Some("high"));
     }
@@ -1225,13 +1242,14 @@ prompt = "review-aggregate"
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from([
             "rlph",
+            "build",
             "--once",
             "--runner",
             "opencode",
             "--agent-effort",
             "high",
         ]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("opencode uses agent_variant, not agent_effort")
@@ -1243,13 +1261,14 @@ prompt = "review-aggregate"
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from([
             "rlph",
+            "build",
             "--once",
             "--runner",
             "claude",
             "--agent-variant",
             "high",
         ]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("agent_variant is only supported by opencode")
@@ -1261,13 +1280,14 @@ prompt = "review-aggregate"
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from([
             "rlph",
+            "build",
             "--once",
             "--runner",
             "codex",
             "--agent-variant",
             "low",
         ]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("agent_variant is only supported by opencode")
@@ -1294,8 +1314,8 @@ prompt = "review-aggregate"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(
             config.review_phases[0].agent_variant.as_deref(),
             Some("high")
@@ -1324,8 +1344,8 @@ agent_variant = "low"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = Config::load_from(&cli, tmp.path()).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(
             config.review_phases[0].agent_variant.as_deref(),
             Some("low")
@@ -1353,8 +1373,8 @@ prompt = "review-aggregate"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("review phase 'check': opencode uses agent_variant, not agent_effort")
@@ -1383,8 +1403,8 @@ runner = "opencode"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("review phase 'check': agent_variant is only supported by opencode")
@@ -1407,16 +1427,16 @@ runner = "opencode"
             worktree_setup_script: Some("my-setup.sh".to_string()),
             ..Default::default()
         };
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = merge(file, &cli).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = merge(file, &cli, cli.build_args()).unwrap();
         assert_eq!(config.worktree_setup_script.as_deref(), Some("my-setup.sh"));
     }
 
     #[test]
     fn test_worktree_setup_script_none_by_default() {
         let file = ConfigFile::default();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let config = merge(file, &cli).unwrap();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = merge(file, &cli, cli.build_args()).unwrap();
         assert_eq!(config.worktree_setup_script, None);
     }
 
@@ -1441,8 +1461,8 @@ runner = "opencode"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "--once"]);
-        let err = Config::load_from(&cli, tmp.path()).unwrap_err();
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(
             err.to_string()
                 .contains("review_aggregate: opencode uses agent_variant, not agent_effort")
