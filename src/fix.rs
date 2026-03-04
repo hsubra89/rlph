@@ -317,11 +317,15 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
             ScheduleAction::RunCritical(finding_id) => {
                 info!(%finding_id, "Critical processing mode: scheduling single-finding fix session");
 
-                let item = queued_items
+                let Some(item) = queued_items
                     .iter()
                     .find(|i| i.finding.id == finding_id)
-                    .expect("scheduler returned unknown finding ID")
-                    .clone();
+                    .cloned()
+                else {
+                    warn!(%finding_id, "scheduler returned unknown finding ID, marking as failed");
+                    failed.insert(finding_id);
+                    continue;
+                };
 
                 let Some(prepared) = prepare_fix_item(
                     item,
