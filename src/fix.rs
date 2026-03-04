@@ -888,8 +888,15 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             };
 
             // Track session_id for subsequent resumes
-            if run_result.session_id.is_some() {
-                session_id.clone_from(&run_result.session_id);
+            match (&run_result.session_id, idx) {
+                (Some(_), _) => session_id.clone_from(&run_result.session_id),
+                (None, 0) => {} // first iteration, no previous session to go stale
+                (None, _) => {
+                    warn!(
+                        %finding_id,
+                        "runner returned no session_id mid-batch, keeping previous (possibly stale) session_id"
+                    );
+                }
             }
 
             // Parse output (with retry via session correction)
