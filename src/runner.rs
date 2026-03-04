@@ -913,11 +913,12 @@ fn extract_codex_result(stdout_lines: &[String]) -> Option<String> {
 
 /// Extract context usage percentage from a Codex `turn.completed` event's top-level `usage`.
 ///
-/// Computes (input_tokens + cached_input_tokens + output_tokens) / context_window * 100.
+/// Computes (input_tokens + output_tokens) / context_window * 100.
+/// Note: input_tokens already includes cached tokens (cached_tokens is a subset).
 fn extract_codex_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f64> {
     let usage = val.get("usage")?;
     let tok = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-    let total = tok("input_tokens") + tok("cached_input_tokens") + tok("output_tokens");
+    let total = tok("input_tokens") + tok("output_tokens");
     if total == 0 {
         return None;
     }
@@ -1995,6 +1996,8 @@ mod tests {
 
     #[test]
     fn test_codex_formatter_context_pct_with_cached() {
+        // input_tokens already includes cached_input_tokens, so total = input + output only.
+        // 20000 + 50000 = 70000 / 200000 = 35%
         let out = run_codex_formatter(
             "impl",
             &[
@@ -2002,7 +2005,7 @@ mod tests {
                 r#"{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}"#,
             ],
         );
-        assert_eq!(out, "[impl 50%] hi\n");
+        assert_eq!(out, "[impl 35%] hi\n");
     }
 
     #[test]
