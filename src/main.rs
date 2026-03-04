@@ -7,7 +7,7 @@ use tokio::sync::watch;
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
-use rlph::cli::{Cli, CliCommand};
+use rlph::cli::{BuildArgs, Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
 use rlph::fix;
 use rlph::fix_comment::format_fix_items_for_display;
@@ -102,7 +102,7 @@ async fn main() {
     debug!("rlph starting");
 
     match cli.command {
-        Some(CliCommand::Init) => {
+        CliCommand::Init => {
             let init_cfg = match resolve_init_config(&cli) {
                 Ok(cfg) => cfg,
                 Err(e) => {
@@ -118,11 +118,10 @@ async fn main() {
             } else {
                 info!("init: nothing to do for source '{}'", init_cfg.source);
             }
-            return;
         }
-        Some(CliCommand::Review { ref pr_ref }) => {
+        CliCommand::Review { ref pr_ref } => {
             let pr_number = parse_pr_ref_or_exit(pr_ref);
-            let config = match Config::load(&cli) {
+            let config = match Config::load(&cli, None) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -242,12 +241,11 @@ async fn main() {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
-            return;
         }
-        Some(CliCommand::Fix {
+        CliCommand::Fix {
             ref pr_ref,
             dry_run,
-        }) => {
+        } => {
             let pr_number = parse_pr_ref_or_exit(pr_ref);
             let submission = GitHubSubmission::new();
 
@@ -264,7 +262,7 @@ async fn main() {
             }
 
             // Non-dry-run: run the fix polling loop
-            let config = match Config::load(&cli) {
+            let config = match Config::load(&cli, None) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -306,41 +304,31 @@ async fn main() {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
-            return;
         }
-        Some(CliCommand::Prd {
+        CliCommand::Prd {
             ref description,
             ref runner,
             ref source,
             ref config,
             ref agent_binary,
             ref agent_model,
-        }) => {
-            // Clone top-level CLI and merge prd-specific overrides.
-            // Using clone ensures new Cli fields are automatically preserved.
+        } => {
             let mut prd_cli = cli.clone();
-            prd_cli.command = None;
-            prd_cli.once = false;
-            prd_cli.continuous = false;
-            prd_cli.max_iterations = None;
-            prd_cli.dry_run = false;
-            if let Some(r) = runner {
-                prd_cli.runner = Some(r.clone());
-            }
             if let Some(s) = source {
                 prd_cli.source = Some(s.clone());
             }
             if let Some(c) = config {
                 prd_cli.config = Some(c.clone());
             }
-            if let Some(b) = agent_binary {
-                prd_cli.agent_binary = Some(b.clone());
-            }
-            if let Some(m) = agent_model {
-                prd_cli.agent_model = Some(m.clone());
-            }
 
-            let cfg = match Config::load(&prd_cli) {
+            let prd_build = BuildArgs {
+                runner: runner.clone(),
+                agent_binary: agent_binary.clone(),
+                agent_model: agent_model.clone(),
+                ..Default::default()
+            };
+
+            let cfg = match Config::load(&prd_cli, Some(&prd_build)) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -360,78 +348,80 @@ async fn main() {
 
             std::process::exit(exit_code);
         }
-        None => {}
-    }
+        CliCommand::Build { ref args } => {
+            let config = match Config::load(&cli, Some(args)) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
 
-    let config = match Config::load(&cli) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }
-    };
+            info!(?config, "config loaded");
 
-    info!(?config, "config loaded");
+            if !config.once && !config.continuous && config.max_iterations.is_none() {
+                eprintln!("error: specify one of --once, --continuous, or --max-iterations");
+                std::process::exit(1);
+            }
 
-    if !config.once && !config.continuous && config.max_iterations.is_none() {
-        eprintln!("error: specify one of --once, --continuous, or --max-iterations");
-        std::process::exit(1);
-    }
+            let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-    let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let source: AnySource = match config.source.as_str() {
+                "linear" => match LinearSource::new(&config) {
+                    Ok(s) => AnySource::Linear(s),
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    }
+                },
+                _ => AnySource::GitHub(GitHubSource::new(&config)),
+            };
+            let timeout = config.implement_timeout.map(Duration::from_secs);
+            let runner = build_runner(
+                config.runner,
+                &config.agent_binary,
+                config.agent_model.as_deref(),
+                config.agent_effort.as_deref(),
+                config.agent_variant.as_deref(),
+                timeout,
+                config.agent_timeout_retries,
+            )
+            .with_stream_prefix("implement".to_string());
+            let submission = GitHubSubmission::new();
+            let worktree_mgr =
+                match build_worktree_manager(&config, &repo_root, &config.base_branch) {
+                    Ok(wm) => wm,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    }
+                };
+            let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
+            let prompt_engine = PromptEngine::new(None);
 
-    let source: AnySource = match config.source.as_str() {
-        "linear" => match LinearSource::new(&config) {
-            Ok(s) => AnySource::Linear(s),
-            Err(e) => {
+            let orchestrator = Orchestrator::new(
+                source,
+                runner,
+                submission,
+                worktree_mgr,
+                state_mgr,
+                prompt_engine,
+                config,
+                repo_root,
+            );
+
+            let shutdown_rx = install_sigint_handler(
+                "[rlph] SIGINT received; shutting down after current iteration",
+            );
+
+            if let Err(e) = orchestrator.run_loop(Some(shutdown_rx)).await {
+                if matches!(&e, rlph::error::Error::Interrupted) {
+                    std::process::exit(130);
+                }
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
-        },
-        _ => AnySource::GitHub(GitHubSource::new(&config)),
-    };
-    let timeout = config.implement_timeout.map(Duration::from_secs);
-    let runner = build_runner(
-        config.runner,
-        &config.agent_binary,
-        config.agent_model.as_deref(),
-        config.agent_effort.as_deref(),
-        config.agent_variant.as_deref(),
-        timeout,
-        config.agent_timeout_retries,
-    )
-    .with_stream_prefix("implement".to_string());
-    let submission = GitHubSubmission::new();
-    let worktree_mgr = match build_worktree_manager(&config, &repo_root, &config.base_branch) {
-        Ok(wm) => wm,
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
         }
-    };
-    let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
-    let prompt_engine = PromptEngine::new(None);
-
-    let orchestrator = Orchestrator::new(
-        source,
-        runner,
-        submission,
-        worktree_mgr,
-        state_mgr,
-        prompt_engine,
-        config,
-        repo_root,
-    );
-
-    let shutdown_rx =
-        install_sigint_handler("[rlph] SIGINT received; shutting down after current iteration");
-
-    if let Err(e) = orchestrator.run_loop(Some(shutdown_rx)).await {
-        if matches!(&e, rlph::error::Error::Interrupted) {
-            std::process::exit(130);
-        }
-        eprintln!("error: {e}");
-        std::process::exit(1);
     }
 }
 
