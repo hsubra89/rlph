@@ -261,7 +261,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
             match fix_scheduler::next_action(&queued_items, deps, &sched_completed, &sched_failed) {
                 ScheduleAction::RunCritical(finding_id) => {
-                    info!(%finding_id, "CRITICAL processing mode: scheduling single-finding fix session");
+                    info!(%finding_id, "Critical processing mode: scheduling single-finding fix session");
 
                     let item = queued_items
                         .iter()
@@ -282,7 +282,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
                     match run_prepared_fix(&shared, prepared, pr_number).await {
                         Ok(()) => {
-                            info!(%finding_id, "CRITICAL fix completed successfully");
+                            info!(%finding_id, "Critical fix completed successfully");
                             completed.insert(finding_id);
                         }
                         Err(e) => {
