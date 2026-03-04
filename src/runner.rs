@@ -248,6 +248,13 @@ fn token_pct(total: u64, context_window: u64) -> Option<f64> {
     Some(pct.min(100.0))
 }
 
+/// Format an optional context-usage percentage as a display tag (e.g. `" 42%"`).
+///
+/// Returns an empty string when `pct` is `None`.
+fn format_pct_tag(pct: Option<f64>) -> String {
+    pct.map(|p| format!(" {p:.0}%")).unwrap_or_default()
+}
+
 /// Extract context usage percentage from an assistant event's `message.usage`.
 ///
 /// Computes (input_tokens + cache_creation_input_tokens + cache_read_input_tokens
@@ -285,7 +292,7 @@ fn format_claude_line(
     }
     // Compute possibly-updated context usage percentage from this event.
     let context_pct = extract_context_pct(&val, DEFAULT_CONTEXT_WINDOW).or(context_pct);
-    let pct_tag = context_pct.map(|p| format!(" {p:.0}%")).unwrap_or_default();
+    let pct_tag = format_pct_tag(context_pct);
     let Some(content) = val.pointer("/message/content").and_then(|v| v.as_array()) else {
         return (false, context_pct);
     };
@@ -951,7 +958,7 @@ fn format_codex_line(
     let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
         return (false, context_pct);
     };
-    let pct_tag = || context_pct.map(|p| format!(" {p:.0}%")).unwrap_or_default();
+    let pct_tag = || format_pct_tag(context_pct);
     match event_type {
         "turn.completed" => {
             let context_pct =
