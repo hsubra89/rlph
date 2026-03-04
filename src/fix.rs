@@ -400,7 +400,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                 info!(
                     batch_size,
                     ?finding_ids,
-                    "Batch processing mode: scheduling session"
+                    "batch processing mode: scheduling session"
                 );
 
                 // Prepare all items, skipping any that fail validation
