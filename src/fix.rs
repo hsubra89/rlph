@@ -28,7 +28,7 @@ use crate::prompts::PromptEngine;
 use crate::review_schema::{
     FINDING_MARKER, SchemaName, StandaloneFixOutput, parse_standalone_fix_output,
 };
-use crate::runner::{AgentRunner, Phase, RunResult, build_runner};
+use crate::runner::{AgentRunner, AnyRunner, Phase, RunResult, build_runner};
 use crate::submission::{PrReviewComment, Reaction, SubmissionBackend};
 use crate::worktree::{WorktreeManager, git_in_dir, resolve_setup_script, validate_branch_name};
 
@@ -808,16 +808,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     );
 
     // Build runner for the initial agent invocation
-    let runner = build_runner(
-        shared.fix_config.runner,
-        &shared.fix_config.agent_binary,
-        shared.fix_config.agent_model.as_deref(),
-        shared.fix_config.agent_effort.as_deref(),
-        shared.fix_config.agent_variant.as_deref(),
-        shared.fix_config.agent_timeout.map(Duration::from_secs),
-        shared.agent_timeout_retries,
-    )
-    .with_stream_prefix("fix".to_string());
+    let runner = build_fix_runner(&shared.fix_config, shared.agent_timeout_retries);
 
     // Run each finding sequentially, sharing the session
     let mut session_id: Option<String> = None;
@@ -962,6 +953,20 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     (completed_ids, error)
 }
 
+/// Build the runner used for fix agent invocations.
+fn build_fix_runner(config: &ReviewStepConfig, agent_timeout_retries: u32) -> AnyRunner {
+    build_runner(
+        config.runner,
+        &config.agent_binary,
+        config.agent_model.as_deref(),
+        config.agent_effort.as_deref(),
+        config.agent_variant.as_deref(),
+        config.agent_timeout.map(Duration::from_secs),
+        agent_timeout_retries,
+    )
+    .with_stream_prefix("fix".to_string())
+}
+
 /// Inner function: spawn agent, parse output, rebase/push with retry, update reactions + reply.
 async fn run_fix_agent_and_apply(
     ctx: &FixContext<'_>,
@@ -971,16 +976,7 @@ async fn run_fix_agent_and_apply(
 ) -> Result<()> {
     // Spawn fix agent
     info!(finding_id = %ctx.item.finding.id, "spawning fix agent");
-    let runner = build_runner(
-        ctx.fix_config.runner,
-        &ctx.fix_config.agent_binary,
-        ctx.fix_config.agent_model.as_deref(),
-        ctx.fix_config.agent_effort.as_deref(),
-        ctx.fix_config.agent_variant.as_deref(),
-        ctx.fix_config.agent_timeout.map(Duration::from_secs),
-        ctx.agent_timeout_retries,
-    )
-    .with_stream_prefix("fix".to_string());
+    let runner = build_fix_runner(ctx.fix_config, ctx.agent_timeout_retries);
 
     let run_result = runner.run(Phase::Fix, ctx.prompt, worktree_path).await?;
 
