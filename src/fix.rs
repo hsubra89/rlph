@@ -784,6 +784,10 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     let batch_size = prepared_items.len();
     let mut completed_ids: Vec<String> = Vec::new();
 
+    if prepared_items.is_empty() {
+        return (completed_ids, None);
+    }
+
     // Use the first item's fix_branch as the worktree branch for the whole batch
     let batch_branch = prepared_items[0].fix_branch.clone();
 
