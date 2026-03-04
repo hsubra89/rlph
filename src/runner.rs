@@ -234,7 +234,7 @@ const ICON_CHECK: &str = "✔";
 const ICON_CROSS: &str = "✘";
 const ICON_PLAY: &str = "▶";
 
-/// Default context window size for Claude models.
+/// Default context window size for Claude and Codex runners.
 const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 
 /// Extract context usage percentage from an assistant event's `message.usage`.
