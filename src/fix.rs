@@ -1353,7 +1353,7 @@ async fn push_to_pr_branch_with_retry(
     let refspec = format!("{fix_branch}:{pr_branch}");
     let mut last_err = String::new();
     for attempt in 1..=MAX_PUSH_ATTEMPTS {
-        // Skip rebase on first attempt: worktree was just created from origin/<pr-branch>
+        // First attempt pushes as-is; rebase only after a conflict reveals divergence
         if attempt > 1
             && let Err(e) = rebase_onto(worktree_path, pr_branch).await
         {
