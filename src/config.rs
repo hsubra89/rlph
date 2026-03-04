@@ -310,10 +310,10 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
     let build_model = build.and_then(|b| b.agent_model.clone());
     let build_effort = build.and_then(|b| b.agent_effort.clone());
     let build_variant = build.and_then(|b| b.agent_variant.clone());
-    let global_binary_override = build_binary.or(file.agent_binary.clone());
-    let global_model_override = build_model.or(file.agent_model.clone());
-    let global_effort_override = build_effort.or(file.agent_effort.clone());
-    let global_variant_override = build_variant.or(file.agent_variant.clone());
+    let global_binary_override = build_binary.or(file.agent_binary);
+    let global_model_override = build_model.or(file.agent_model);
+    let global_effort_override = build_effort.or(file.agent_effort);
+    let global_variant_override = build_variant.or(file.agent_variant);
 
     let global_binary = global_binary_override
         .clone()
