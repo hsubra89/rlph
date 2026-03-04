@@ -911,24 +911,19 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             info!(%finding_id, ?fix_output, "batch fix agent completed");
 
             // Apply result: push if fixed, update reactions
-            let fix_result = match fix_output {
-                StandaloneFixOutput::Fixed { commit_message } => {
-                    info!(%finding_id, commit_message, "batch fix applied — rebasing and pushing");
-                    if let Err(e) = push_to_pr_branch_with_retry(
-                        &worktree_path,
-                        &batch_branch,
-                        &shared.pr_branch,
-                    )
-                    .await
-                    {
-                        warn!(%finding_id, error = %e, "batch abort: push failed");
-                        break 'batch Some(e);
-                    }
-                    FixResultKind::Fixed { commit_message }
-                }
-                StandaloneFixOutput::WontFix { reason } => {
-                    info!(%finding_id, reason, "batch finding marked as won't fix");
-                    FixResultKind::WontFix { reason }
+            let fix_result = match apply_fix_output(
+                fix_output,
+                &finding_id,
+                &worktree_path,
+                &batch_branch,
+                &shared.pr_branch,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    warn!(%finding_id, error = %e, "batch abort: push failed");
+                    break 'batch Some(e);
                 }
             };
 
@@ -955,6 +950,27 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     }
 
     (completed_ids, error)
+}
+
+/// Map agent output to a fix result, pushing to the PR branch if the fix was applied.
+async fn apply_fix_output(
+    fix_output: StandaloneFixOutput,
+    finding_id: &str,
+    worktree_path: &Path,
+    fix_branch: &str,
+    pr_branch: &str,
+) -> Result<FixResultKind> {
+    match fix_output {
+        StandaloneFixOutput::Fixed { commit_message } => {
+            info!(%finding_id, commit_message, "fix applied — rebasing and pushing");
+            push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await?;
+            Ok(FixResultKind::Fixed { commit_message })
+        }
+        StandaloneFixOutput::WontFix { reason } => {
+            info!(%finding_id, reason, "finding marked as won't fix");
+            Ok(FixResultKind::WontFix { reason })
+        }
+    }
 }
 
 /// Build the runner used for fix agent invocations.
@@ -996,17 +1012,14 @@ async fn run_fix_agent_and_apply(
     info!(finding_id = %ctx.item.finding.id, ?fix_output, "fix agent completed");
 
     // Apply result
-    let fix_result = match fix_output {
-        StandaloneFixOutput::Fixed { commit_message } => {
-            info!(finding_id = %ctx.item.finding.id, commit_message, "fix applied — rebasing and pushing");
-            push_to_pr_branch_with_retry(worktree_path, ctx.fix_branch, ctx.pr_branch).await?;
-            FixResultKind::Fixed { commit_message }
-        }
-        StandaloneFixOutput::WontFix { reason } => {
-            info!(finding_id = %ctx.item.finding.id, reason, "finding marked as won't fix");
-            FixResultKind::WontFix { reason }
-        }
-    };
+    let fix_result = apply_fix_output(
+        fix_output,
+        &ctx.item.finding.id,
+        worktree_path,
+        ctx.fix_branch,
+        ctx.pr_branch,
+    )
+    .await?;
 
     // Update reactions and post reply (best-effort — don't fail on already-pushed code)
     update_reactions_and_reply(ctx, submission, &fix_result);
