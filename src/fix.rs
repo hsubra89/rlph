@@ -178,8 +178,9 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 
 /// Run the fix command as a continuous polling loop.
 ///
-/// Polls for newly 🚀-reacted comments every `poll_seconds`, runs the
-/// scheduler each cycle to determine which findings to process next.
+/// Polls for newly 🚀-reacted comments every `poll_seconds`, then runs
+/// the scheduler in an inner loop each cycle, processing all available
+/// findings until the scheduler returns Idle before waiting again.
 /// CRITICAL findings run one at a time in their own agent session.
 /// Failed CRITICALs are retried once before being added to the failed set.
 ///
