@@ -944,7 +944,7 @@ fn format_codex_line(
     let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
         return (false, context_pct);
     };
-    let pct_tag = context_pct.map(|p| format!(" {p:.0}%")).unwrap_or_default();
+    let pct_tag = || context_pct.map(|p| format!(" {p:.0}%")).unwrap_or_default();
     match event_type {
         "turn.completed" => {
             let context_pct =
@@ -958,6 +958,7 @@ fn format_codex_line(
             let Some(item_type) = item.get("type").and_then(|v| v.as_str()) else {
                 return (false, context_pct);
             };
+            let pct_tag = pct_tag();
             match item_type {
                 "agent_message" => {
                     if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
@@ -992,6 +993,7 @@ fn format_codex_line(
             if item.get("type").and_then(|v| v.as_str()) == Some("command_execution")
                 && let Some(cmd) = item.get("command").and_then(|v| v.as_str())
             {
+                let pct_tag = pct_tag();
                 for cmd_line in cmd.lines() {
                     let _ = writeln!(sink, "[{prefix}{pct_tag}] {ICON_PLAY} {cmd_line}");
                 }
