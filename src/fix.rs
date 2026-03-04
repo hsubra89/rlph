@@ -225,6 +225,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         }
 
         // Fetch and parse
+        eprintln!("[rlph] polling for newly 🚀-reacted comments (cycle {cycle})");
         info!(
             pr_number,
             cycle,
@@ -295,6 +296,11 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         )
         .await;
 
+        eprintln!(
+            "[rlph] poll cycle {cycle} summary: {} completed, {} failed",
+            completed.len(),
+            failed.len()
+        );
         info!(
             cycle,
             completed = completed.len(),
@@ -346,6 +352,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
 
         match fix_scheduler::next_action(queued_items, deps, &sched_completed, &sched_failed) {
             ScheduleAction::RunCritical(finding_id) => {
+                eprintln!("[rlph] Critical: scheduling single-finding fix for {finding_id}");
                 info!(%finding_id, "Critical processing mode: scheduling single-finding fix session");
 
                 let Some(item) = queued_items
@@ -371,6 +378,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
 
                 match run_prepared_fix(shared, prepared, pr_number).await {
                     Ok(()) => {
+                        eprintln!("[rlph] Critical fix completed successfully: {finding_id}");
                         info!(%finding_id, "Critical fix completed successfully");
                         completed.insert(finding_id);
                     }
@@ -378,6 +386,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                         let attempts = retries.entry(finding_id.clone()).or_insert(0);
                         *attempts += 1;
                         if *attempts >= MAX_CRITICAL_ATTEMPTS {
+                            eprintln!("[rlph] Critical fix failed after retry: {finding_id}: {e}");
                             warn!(
                                 %finding_id,
                                 error = %e,
@@ -385,6 +394,10 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                             );
                             failed.insert(finding_id);
                         } else {
+                            eprintln!(
+                                "[rlph] Critical fix failed (attempt {}, will retry): {finding_id}: {e}",
+                                *attempts
+                            );
                             warn!(
                                 %finding_id,
                                 error = %e,
@@ -397,6 +410,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
             }
             ScheduleAction::RunBatch(finding_ids) => {
                 let batch_size = finding_ids.len();
+                eprintln!("[rlph] Batch: scheduling {batch_size} findings: {finding_ids:?}");
                 info!(
                     batch_size,
                     ?finding_ids,
@@ -444,6 +458,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                     run_batch_fix(shared, prepared_items, pr_number).await;
 
                 for id in &batch_completed {
+                    eprintln!("[rlph] Batch finding completed successfully: {id}");
                     info!(%id, "batch finding completed successfully");
                     completed.insert(id.clone());
                 }
@@ -455,6 +470,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                         .iter()
                         .find(|id| !batch_completed.contains(id))
                     {
+                        eprintln!("[rlph] Batch finding failed: {failed_id}: {e}");
                         warn!(
                             finding_id = %failed_id,
                             error = %e,
@@ -882,6 +898,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             let run_result = match run_result {
                 Ok(r) => r,
                 Err(e) => {
+                    eprintln!("[rlph] Batch abort (agent failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: agent failed");
                     break 'batch Some(e);
                 }
@@ -910,6 +927,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             {
                 Ok(output) => output,
                 Err(e) => {
+                    eprintln!("[rlph] Batch abort (parse failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: parse failed");
                     break 'batch Some(e);
                 }
@@ -929,6 +947,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             {
                 Ok(result) => result,
                 Err(e) => {
+                    eprintln!("[rlph] Batch abort (push failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: push failed");
                     break 'batch Some(e);
                 }
@@ -969,11 +988,13 @@ async fn apply_fix_output(
 ) -> Result<FixResultKind> {
     match fix_output {
         StandaloneFixOutput::Fixed { commit_message } => {
+            eprintln!("[rlph] Fix applied — rebasing and pushing: {finding_id}");
             info!(%finding_id, commit_message, "fix applied — rebasing and pushing");
             push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await?;
             Ok(FixResultKind::Fixed { commit_message })
         }
         StandaloneFixOutput::WontFix { reason } => {
+            eprintln!("[rlph] Finding marked as won't fix: {finding_id}");
             info!(%finding_id, reason, "finding marked as won't fix");
             Ok(FixResultKind::WontFix { reason })
         }
