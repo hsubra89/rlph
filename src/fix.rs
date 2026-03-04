@@ -1026,9 +1026,12 @@ async fn apply_fix_output<C: CorrectionRunner + ?Sized>(
 
 /// Attempt to resolve rebase conflicts by resuming the agent session.
 ///
-/// Fetches latest, starts a rebase (leaving conflicts in the worktree), then
-/// resumes the agent asking it to resolve conflict markers and continue the
-/// rebase. On success, pushes the result.
+/// Starts a rebase (leaving conflicts in the worktree), then resumes the agent
+/// asking it to resolve conflict markers and continue the rebase. On success,
+/// pushes the result.
+///
+/// Skips fetching because this is only called after `push_to_pr_branch_with_retry`
+/// already completed a fetch+rebase cycle.
 async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
     worktree_path: &Path,
     fix_branch: &str,
@@ -1037,7 +1040,7 @@ async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
     fix_config: &ReviewStepConfig,
     correction_runner: &C,
 ) -> Result<()> {
-    match rebase_onto(worktree_path, pr_branch).await {
+    match start_rebase(worktree_path, pr_branch) {
         Ok(()) => {
             // Rebase clean — push with retry
             push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await
@@ -1303,13 +1306,20 @@ async fn fetch_with_retry(cwd: &Path, refspec: &str) -> Result<()> {
     )))
 }
 
-/// Rebase current branch onto origin/<pr-branch>.
+/// Rebase current branch onto origin/<pr-branch>, fetching first.
 ///
 /// On conflict the rebase is **not** aborted — the caller decides whether to
 /// resume the agent for conflict resolution or abort itself.
 async fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
     fetch_with_retry(worktree_path, pr_branch).await?;
+    start_rebase(worktree_path, pr_branch)
+}
 
+/// Start a rebase onto origin/<pr-branch> (assumes refs are already fetched).
+///
+/// On conflict the rebase is **not** aborted — the caller decides whether to
+/// resume the agent for conflict resolution or abort itself.
+fn start_rebase(worktree_path: &Path, pr_branch: &str) -> Result<()> {
     let remote_ref = format!("origin/{pr_branch}");
 
     if let Err(stderr) = git_in_dir(worktree_path, &["rebase", &remote_ref]) {
