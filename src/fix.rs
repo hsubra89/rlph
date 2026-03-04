@@ -1519,4 +1519,52 @@ mod tests {
         // Unknown deps are ignored → eligible
         assert!(deps.deps_met("a", &resolved));
     }
+
+    // --- Batch preparation tests ---
+
+    /// Helper to build a FixItem directly from a ReviewFinding.
+    fn make_fix_item(finding: crate::review_schema::ReviewFinding, comment_id: u64) -> FixItem {
+        FixItem {
+            finding,
+            state: FindingState::Queued,
+            comment_id,
+            rocket_reaction_ids: vec![1],
+        }
+    }
+
+    #[test]
+    fn test_batch_prep_partial_failure() {
+        // "bad finding" contains a space → invalid branch name
+        // "good-a" and "good-b" are valid
+        let items = vec![
+            make_fix_item(make_finding("good-a"), 100),
+            make_fix_item(make_finding("bad finding"), 200),
+            make_fix_item(make_finding("good-b"), 300),
+        ];
+
+        let engine = PromptEngine::new(None);
+        let fix_config = crate::config::default_review_step("fix");
+        let mut reply_map: ReplyMap = HashMap::new();
+
+        let mut prepared = Vec::new();
+        let mut failed = HashSet::new();
+
+        for item in items {
+            let finding_id = item.finding.id.clone();
+            match prepare_fix_item(item, 42, &fix_config, &engine, &mut reply_map) {
+                Some(p) => prepared.push(p),
+                None => {
+                    failed.insert(finding_id);
+                }
+            }
+        }
+
+        // Two items succeed, one fails
+        assert_eq!(prepared.len(), 2);
+        assert_eq!(prepared[0].item.finding.id, "good-a");
+        assert_eq!(prepared[1].item.finding.id, "good-b");
+
+        assert_eq!(failed.len(), 1);
+        assert!(failed.contains("bad finding"));
+    }
 }
