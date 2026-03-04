@@ -869,7 +869,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                         "no session_id from previous finding, cannot resume batch".into(),
                     );
                     warn!(%finding_id, %err, "batch abort");
-                    break 'batch Some((finding_id.clone(), err));
+                    break 'batch Some((finding_id, err));
                 };
                 info!(%finding_id, session_id = %sid, "resuming batch session");
                 shared
@@ -893,7 +893,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 Err(e) => {
                     eprintln!("[rlph] Batch abort (agent failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: agent failed");
-                    break 'batch Some((finding_id.clone(), e));
+                    break 'batch Some((finding_id, e));
                 }
             };
 
@@ -922,7 +922,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 Err(e) => {
                     eprintln!("[rlph] Batch abort (parse failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: parse failed");
-                    break 'batch Some((finding_id.clone(), e));
+                    break 'batch Some((finding_id, e));
                 }
             };
 
@@ -942,7 +942,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 Err(e) => {
                     eprintln!("[rlph] Batch abort (push failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: push failed");
-                    break 'batch Some((finding_id.clone(), e));
+                    break 'batch Some((finding_id, e));
                 }
             };
 
