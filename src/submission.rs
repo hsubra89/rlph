@@ -489,13 +489,14 @@ impl SubmissionBackend for GitHubSubmission {
             .spawn()
             .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
 
-        let stdin = child
+        let mut stdin = child
             .stdin
-            .as_mut()
+            .take()
             .ok_or_else(|| Error::Submission("failed to open stdin for gh api".to_string()))?;
         stdin
             .write_all(&request_body)
             .map_err(|e| Error::Submission(format!("failed to write review payload: {e}")))?;
+        drop(stdin);
 
         let output = child
             .wait_with_output()
