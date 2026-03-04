@@ -1041,10 +1041,7 @@ async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
     correction_runner: &C,
 ) -> Result<()> {
     match start_rebase(worktree_path, pr_branch) {
-        Ok(()) => {
-            // Rebase clean — push with retry
-            push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await
-        }
+        Ok(()) => { /* Rebase clean — fall through to push */ }
         Err(Error::RebaseConflict { .. }) => {
             // Conflicts in worktree — resume agent to resolve
             let prompt = "The rebase onto the PR branch has merge conflicts. \
@@ -1054,7 +1051,7 @@ async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
                 3. `git rebase --continue`\n\
                 Do not abort the rebase.";
 
-            match correction_runner
+            correction_runner
                 .resume(
                     fix_config.runner,
                     &fix_config.agent_binary,
@@ -1067,22 +1064,15 @@ async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
                     fix_config.agent_timeout.map(Duration::from_secs),
                 )
                 .await
-            {
-                Ok(_) => {
-                    // Agent should have completed rebase. Push with retry.
-                    // If this push hits another RebaseConflict we intentionally
-                    // propagate the error rather than resuming the agent again
-                    // to avoid an infinite conflict-resolution loop.
-                    push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await
-                }
-                Err(e) => {
-                    abort_rebase(worktree_path);
-                    Err(e)
-                }
-            }
+                .inspect_err(|_| abort_rebase(worktree_path))?;
         }
-        Err(e) => Err(e),
+        Err(e) => return Err(e),
     }
+
+    // Push with retry. If this hits another RebaseConflict we intentionally
+    // propagate the error rather than resuming the agent again to avoid an
+    // infinite conflict-resolution loop.
+    push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await
 }
 
 /// Build the runner used for fix agent invocations.
