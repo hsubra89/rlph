@@ -930,6 +930,11 @@ fn extract_codex_context_pct(val: &serde_json::Value, context_window: u64) -> Op
 ///
 /// `context_pct` is the latest known context usage percentage.
 ///
+/// Note: Codex emits `turn.completed` (which carries token usage) *after* all
+/// `item.completed` events in a turn, so the percentage shown on output lines
+/// reflects the *previous* turn's usage. First-turn items show no percentage.
+/// This differs from the Claude runner where usage arrives per-message.
+///
 /// Returns `(wrote, updated_pct)` — whether any output was written, and the
 /// (possibly refreshed) context usage percentage for the caller to store.
 fn format_codex_line(
