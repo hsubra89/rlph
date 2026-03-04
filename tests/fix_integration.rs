@@ -292,6 +292,24 @@ echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"comm
     script_path.to_str().unwrap().to_string()
 }
 
+/// Create a mock agent script that returns WontFix with a session_id (no commit).
+fn create_mock_wontfix_agent_script(dir: &Path) -> String {
+    let script_path = dir.join("mock-wontfix-agent.sh");
+    let script = r#"#!/bin/bash
+# Mock fix agent: returns WontFix with session_id (no commit)
+ID="$$-$RANDOM"
+echo "{\"session_id\":\"mock-session-$ID\"}"
+echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"wont_fix\\\",\\\"reason\\\":\\\"False positive\\\"}\"}"
+"#;
+    std::fs::write(&script_path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    script_path.to_str().unwrap().to_string()
+}
+
 /// Test that `run_fix` processes multiple 🚀-reacted items.
 #[tokio::test]
 async fn test_parallel_fix_multiple_queued_items() {
@@ -994,6 +1012,104 @@ async fn test_fix_loop_batch_abort_remaining_picked_up_next_poll() {
         f.submission.reply_count(),
         2,
         "warn-a + warn-c should be fixed (warn-b failed on correction resume)"
+    );
+}
+
+/// Test that a WontFix result in a batch marks the finding complete and continues.
+///
+/// 2 WARNING findings batched. First returns WontFix (via agent script), second
+/// returns Fixed (via correction runner resume). Both should be marked complete
+/// with appropriate reactions: 😕 for WontFix, 👍 for Fixed.
+#[tokio::test]
+async fn test_fix_loop_batch_wontfix_continues() {
+    let (_bare_dir, repo_dir) = setup_git_repo();
+    let repo_root = repo_dir.path();
+
+    let pr_branch = "feature/batch-wontfix-test";
+    create_pr_branch(repo_root, pr_branch);
+
+    // Agent script that returns WontFix (no commit needed) with a session_id
+    let agent_script = create_mock_wontfix_agent_script(repo_root);
+
+    let findings = vec![make_finding("warn-wontfix"), make_finding("warn-fixable")];
+    let comments = make_review_comments(&findings);
+    let reactions = vec![rocket_reactions(100), rocket_reactions(101)];
+
+    let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
+    let correction_runner = Arc::new(MockCorrectionRunner::with_handler(|working_dir, n| {
+        let filename = format!("batch-resume-{n}.txt");
+        let commit_msg = format!("fix: batch-resume-{n}");
+
+        std::fs::write(working_dir.join(&filename), "batch fix content").unwrap();
+        run_git(working_dir, &["add", "."]);
+        run_git(working_dir, &["commit", "-m", &commit_msg]);
+
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: format!(r#"{{"status":"fixed","commit_message":"{commit_msg}"}}"#),
+            stderr: String::new(),
+            session_id: Some("mock-batch-session".to_string()),
+        })
+    }));
+
+    let wt_dir = tempfile::TempDir::new().unwrap();
+    let mut config = make_config();
+    config.fix = make_fix_step_config(agent_script);
+    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    config.poll_seconds = 1;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let sub_clone = Arc::clone(&submission);
+    let shutdown_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if sub_clone.reply_count() >= 2 {
+                let _ = shutdown_tx.send(true);
+                return;
+            }
+        }
+    });
+
+    let result = run_fix_loop(
+        42,
+        pr_branch,
+        &config,
+        Arc::clone(&submission),
+        &rlph::prompts::PromptEngine::new(None),
+        repo_root,
+        correction_runner,
+        shutdown_rx,
+    )
+    .await;
+
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // Both findings should have been processed
+    assert_eq!(
+        submission.reply_count(),
+        2,
+        "expected 2 replies: WontFix + Fixed"
+    );
+
+    // Verify reactions: first finding gets "confused" (WontFix), second gets "+1" (Fixed)
+    let reactions = submission.base.added_reactions();
+    assert!(
+        reactions.iter().any(|(_, r)| r == "confused"),
+        "expected 😕 reaction for WontFix finding, got: {reactions:?}"
+    );
+    assert!(
+        reactions.iter().any(|(_, r)| r == "+1"),
+        "expected 👍 reaction for Fixed finding, got: {reactions:?}"
+    );
+
+    // Both rocket reactions should have been removed
+    assert_eq!(
+        submission.base.deleted_reaction_count(),
+        2,
+        "expected 2 🚀 reactions removed"
     );
 }
 
