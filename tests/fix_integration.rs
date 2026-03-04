@@ -11,7 +11,7 @@ use rlph::orchestrator::CorrectionRunner;
 use rlph::review_schema::ReviewFinding;
 use rlph::runner::{RunResult, RunnerKind};
 use rlph::submission::{PrReviewComment, Reaction, SubmissionBackend, SubmitResult};
-use rlph::test_helpers::{make_finding, make_review_comment};
+use rlph::test_helpers::{make_finding, make_finding_critical, make_review_comment};
 use tokio::sync::watch;
 
 use common::{default_test_config, run_git, setup_git_repo};
@@ -598,7 +598,10 @@ impl FixLoopFixture {
 async fn test_fix_loop_picks_up_newly_queued_items() {
     // alpha starts with 🚀, beta gets 🚀 after alpha is fixed
     let mut f = FixLoopFixture::new(
-        &[make_finding("alpha"), make_finding("beta")],
+        &[
+            make_finding_critical("alpha"),
+            make_finding_critical("beta"),
+        ],
         &[100],    // alpha (comment 100) starts queued
         Some(101), // beta (comment 101) gets 🚀 after first fix
     );
@@ -639,7 +642,7 @@ async fn test_fix_loop_picks_up_newly_queued_items() {
 #[tokio::test]
 async fn test_fix_loop_skips_completed_items() {
     let mut f = FixLoopFixture::new(
-        &[make_finding("only-one")],
+        &[make_finding_critical("only-one")],
         &[100], // only-one starts queued
         None,
     );
@@ -674,7 +677,7 @@ async fn test_fix_loop_skips_completed_items() {
 #[tokio::test]
 async fn test_fix_loop_graceful_shutdown() {
     let mut f = FixLoopFixture::new(
-        &[make_finding("slow-item")],
+        &[make_finding_critical("slow-item")],
         &[100], // slow-item starts queued
         None,
     );
