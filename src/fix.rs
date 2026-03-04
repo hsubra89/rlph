@@ -64,27 +64,15 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     // Clean up stale 🚀 reactions on already-resolved findings (best-effort)
     cleanup_stale_rockets(&items, &*submission);
 
-    // 2. Collect eligible queued items (respecting dependency ordering)
+    // 2. Build dependency graph and collect queued items for the scheduler
     let finding_deps = FindingDeps::build(&items);
-    let resolved = resolved_finding_ids(&items);
+    let queued_items: Vec<FixItem> = items
+        .iter()
+        .filter(|i| i.state == FindingState::Queued)
+        .cloned()
+        .collect();
 
-    let (eligible_refs, dep_blocked) = dep_eligible(
-        items.iter().filter(|i| i.state == FindingState::Queued),
-        &finding_deps,
-        &resolved,
-    );
-
-    if eligible_refs.is_empty() {
-        info!(dep_blocked, "no eligible items found — nothing to fix");
-        return Ok(());
-    }
-
-    info!(
-        count = eligible_refs.len(),
-        dep_blocked, "found eligible items for fix"
-    );
-
-    // 3. Pre-compute per-item data and run fixes sequentially
+    // 3. Pre-compute per-item data and run fixes via the scheduler
     let setup_script =
         resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?.map(Arc::from);
     let shared = SharedFixState::new(
@@ -97,37 +85,80 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     );
 
     let mut reply_map = collect_reply_bodies(&comments);
+    let mut completed: HashSet<String> = HashSet::new();
+    let mut failed: HashSet<String> = HashSet::new();
     let mut skipped: usize = 0;
     let mut errors = Vec::new();
+    let mut total_scheduled: usize = 0;
 
-    for item in &eligible_refs {
-        let item = (*item).clone();
+    loop {
+        let mut sched_completed = resolved_finding_ids(&items);
+        sched_completed.extend(completed.iter().map(String::as_str));
+        let sched_failed: HashSet<&str> = failed.iter().map(String::as_str).collect();
 
-        let Some(prepared) = prepare_fix_item(
-            item,
-            pr_number,
-            &shared.fix_config,
-            prompt_engine,
-            &mut reply_map,
-        ) else {
-            skipped += 1;
-            continue;
+        let finding_ids = match fix_scheduler::next_action(
+            &queued_items,
+            &finding_deps,
+            &sched_completed,
+            &sched_failed,
+        ) {
+            ScheduleAction::RunCritical(id) => vec![id],
+            ScheduleAction::RunBatch(ids) => ids,
+            ScheduleAction::Idle => break,
         };
 
-        if let Err(e) = run_prepared_fix(&shared, prepared, pr_number).await {
-            warn!(error = %e, "fix agent failed");
-            errors.push(e);
+        for finding_id in finding_ids {
+            total_scheduled += 1;
+
+            let Some(item) = queued_items
+                .iter()
+                .find(|i| i.finding.id == finding_id)
+                .cloned()
+            else {
+                warn!(%finding_id, "scheduler returned unknown finding ID, skipping");
+                failed.insert(finding_id);
+                skipped += 1;
+                continue;
+            };
+
+            let Some(prepared) = prepare_fix_item(
+                item,
+                pr_number,
+                &shared.fix_config,
+                prompt_engine,
+                &mut reply_map,
+            ) else {
+                skipped += 1;
+                failed.insert(finding_id);
+                continue;
+            };
+
+            match run_prepared_fix(&shared, prepared, pr_number).await {
+                Ok(()) => {
+                    completed.insert(finding_id);
+                }
+                Err(e) => {
+                    warn!(error = %e, "fix agent failed");
+                    errors.push(e);
+                    failed.insert(finding_id);
+                }
+            }
         }
     }
 
-    if skipped == eligible_refs.len() {
+    if total_scheduled == 0 {
+        info!("no eligible items found — nothing to fix");
+        return Ok(());
+    }
+
+    if skipped == total_scheduled {
         return Err(Error::Orchestrator(format!(
             "all {skipped} eligible fix item(s) were skipped due to validation errors"
         )));
     } else if skipped > 0 {
         warn!(
             skipped,
-            total = eligible_refs.len(),
+            total = total_scheduled,
             "some fix items were skipped due to validation errors"
         );
     }
@@ -419,31 +450,6 @@ pub fn fetch_and_parse_items(
         build_fix_items_from_review_comments(&comments, &collected),
         comments,
     ))
-}
-
-/// Filter pre-screened items through the dependency gate.
-///
-/// Accepts an iterator of items that already passed caller-specific checks
-/// (e.g. `Queued` state, not already in-flight). Returns the dep-eligible
-/// subset and a count of items held back by unmet dependencies.
-fn dep_eligible<'a>(
-    items: impl Iterator<Item = &'a FixItem>,
-    deps: &FindingDeps,
-    resolved: &HashSet<&str>,
-) -> (Vec<&'a FixItem>, usize) {
-    let mut eligible = Vec::new();
-    let mut dep_blocked: usize = 0;
-    for item in items {
-        if deps.in_cycle(&item.finding.id) {
-            continue; // already warned during FindingDeps::build
-        }
-        if !deps.deps_met(&item.finding.id, resolved) {
-            dep_blocked += 1;
-            continue;
-        }
-        eligible.push(item);
-    }
-    (eligible, dep_blocked)
 }
 
 /// Sleep for the poll duration, but return early if shutdown is requested.
