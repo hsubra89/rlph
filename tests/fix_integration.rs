@@ -202,43 +202,40 @@ impl SubmissionBackend for MockFixSubmission {
     }
 }
 
-/// No-op correction runner for tests.
-struct MockCorrectionRunner;
-
-impl CorrectionRunner for MockCorrectionRunner {
-    async fn resume(
-        &self,
-        _runner_type: RunnerKind,
-        _agent_binary: &str,
-        _model: Option<&str>,
-        _effort: Option<&str>,
-        _variant: Option<&str>,
-        _session_id: &str,
-        _correction_prompt: &str,
-        _working_dir: &Path,
-        _timeout: Option<std::time::Duration>,
-    ) -> Result<RunResult> {
-        Err(Error::AgentRunner("no-op correction runner".to_string()))
-    }
-}
-
-/// Correction runner for batch tests: creates a commit and returns valid fix JSON.
+/// Configurable mock correction runner for tests.
 ///
-/// Simulates the agent resuming a session with a new finding prompt —
-/// makes a real commit in the worktree so push succeeds.
-struct BatchMockCorrectionRunner {
+/// By default returns an error (no-op). Use `with_handler` to supply custom
+/// resume logic (e.g. for batch tests that need real commits).
+type ResumeHandler = Box<dyn Fn(&Path, usize) -> Result<RunResult> + Send + Sync>;
+
+struct MockCorrectionRunner {
+    handler: ResumeHandler,
     call_count: AtomicUsize,
 }
 
-impl BatchMockCorrectionRunner {
-    fn new() -> Self {
+impl MockCorrectionRunner {
+    /// No-op runner that always returns an error.
+    fn noop() -> Self {
         Self {
+            handler: Box::new(|_, _| {
+                Err(Error::AgentRunner("no-op correction runner".to_string()))
+            }),
+            call_count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Runner that delegates to the given handler, passing `(working_dir, call_index)`.
+    fn with_handler(
+        handler: impl Fn(&Path, usize) -> Result<RunResult> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            handler: Box::new(handler),
             call_count: AtomicUsize::new(0),
         }
     }
 }
 
-impl CorrectionRunner for BatchMockCorrectionRunner {
+impl CorrectionRunner for MockCorrectionRunner {
     async fn resume(
         &self,
         _runner_type: RunnerKind,
@@ -252,19 +249,7 @@ impl CorrectionRunner for BatchMockCorrectionRunner {
         _timeout: Option<std::time::Duration>,
     ) -> Result<RunResult> {
         let n = self.call_count.fetch_add(1, Ordering::SeqCst);
-        let filename = format!("batch-resume-{n}.txt");
-        let commit_msg = format!("fix: batch-resume-{n}");
-
-        std::fs::write(working_dir.join(&filename), "batch fix content").unwrap();
-        run_git(working_dir, &["add", "."]);
-        run_git(working_dir, &["commit", "-m", &commit_msg]);
-
-        Ok(RunResult {
-            exit_code: 0,
-            stdout: format!(r#"{{"status":"fixed","commit_message":"{commit_msg}"}}"#),
-            stderr: String::new(),
-            session_id: Some("mock-batch-session".to_string()),
-        })
+        (self.handler)(working_dir, n)
     }
 }
 
@@ -315,7 +300,7 @@ async fn test_parallel_fix_multiple_queued_items() {
     ];
 
     let submission = Arc::new(MockFixSubmission::new(comments, reactions));
-    let correction_runner = Arc::new(MockCorrectionRunner);
+    let correction_runner = Arc::new(MockCorrectionRunner::noop());
 
     let wt_dir = tempfile::TempDir::new().unwrap();
     let mut config = make_config();
@@ -366,7 +351,7 @@ async fn test_fix_no_queued_items() {
     let reactions = vec![no_reactions(100), no_reactions(101)];
 
     let submission = Arc::new(MockFixSubmission::new(comments, reactions));
-    let correction_runner = Arc::new(MockCorrectionRunner);
+    let correction_runner = Arc::new(MockCorrectionRunner::noop());
 
     let config = make_config();
 
@@ -400,7 +385,7 @@ async fn test_parallel_fix_worktrees_cleaned_up() {
     let reactions = vec![rocket_reactions(100), rocket_reactions(101)];
 
     let submission = Arc::new(MockFixSubmission::new(comments, reactions));
-    let correction_runner = Arc::new(MockCorrectionRunner);
+    let correction_runner = Arc::new(MockCorrectionRunner::noop());
 
     let wt_dir = tempfile::TempDir::new().unwrap();
     let mut config = make_config();
@@ -450,7 +435,7 @@ async fn test_fix_skips_already_fixed_items() {
     let reactions = vec![fixed_reactions(100), no_reactions(101)];
 
     let submission = Arc::new(MockFixSubmission::new(comments, reactions));
-    let correction_runner = Arc::new(MockCorrectionRunner);
+    let correction_runner = Arc::new(MockCorrectionRunner::noop());
 
     let config = make_config();
 
@@ -595,7 +580,7 @@ impl FixLoopFixture {
             reactions,
             deferred_rocket_comment_id,
         ));
-        let correction_runner = Arc::new(MockCorrectionRunner);
+        let correction_runner = Arc::new(MockCorrectionRunner::noop());
 
         let wt_dir = tempfile::TempDir::new().unwrap();
         let mut config = make_config();
@@ -853,7 +838,7 @@ async fn test_fix_loop_processes_criticals_then_batches_lower_severity() {
 
 /// Test full batch session reuse: all WARNING findings processed in one session.
 ///
-/// Uses `BatchMockCorrectionRunner` which creates real commits on resume,
+/// Uses `MockCorrectionRunner::with_handler` which creates real commits on resume,
 /// so all 3 findings complete successfully with commit/push/reaction per finding.
 #[tokio::test]
 async fn test_fix_loop_batch_full_session_reuse() {
@@ -878,7 +863,21 @@ async fn test_fix_loop_batch_full_session_reuse() {
     ];
 
     let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
-    let correction_runner = Arc::new(BatchMockCorrectionRunner::new());
+    let correction_runner = Arc::new(MockCorrectionRunner::with_handler(|working_dir, n| {
+        let filename = format!("batch-resume-{n}.txt");
+        let commit_msg = format!("fix: batch-resume-{n}");
+
+        std::fs::write(working_dir.join(&filename), "batch fix content").unwrap();
+        run_git(working_dir, &["add", "."]);
+        run_git(working_dir, &["commit", "-m", &commit_msg]);
+
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: format!(r#"{{"status":"fixed","commit_message":"{commit_msg}"}}"#),
+            stderr: String::new(),
+            session_id: Some("mock-batch-session".to_string()),
+        })
+    }));
 
     let wt_dir = tempfile::TempDir::new().unwrap();
     let mut config = make_config();
