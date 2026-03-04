@@ -313,7 +313,7 @@ pub(crate) fn detect_default_branch() -> String {
 }
 
 /// Run `gh` with the given arguments and return stdout on success.
-fn run_gh(args: &[&str], label: &str) -> Result<String> {
+fn run_gh(args: &[&str], label: impl std::fmt::Display) -> Result<String> {
     let output = Command::new("gh")
         .args(args)
         .output()
@@ -334,7 +334,13 @@ fn parse_gh_json<T: DeserializeOwned>(stdout: &str) -> Result<T> {
 }
 
 pub(crate) fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
-    let stdout = run_gh(&["api", endpoint], &format!("gh api {endpoint}"))?;
+    struct GhApiLabel<'a>(&'a str);
+    impl std::fmt::Display for GhApiLabel<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "gh api {}", self.0)
+        }
+    }
+    let stdout = run_gh(&["api", endpoint], GhApiLabel(endpoint))?;
     parse_gh_json(&stdout)
 }
 
