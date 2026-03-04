@@ -7,7 +7,7 @@ use tokio::sync::watch;
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
-use rlph::cli::{BuildArgs, Cli, CliCommand};
+use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
 use rlph::fix;
 use rlph::fix_comment::format_fix_items_for_display;
@@ -306,19 +306,9 @@ async fn main() {
             }
         }
         CliCommand::Prd {
-            ref description,
-            ref runner,
-            ref agent_binary,
-            ref agent_model,
+            ref description, ..
         } => {
-            let prd_build = BuildArgs {
-                runner: runner.clone(),
-                agent_binary: agent_binary.clone(),
-                agent_model: agent_model.clone(),
-                ..Default::default()
-            };
-
-            let cfg = match Config::load(&cli, Some(&prd_build)) {
+            let cfg = match Config::load(&cli, None) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("error: {e}");

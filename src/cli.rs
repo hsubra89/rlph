@@ -20,6 +20,22 @@ pub struct Cli {
     pub config: Option<String>,
 }
 
+/// Agent identity args shared by Build and Prd subcommands.
+#[derive(Args, Debug, Clone, Default)]
+pub struct AgentArgs {
+    /// Agent runner to use (claude, codex, opencode)
+    #[arg(long)]
+    pub runner: Option<String>,
+
+    /// Agent binary to use (default: claude)
+    #[arg(long)]
+    pub agent_binary: Option<String>,
+
+    /// Model for the agent to use (default for claude: claude-opus-4-6)
+    #[arg(long)]
+    pub agent_model: Option<String>,
+}
+
 #[derive(Args, Debug, Clone, Default)]
 pub struct BuildArgs {
     /// Run a single iteration then exit
@@ -38,9 +54,8 @@ pub struct BuildArgs {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Agent runner to use (claude, codex, opencode)
-    #[arg(long)]
-    pub runner: Option<String>,
+    #[command(flatten)]
+    pub agent: AgentArgs,
 
     /// Submission backend to use (github, graphite)
     #[arg(long)]
@@ -57,14 +72,6 @@ pub struct BuildArgs {
     /// Base branch for worktrees and PRs (default: main)
     #[arg(long)]
     pub base_branch: Option<String>,
-
-    /// Agent binary to use (default: claude)
-    #[arg(long)]
-    pub agent_binary: Option<String>,
-
-    /// Model for the agent to use (default for claude: claude-opus-4-6)
-    #[arg(long)]
-    pub agent_model: Option<String>,
 
     /// Agent timeout in seconds
     #[arg(long)]
@@ -91,6 +98,14 @@ impl Cli {
     pub fn build_args(&self) -> Option<&BuildArgs> {
         match &self.command {
             CliCommand::Build { args } => Some(args),
+            _ => None,
+        }
+    }
+
+    pub fn agent_args(&self) -> Option<&AgentArgs> {
+        match &self.command {
+            CliCommand::Build { args } => Some(&args.agent),
+            CliCommand::Prd { agent, .. } => Some(agent),
             _ => None,
         }
     }
@@ -128,17 +143,8 @@ pub enum CliCommand {
         /// Seed description for the PRD (optional)
         description: Option<String>,
 
-        /// Agent runner to use (claude, codex)
-        #[arg(long)]
-        runner: Option<String>,
-
-        /// Agent binary to use
-        #[arg(long)]
-        agent_binary: Option<String>,
-
-        /// Model for the agent to use
-        #[arg(long)]
-        agent_model: Option<String>,
+        #[command(flatten)]
+        agent: AgentArgs,
     },
 }
 
@@ -204,7 +210,7 @@ mod tests {
         ]);
         match cli.command {
             CliCommand::Build { args } => {
-                assert_eq!(args.runner.as_deref(), Some("codex"));
+                assert_eq!(args.agent.runner.as_deref(), Some("codex"));
                 assert_eq!(args.submission.as_deref(), Some("graphite"));
                 assert_eq!(args.poll_seconds, Some(30));
                 assert_eq!(args.worktree_dir.as_deref(), Some("/tmp/wt"));
@@ -301,11 +307,10 @@ mod tests {
         match cli.command {
             CliCommand::Prd {
                 description,
-                runner,
-                ..
+                ref agent,
             } => {
                 assert_eq!(description.as_deref(), Some("my feature"));
-                assert_eq!(runner.as_deref(), Some("codex"));
+                assert_eq!(agent.runner.as_deref(), Some("codex"));
             }
             _ => panic!("expected Prd subcommand"),
         }
