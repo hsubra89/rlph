@@ -989,22 +989,25 @@ async fn apply_fix_output<C: CorrectionRunner + ?Sized>(
         StandaloneFixOutput::Fixed { commit_message } => {
             eprintln!("[rlph] Fix applied — rebasing and pushing: {finding_id}");
             info!(%finding_id, commit_message, "fix applied — rebasing and pushing");
-            match push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await {
-                Ok(()) => Ok(FixResultKind::Fixed { commit_message }),
-                Err(Error::RebaseConflict { .. }) if session_id.is_some() => {
+            match (
+                push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await,
+                session_id,
+            ) {
+                (Ok(()), _) => Ok(FixResultKind::Fixed { commit_message }),
+                (Err(Error::RebaseConflict { .. }), Some(sid)) => {
                     eprintln!("[rlph] Rebase conflict — resuming agent to resolve: {finding_id}");
                     resolve_conflict_and_push(
                         worktree_path,
                         fix_branch,
                         pr_branch,
-                        session_id.unwrap(),
+                        sid,
                         fix_config,
                         correction_runner,
                     )
                     .await?;
                     Ok(FixResultKind::Fixed { commit_message })
                 }
-                Err(e) => Err(e),
+                (Err(e), _) => Err(e),
             }
         }
         StandaloneFixOutput::WontFix { reason } => {
