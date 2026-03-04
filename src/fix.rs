@@ -934,9 +934,11 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 &worktree_path,
                 &batch_branch,
                 &shared.pr_branch,
-                session_id.as_deref(),
-                &shared.fix_config,
-                &*shared.correction_runner,
+                &ConflictResolutionCtx {
+                    session_id: session_id.as_deref(),
+                    fix_config: &shared.fix_config,
+                    correction_runner: &*shared.correction_runner,
+                },
             )
             .await
             {
@@ -973,17 +975,21 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     (completed_ids, error)
 }
 
+/// Params only needed for the conflict-resolution branch in [`apply_fix_output`].
+struct ConflictResolutionCtx<'a, C: ?Sized> {
+    session_id: Option<&'a str>,
+    fix_config: &'a ReviewStepConfig,
+    correction_runner: &'a C,
+}
+
 /// Map agent output to a fix result, pushing to the PR branch if the fix was applied.
-#[allow(clippy::too_many_arguments)]
 async fn apply_fix_output<C: CorrectionRunner + ?Sized>(
     fix_output: StandaloneFixOutput,
     finding_id: &str,
     worktree_path: &Path,
     fix_branch: &str,
     pr_branch: &str,
-    session_id: Option<&str>,
-    fix_config: &ReviewStepConfig,
-    correction_runner: &C,
+    conflict_ctx: &ConflictResolutionCtx<'_, C>,
 ) -> Result<FixResultKind> {
     match fix_output {
         StandaloneFixOutput::Fixed { commit_message } => {
@@ -991,7 +997,7 @@ async fn apply_fix_output<C: CorrectionRunner + ?Sized>(
             info!(%finding_id, commit_message, "fix applied — rebasing and pushing");
             match (
                 push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await,
-                session_id,
+                conflict_ctx.session_id,
             ) {
                 (Ok(()), _) => Ok(FixResultKind::Fixed { commit_message }),
                 (Err(Error::RebaseConflict { .. }), Some(sid)) => {
@@ -1001,8 +1007,8 @@ async fn apply_fix_output<C: CorrectionRunner + ?Sized>(
                         fix_branch,
                         pr_branch,
                         sid,
-                        fix_config,
-                        correction_runner,
+                        conflict_ctx.fix_config,
+                        conflict_ctx.correction_runner,
                     )
                     .await?;
                     Ok(FixResultKind::Fixed { commit_message })
@@ -1118,9 +1124,11 @@ async fn run_fix_agent_and_apply(
         worktree_path,
         ctx.fix_branch,
         ctx.pr_branch,
-        run_result.session_id.as_deref(),
-        ctx.fix_config,
-        correction_runner,
+        &ConflictResolutionCtx {
+            session_id: run_result.session_id.as_deref(),
+            fix_config: ctx.fix_config,
+            correction_runner,
+        },
     )
     .await?;
 
