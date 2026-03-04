@@ -805,7 +805,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     shared: &SharedFixState<S, C>,
     prepared_items: Vec<PreparedFixItem>,
     pr_number: u64,
-) -> (HashSet<String>, Option<(String, crate::error::Error)>) {
+) -> (HashSet<String>, Option<(String, Error)>) {
     let batch_size = prepared_items.len();
     let mut completed_ids = HashSet::new();
 
