@@ -1067,6 +1067,9 @@ async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
             {
                 Ok(_) => {
                     // Agent should have completed rebase. Push with retry.
+                    // If this push hits another RebaseConflict we intentionally
+                    // propagate the error rather than resuming the agent again
+                    // to avoid an infinite conflict-resolution loop.
                     push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await
                 }
                 Err(e) => {
