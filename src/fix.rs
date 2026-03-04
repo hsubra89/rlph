@@ -734,6 +734,29 @@ fn prepare_fix_item(
     })
 }
 
+/// Re-fetch a review comment and append formatted review context to the prompt.
+///
+/// Warns and continues without context on fetch failure.
+fn append_review_context(
+    submission: &dyn SubmissionBackend,
+    comment_id: u64,
+    replies: &[String],
+    prompt: &mut String,
+) {
+    match submission.fetch_review_comment_by_id(comment_id) {
+        Ok(comment) => {
+            prompt.push_str(&format_review_context(&comment.body, replies));
+        }
+        Err(e) => {
+            warn!(
+                comment_id,
+                error = %e,
+                "failed to re-fetch review comment body, proceeding without review context"
+            );
+        }
+    }
+}
+
 /// Build [`FixContext`] and run a single fix.
 ///
 /// Shared by both [`run_fix`] (one-shot) and [`run_fix_loop`] (polling).
@@ -750,19 +773,7 @@ async fn run_prepared_fix<S: SubmissionBackend, C: CorrectionRunner>(
         replies,
     } = prepared;
 
-    // Re-fetch the comment body at execution time for the freshest content
-    match shared.submission.fetch_review_comment_by_id(comment_id) {
-        Ok(comment) => {
-            prompt.push_str(&format_review_context(&comment.body, &replies));
-        }
-        Err(e) => {
-            warn!(
-                comment_id,
-                error = %e,
-                "failed to re-fetch review comment body, proceeding without review context"
-            );
-        }
-    }
+    append_review_context(&*shared.submission, comment_id, &replies, &mut prompt);
 
     let ctx = FixContext {
         item,
@@ -853,18 +864,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             );
 
             // Append review context (re-fetch comment for freshness)
-            match shared.submission.fetch_review_comment_by_id(comment_id) {
-                Ok(comment) => {
-                    prompt.push_str(&format_review_context(&comment.body, &replies));
-                }
-                Err(e) => {
-                    warn!(
-                        comment_id,
-                        error = %e,
-                        "failed to re-fetch review comment body, proceeding without review context"
-                    );
-                }
-            }
+            append_review_context(&*shared.submission, comment_id, &replies, &mut prompt);
 
             // Run agent (first finding) or resume session (subsequent findings)
             let run_result = if idx == 0 {
