@@ -833,7 +833,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 %finding_id,
                 position,
                 batch_size,
-                "Batch session: fixing finding ({position} of {batch_size})"
+                "batch session: fixing finding ({position} of {batch_size})"
             );
 
             // Append review context (re-fetch comment for freshness)
