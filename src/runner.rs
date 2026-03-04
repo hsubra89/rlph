@@ -290,8 +290,13 @@ fn format_claude_line(
     if event_type != "assistant" {
         return (false, context_pct);
     }
-    // Compute possibly-updated context usage percentage from this event.
-    let context_pct = extract_context_pct(&val, DEFAULT_CONTEXT_WINDOW).or(context_pct);
+    // Only update context % from root agent events (parent_tool_use_id absent or null).
+    let is_subagent = val.get("parent_tool_use_id").is_some_and(|v| !v.is_null());
+    let context_pct = if is_subagent {
+        context_pct
+    } else {
+        extract_context_pct(&val, DEFAULT_CONTEXT_WINDOW).or(context_pct)
+    };
     let pct_tag = format_pct_tag(context_pct);
     let Some(content) = val.pointer("/message/content").and_then(|v| v.as_array()) else {
         return (false, context_pct);
@@ -958,7 +963,7 @@ fn format_codex_line(
     let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
         return (false, context_pct);
     };
-    let pct_tag = || format_pct_tag(context_pct);
+    let pct_tag = format_pct_tag(context_pct);
     match event_type {
         "turn.completed" => {
             let context_pct =
@@ -972,7 +977,6 @@ fn format_codex_line(
             let Some(item_type) = item.get("type").and_then(|v| v.as_str()) else {
                 return (false, context_pct);
             };
-            let pct_tag = pct_tag();
             match item_type {
                 "agent_message" => {
                     if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
@@ -1007,7 +1011,6 @@ fn format_codex_line(
             if item.get("type").and_then(|v| v.as_str()) == Some("command_execution")
                 && let Some(cmd) = item.get("command").and_then(|v| v.as_str())
             {
-                let pct_tag = pct_tag();
                 for cmd_line in cmd.lines() {
                     let _ = writeln!(sink, "[{prefix}{pct_tag}] {ICON_PLAY} {cmd_line}");
                 }
@@ -2176,5 +2179,44 @@ mod tests {
             ],
         );
         assert_eq!(out, "[impl 10%] a\n[impl 50%] b\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_subagent_does_not_update_context_pct() {
+        // Root event sets 10%, sub-agent event has 90% usage — displayed % stays 10%.
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"root"}],"usage":{"input_tokens":20000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+                r#"{"type":"assistant","parent_tool_use_id":"toolu_abc123","message":{"content":[{"type":"text","text":"sub"}],"usage":{"input_tokens":180000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 10%] root\n[impl 10%] sub\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_root_after_subagent_updates_normally() {
+        // root → sub-agent → root: final root event updates context % normally.
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":20000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+                r#"{"type":"assistant","parent_tool_use_id":"toolu_abc","message":{"content":[{"type":"text","text":"b"}],"usage":{"input_tokens":180000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"c"}],"usage":{"input_tokens":100000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 10%] a\n[impl 10%] b\n[impl 50%] c\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_subagent_null_parent_updates_pct() {
+        // parent_tool_use_id: null is treated as root agent.
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":100000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 50%] a\n");
     }
 }
