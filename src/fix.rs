@@ -455,8 +455,8 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                 for id in &batch_completed {
                     eprintln!("[rlph] Batch finding completed successfully: {id}");
                     info!(%id, "batch finding completed successfully");
-                    completed.insert(id.clone());
                 }
+                completed.extend(batch_completed);
 
                 if let Some((failed_id, e)) = batch_error {
                     eprintln!("[rlph] Batch finding failed: {failed_id}: {e}");
@@ -795,9 +795,9 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     shared: &SharedFixState<S, C>,
     prepared_items: Vec<PreparedFixItem>,
     pr_number: u64,
-) -> (Vec<String>, Option<(String, crate::error::Error)>) {
+) -> (HashSet<String>, Option<(String, crate::error::Error)>) {
     let batch_size = prepared_items.len();
-    let mut completed_ids = Vec::new();
+    let mut completed_ids = HashSet::new();
 
     if prepared_items.is_empty() {
         return (completed_ids, None);
@@ -956,7 +956,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             };
             update_reactions_and_reply(&ctx, &*shared.submission, &fix_result);
 
-            completed_ids.push(finding_id);
+            completed_ids.insert(finding_id);
         }
         None // all findings completed successfully
     };
