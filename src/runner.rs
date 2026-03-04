@@ -1996,12 +1996,12 @@ mod tests {
 
     #[test]
     fn test_codex_formatter_context_pct_with_cached() {
-        // input_tokens already includes cached_input_tokens, so total = input + output only.
-        // 20000 + 50000 = 70000 / 200000 = 35%
+        // cached_input_tokens is a subset of input_tokens, so cached <= input.
+        // total = input + output = 20000 + 50000 = 70000 / 200000 = 35%
         let out = run_codex_formatter(
             "impl",
             &[
-                r#"{"type":"turn.completed","usage":{"input_tokens":20000,"cached_input_tokens":30000,"output_tokens":50000}}"#,
+                r#"{"type":"turn.completed","usage":{"input_tokens":20000,"cached_input_tokens":15000,"output_tokens":50000}}"#,
                 r#"{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}"#,
             ],
         );
