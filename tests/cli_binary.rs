@@ -52,6 +52,7 @@ fn bare_rlph_requires_mode() {
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
+        .arg("build")
         .assert()
         .failure()
         .code(1)
@@ -67,7 +68,7 @@ fn once_and_continuous_conflict() {
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
-        .args(["--once", "--continuous"])
+        .args(["build", "--once", "--continuous"])
         .assert()
         .failure()
         .code(2)
@@ -115,7 +116,7 @@ fn unknown_source_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
-        .args(["--once", "--source", "jira"])
+        .args(["build", "--once", "--source", "jira"])
         .assert()
         .failure()
         .code(1)
@@ -127,7 +128,7 @@ fn unknown_runner_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
-        .args(["--once", "--runner", "foo"])
+        .args(["build", "--once", "--runner", "foo"])
         .assert()
         .failure()
         .code(1)
@@ -139,7 +140,7 @@ fn unknown_submission_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
-        .args(["--once", "--submission", "gitlab"])
+        .args(["build", "--once", "--submission", "gitlab"])
         .assert()
         .failure()
         .code(1)
@@ -151,7 +152,7 @@ fn zero_poll_seconds_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
-        .args(["--once", "--poll-seconds", "0"])
+        .args(["build", "--once", "--poll-seconds", "0"])
         .assert()
         .failure()
         .code(1)
@@ -165,7 +166,7 @@ fn config_file_not_found() {
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
-        .args(["--once", "--config", "/nonexistent.toml"])
+        .args(["build", "--once", "--config", "/nonexistent.toml"])
         .assert()
         .failure()
         .code(1)
@@ -180,7 +181,7 @@ fn invalid_toml_config() {
     fs::write(cfg_dir.join("config.toml"), "not valid {{{{ toml").unwrap();
     cmd()
         .current_dir(&tmp)
-        .arg("--once")
+        .args(["build", "--once"])
         .assert()
         .failure()
         .code(1)
