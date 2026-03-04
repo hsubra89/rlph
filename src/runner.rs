@@ -237,6 +237,17 @@ const ICON_PLAY: &str = "▶";
 /// Default context window size for Claude and Codex runners.
 const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 
+/// Convert a raw token total into a context-window percentage (0–100).
+///
+/// Returns `None` when `total` is zero.
+fn token_pct(total: u64, context_window: u64) -> Option<f64> {
+    if total == 0 {
+        return None;
+    }
+    let pct = total as f64 / context_window as f64 * 100.0;
+    Some(pct.min(100.0))
+}
+
 /// Extract context usage percentage from an assistant event's `message.usage`.
 ///
 /// Computes (input_tokens + cache_creation_input_tokens + cache_read_input_tokens
@@ -244,16 +255,11 @@ const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 fn extract_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f64> {
     let usage = val.pointer("/message/usage")?;
     let tok = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-    let input = tok("input_tokens");
-    let cache_create = tok("cache_creation_input_tokens");
-    let cache_read = tok("cache_read_input_tokens");
-    let output = tok("output_tokens");
-    let total = input + cache_create + cache_read + output;
-    if total == 0 {
-        return None;
-    }
-    let pct = total as f64 / context_window as f64 * 100.0;
-    Some(pct.min(100.0))
+    let total = tok("input_tokens")
+        + tok("cache_creation_input_tokens")
+        + tok("cache_read_input_tokens")
+        + tok("output_tokens");
+    token_pct(total, context_window)
 }
 
 /// Format a single Claude stream-json event line and write the result to `sink`.
@@ -919,11 +925,7 @@ fn extract_codex_context_pct(val: &serde_json::Value, context_window: u64) -> Op
     let usage = val.get("usage")?;
     let tok = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
     let total = tok("input_tokens") + tok("output_tokens");
-    if total == 0 {
-        return None;
-    }
-    let pct = total as f64 / context_window as f64 * 100.0;
-    Some(pct.min(100.0))
+    token_pct(total, context_window)
 }
 
 /// Format a single Codex JSON event line and write the result to `sink`.
