@@ -816,7 +816,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
 
     // Run each finding sequentially, sharing the session
     let mut session_id: Option<String> = None;
-    let error: Option<crate::error::Error> = 'batch: {
+    let error: Option<Error> = 'batch: {
         for (idx, prepared) in prepared_items.into_iter().enumerate() {
             let PreparedFixItem {
                 item,
