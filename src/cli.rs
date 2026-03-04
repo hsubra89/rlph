@@ -132,14 +132,6 @@ pub enum CliCommand {
         #[arg(long)]
         runner: Option<String>,
 
-        /// Task source to use (github, linear)
-        #[arg(long)]
-        source: Option<String>,
-
-        /// Path to config file
-        #[arg(long)]
-        config: Option<String>,
-
         /// Agent binary to use
         #[arg(long)]
         agent_binary: Option<String>,
@@ -310,15 +302,14 @@ mod tests {
             CliCommand::Prd {
                 description,
                 runner,
-                source,
                 ..
             } => {
                 assert_eq!(description.as_deref(), Some("my feature"));
                 assert_eq!(runner.as_deref(), Some("codex"));
-                assert_eq!(source.as_deref(), Some("linear"));
             }
             _ => panic!("expected Prd subcommand"),
         }
+        assert_eq!(cli.source.as_deref(), Some("linear"));
     }
 
     #[test]

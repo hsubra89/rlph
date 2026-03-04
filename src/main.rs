@@ -308,19 +308,9 @@ async fn main() {
         CliCommand::Prd {
             ref description,
             ref runner,
-            ref source,
-            ref config,
             ref agent_binary,
             ref agent_model,
         } => {
-            let mut prd_cli = cli.clone();
-            if let Some(s) = source {
-                prd_cli.source = Some(s.clone());
-            }
-            if let Some(c) = config {
-                prd_cli.config = Some(c.clone());
-            }
-
             let prd_build = BuildArgs {
                 runner: runner.clone(),
                 agent_binary: agent_binary.clone(),
@@ -328,7 +318,7 @@ async fn main() {
                 ..Default::default()
             };
 
-            let cfg = match Config::load(&prd_cli, Some(&prd_build)) {
+            let cfg = match Config::load(&cli, Some(&prd_build)) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("error: {e}");
