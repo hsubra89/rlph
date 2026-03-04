@@ -222,17 +222,64 @@ impl CorrectionRunner for MockCorrectionRunner {
     }
 }
 
+/// Correction runner for batch tests: creates a commit and returns valid fix JSON.
+///
+/// Simulates the agent resuming a session with a new finding prompt —
+/// makes a real commit in the worktree so push succeeds.
+struct BatchMockCorrectionRunner {
+    call_count: AtomicUsize,
+}
+
+impl BatchMockCorrectionRunner {
+    fn new() -> Self {
+        Self {
+            call_count: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl CorrectionRunner for BatchMockCorrectionRunner {
+    async fn resume(
+        &self,
+        _runner_type: RunnerKind,
+        _agent_binary: &str,
+        _model: Option<&str>,
+        _effort: Option<&str>,
+        _variant: Option<&str>,
+        _session_id: &str,
+        _correction_prompt: &str,
+        working_dir: &Path,
+        _timeout: Option<std::time::Duration>,
+    ) -> Result<RunResult> {
+        let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+        let filename = format!("batch-resume-{n}.txt");
+        let commit_msg = format!("fix: batch-resume-{n}");
+
+        std::fs::write(working_dir.join(&filename), "batch fix content").unwrap();
+        run_git(working_dir, &["add", "."]);
+        run_git(working_dir, &["commit", "-m", &commit_msg]);
+
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: format!(r#"{{"status":"fixed","commit_message":"{commit_msg}"}}"#),
+            stderr: String::new(),
+            session_id: Some("mock-batch-session".to_string()),
+        })
+    }
+}
+
 // --- Tests ---
 
 /// Create a mock agent script that makes a commit and outputs fix JSON.
 fn create_mock_agent_script(dir: &Path) -> String {
     let script_path = dir.join("mock-fix-agent.sh");
     let script = r#"#!/bin/bash
-# Mock fix agent: creates a file, commits it, outputs fix result
+# Mock fix agent: creates a file, commits it, outputs fix result with session_id
 ID="$$-$RANDOM"
 echo "fix-$ID" > "fix-$ID.txt"
 git add .
 git commit -m "fix: applied-$ID" 2>/dev/null
+echo "{\"session_id\":\"mock-session-$ID\"}"
 echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit_message\\\":\\\"fix: applied-$ID\\\"}\"}"
 "#;
     std::fs::write(&script_path, script).unwrap();
@@ -722,9 +769,12 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit
     );
 }
 
-/// Test that `run_fix_loop` gracefully handles WARNING-only findings (RunBatch path).
+/// Test that `run_fix_loop` processes WARNING findings via RunBatch.
+///
+/// With the no-op correction runner, only the first finding in the batch
+/// succeeds (via runner.run()); the second fails on session resume.
 #[tokio::test]
-async fn test_fix_loop_handles_warning_findings_gracefully() {
+async fn test_fix_loop_handles_warning_findings_via_batch() {
     let mut f = FixLoopFixture::new(
         &[make_finding("warn-a"), make_finding("warn-b")],
         &[100, 101], // both queued
@@ -734,11 +784,11 @@ async fn test_fix_loop_handles_warning_findings_gracefully() {
     let submission = Arc::clone(&f.submission);
     let shutdown_tx = f.take_shutdown_tx();
     let shutdown_handle = tokio::spawn(async move {
-        // Wait for at least 2 poll cycles to confirm loop doesn't crash
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let fetches = submission.fetch_count.load(Ordering::SeqCst);
-            if fetches >= 2 {
+            // After first batch item processed and at least 2 poll cycles
+            if submission.reply_count() >= 1 && fetches >= 2 {
                 let _ = shutdown_tx.send(true);
                 return;
             }
@@ -750,17 +800,20 @@ async fn test_fix_loop_handles_warning_findings_gracefully() {
 
     assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
 
-    // RunBatch path warns and breaks — no replies expected
+    // First batch finding succeeds; second fails on correction_runner.resume()
     assert_eq!(
         f.submission.reply_count(),
-        0,
-        "WARNING findings should be skipped (RunBatch not yet implemented)"
+        1,
+        "first batch finding should be fixed, second fails on session resume"
     );
 }
 
-/// Test that `run_fix_loop` processes CRITICAL findings and gracefully skips WARNING/INFO.
+/// Test that `run_fix_loop` processes CRITICAL first, then batches WARNING/INFO.
+///
+/// With no-op correction runner: CRITICAL runs solo, then batch starts with
+/// the first WARNING/INFO (succeeds), second fails on session resume.
 #[tokio::test]
-async fn test_fix_loop_processes_criticals_skips_lower_severity() {
+async fn test_fix_loop_processes_criticals_then_batches_lower_severity() {
     let mut f = FixLoopFixture::new(
         &[
             make_finding_critical("crit-item"),
@@ -777,8 +830,8 @@ async fn test_fix_loop_processes_criticals_skips_lower_severity() {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let fetches = submission.fetch_count.load(Ordering::SeqCst);
-            // After critical is fixed (1 reply) and at least 2 poll cycles
-            if submission.reply_count() >= 1 && fetches >= 2 {
+            // CRITICAL (1 reply) + first batch item (1 reply) = 2; wait for 2 poll cycles
+            if submission.reply_count() >= 2 && fetches >= 2 {
                 let _ = shutdown_tx.send(true);
                 return;
             }
@@ -790,10 +843,141 @@ async fn test_fix_loop_processes_criticals_skips_lower_severity() {
 
     assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
 
-    // Only the CRITICAL finding should have been processed
+    // CRITICAL processed solo + first batch finding succeeds
     assert_eq!(
         f.submission.reply_count(),
-        1,
-        "only CRITICAL finding should be fixed (WARNING/INFO skipped via RunBatch)"
+        2,
+        "CRITICAL + first batch finding should be fixed"
+    );
+}
+
+/// Test full batch session reuse: all WARNING findings processed in one session.
+///
+/// Uses `BatchMockCorrectionRunner` which creates real commits on resume,
+/// so all 3 findings complete successfully with commit/push/reaction per finding.
+#[tokio::test]
+async fn test_fix_loop_batch_full_session_reuse() {
+    let (_bare_dir, repo_dir) = setup_git_repo();
+    let repo_root = repo_dir.path();
+
+    let pr_branch = "feature/batch-session-test";
+    create_pr_branch(repo_root, pr_branch);
+
+    let agent_script = create_mock_agent_script(repo_root);
+
+    let findings = vec![
+        make_finding("warn-a"),
+        make_finding("warn-b"),
+        make_finding("warn-c"),
+    ];
+    let comments = make_review_comments(&findings);
+    let reactions = vec![
+        rocket_reactions(100),
+        rocket_reactions(101),
+        rocket_reactions(102),
+    ];
+
+    let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
+    let correction_runner = Arc::new(BatchMockCorrectionRunner::new());
+
+    let wt_dir = tempfile::TempDir::new().unwrap();
+    let mut config = make_config();
+    config.fix = make_fix_step_config(agent_script);
+    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    config.poll_seconds = 1;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let sub_clone = Arc::clone(&submission);
+    let shutdown_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if sub_clone.reply_count() >= 3 {
+                let _ = shutdown_tx.send(true);
+                return;
+            }
+        }
+    });
+
+    let result = run_fix_loop(
+        42,
+        pr_branch,
+        &config,
+        Arc::clone(&submission),
+        &rlph::prompts::PromptEngine::new(None),
+        repo_root,
+        correction_runner,
+        shutdown_rx,
+    )
+    .await;
+
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // All 3 findings should have been processed in a single batch session
+    assert_eq!(
+        submission.reply_count(),
+        3,
+        "expected 3 replies (one per finding in batch)"
+    );
+
+    // All reactions should be "+1" (fixed)
+    for (_, reaction) in submission.base.added_reactions() {
+        assert_eq!(reaction, "+1");
+    }
+
+    // 3 rocket reactions should have been removed (one per finding)
+    assert_eq!(
+        submission.base.deleted_reaction_count(),
+        3,
+        "expected 3 🚀 reactions removed"
+    );
+}
+
+/// Test that batch abort leaves remaining findings as Queued for next poll.
+///
+/// 3 WARNING findings batched. First succeeds, second fails on correction
+/// resume (no-op runner), third is never attempted. On the next poll cycle,
+/// the third finding is picked up as a new single-element batch.
+#[tokio::test]
+async fn test_fix_loop_batch_abort_remaining_picked_up_next_poll() {
+    let mut f = FixLoopFixture::new(
+        &[
+            make_finding("warn-a"),
+            make_finding("warn-b"),
+            make_finding("warn-c"),
+        ],
+        &[100, 101, 102], // all queued
+        None,
+    );
+
+    let submission = Arc::clone(&f.submission);
+    let shutdown_tx = f.take_shutdown_tx();
+    let shutdown_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let fetches = submission.fetch_count.load(Ordering::SeqCst);
+            // After first batch (1 reply) + second batch picks up remaining (1 reply)
+            // and multiple poll cycles
+            if submission.reply_count() >= 2 && fetches >= 3 {
+                let _ = shutdown_tx.send(true);
+                return;
+            }
+        }
+    });
+
+    let result = f.run().await;
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // First batch: warn-a succeeds, warn-b fails (correction runner error)
+    // Second batch (next poll): warn-c runs as single-element batch, succeeds
+    // warn-b stays failed
+    assert_eq!(
+        f.submission.reply_count(),
+        2,
+        "warn-a + warn-c should be fixed (warn-b failed on correction resume)"
     );
 }

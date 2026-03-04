@@ -395,9 +395,74 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                     }
                 }
             }
-            ScheduleAction::RunBatch(_) => {
-                warn!("RunBatch not yet implemented, skipping batch findings for now");
-                break;
+            ScheduleAction::RunBatch(finding_ids) => {
+                let batch_size = finding_ids.len();
+                info!(
+                    batch_size,
+                    ?finding_ids,
+                    "Batch processing mode: scheduling session"
+                );
+
+                // Prepare all items, skipping any that fail validation
+                let mut prepared_items = Vec::with_capacity(batch_size);
+                for finding_id in &finding_ids {
+                    let Some(item) = queued_items
+                        .iter()
+                        .find(|i| i.finding.id == *finding_id)
+                        .cloned()
+                    else {
+                        warn!(%finding_id, "scheduler returned unknown finding ID, marking as failed");
+                        failed.insert(finding_id.clone());
+                        continue;
+                    };
+
+                    match prepare_fix_item(
+                        item,
+                        pr_number,
+                        &shared.fix_config,
+                        prompt_engine,
+                        reply_map,
+                    ) {
+                        Some(prepared) => prepared_items.push(prepared),
+                        None => {
+                            failed.insert(finding_id.clone());
+                        }
+                    }
+                }
+
+                if prepared_items.is_empty() {
+                    warn!("all batch items failed preparation, skipping batch");
+                    continue;
+                }
+
+                let batch_finding_ids: Vec<String> = prepared_items
+                    .iter()
+                    .map(|p| p.item.finding.id.clone())
+                    .collect();
+
+                let (batch_completed, batch_error) =
+                    run_batch_fix(shared, prepared_items, pr_number).await;
+
+                for id in &batch_completed {
+                    info!(%id, "batch finding completed successfully");
+                    completed.insert(id.clone());
+                }
+
+                if let Some(e) = batch_error {
+                    // Mark the first non-completed finding as failed; remaining
+                    // stay Queued and are eligible for pickup on the next poll.
+                    if let Some(failed_id) = batch_finding_ids
+                        .iter()
+                        .find(|id| !batch_completed.contains(id))
+                    {
+                        warn!(
+                            finding_id = %failed_id,
+                            error = %e,
+                            "batch finding failed, remaining items left as Queued"
+                        );
+                        failed.insert(failed_id.clone());
+                    }
+                }
             }
             ScheduleAction::Idle => {
                 break;
@@ -701,6 +766,200 @@ async fn run_prepared_fix<S: SubmissionBackend, C: CorrectionRunner>(
         shared.setup_script.as_deref(),
     )
     .await
+}
+
+/// Run a batch of WARNING/INFO findings in a single shared agent session.
+///
+/// Creates one worktree and one agent session. The first finding starts the
+/// session normally; subsequent findings are fed via `resume_with_correction`
+/// using the session ID from the previous run. Each finding gets its own
+/// commit/push/reaction cycle. Aborts on the first failure.
+///
+/// Returns `(completed_finding_ids, optional_error)`.
+async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
+    shared: &SharedFixState<S, C>,
+    prepared_items: Vec<PreparedFixItem>,
+    pr_number: u64,
+) -> (Vec<String>, Option<crate::error::Error>) {
+    let batch_size = prepared_items.len();
+    let mut completed_ids: Vec<String> = Vec::new();
+
+    // Use the first item's fix_branch as the worktree branch for the whole batch
+    let batch_branch = prepared_items[0].fix_branch.clone();
+
+    // Create a single worktree for the batch
+    let wm = WorktreeManager::new(
+        shared.repo_root.to_path_buf(),
+        shared.repo_root.join(&*shared.worktree_dir),
+        shared.pr_branch.to_string(),
+    )
+    .with_setup_script(shared.setup_script.as_deref().map(Path::to_path_buf));
+
+    let worktree_path = match wm.create_fresh(&batch_branch, &shared.pr_branch) {
+        Ok(info) => info.path,
+        Err(e) => return (completed_ids, Some(e)),
+    };
+
+    info!(
+        batch_size,
+        branch = %batch_branch,
+        path = %worktree_path.display(),
+        "created batch worktree"
+    );
+
+    // Build runner for the initial agent invocation
+    let runner = build_runner(
+        shared.fix_config.runner,
+        &shared.fix_config.agent_binary,
+        shared.fix_config.agent_model.as_deref(),
+        shared.fix_config.agent_effort.as_deref(),
+        shared.fix_config.agent_variant.as_deref(),
+        shared.fix_config.agent_timeout.map(Duration::from_secs),
+        shared.agent_timeout_retries,
+    )
+    .with_stream_prefix("fix".to_string());
+
+    // Run each finding sequentially, sharing the session
+    let mut session_id: Option<String> = None;
+    let error: Option<crate::error::Error> = 'batch: {
+        for (idx, prepared) in prepared_items.into_iter().enumerate() {
+            let PreparedFixItem {
+                item,
+                fix_branch: _,
+                mut prompt,
+                comment_id,
+                replies,
+            } = prepared;
+
+            let finding_id = item.finding.id.clone();
+            let position = idx + 1;
+
+            info!(
+                %finding_id,
+                position,
+                batch_size,
+                "Batch session: fixing finding ({position} of {batch_size})"
+            );
+
+            // Append review context (re-fetch comment for freshness)
+            match shared.submission.fetch_review_comment_by_id(comment_id) {
+                Ok(comment) => {
+                    prompt.push_str(&format_review_context(&comment.body, &replies));
+                }
+                Err(e) => {
+                    warn!(
+                        comment_id,
+                        error = %e,
+                        "failed to re-fetch review comment body, proceeding without review context"
+                    );
+                }
+            }
+
+            // Run agent (first finding) or resume session (subsequent findings)
+            let run_result = if idx == 0 {
+                info!(%finding_id, "spawning batch fix agent");
+                runner.run(Phase::Fix, &prompt, &worktree_path).await
+            } else {
+                let Some(ref sid) = session_id else {
+                    let err = Error::Orchestrator(
+                        "no session_id from previous finding, cannot resume batch".into(),
+                    );
+                    warn!(%finding_id, %err, "batch abort");
+                    break 'batch Some(err);
+                };
+                info!(%finding_id, session_id = %sid, "resuming batch session");
+                shared
+                    .correction_runner
+                    .resume(
+                        shared.fix_config.runner,
+                        &shared.fix_config.agent_binary,
+                        shared.fix_config.agent_model.as_deref(),
+                        shared.fix_config.agent_effort.as_deref(),
+                        shared.fix_config.agent_variant.as_deref(),
+                        sid,
+                        &prompt,
+                        &worktree_path,
+                        shared.fix_config.agent_timeout.map(Duration::from_secs),
+                    )
+                    .await
+            };
+
+            let run_result = match run_result {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!(%finding_id, error = %e, "batch abort: agent failed");
+                    break 'batch Some(e);
+                }
+            };
+
+            // Track session_id for subsequent resumes
+            if run_result.session_id.is_some() {
+                session_id.clone_from(&run_result.session_id);
+            }
+
+            // Parse output (with retry via session correction)
+            let fix_output = match parse_fix_with_retry(
+                &run_result,
+                &shared.fix_config,
+                &worktree_path,
+                &*shared.correction_runner,
+            )
+            .await
+            {
+                Ok(output) => output,
+                Err(e) => {
+                    warn!(%finding_id, error = %e, "batch abort: parse failed");
+                    break 'batch Some(e);
+                }
+            };
+
+            info!(%finding_id, ?fix_output, "batch fix agent completed");
+
+            // Apply result: push if fixed, update reactions
+            let fix_result = match fix_output {
+                StandaloneFixOutput::Fixed { commit_message } => {
+                    info!(%finding_id, commit_message, "batch fix applied — rebasing and pushing");
+                    if let Err(e) = push_to_pr_branch_with_retry(
+                        &worktree_path,
+                        &batch_branch,
+                        &shared.pr_branch,
+                    )
+                    .await
+                    {
+                        warn!(%finding_id, error = %e, "batch abort: push failed");
+                        break 'batch Some(e);
+                    }
+                    FixResultKind::Fixed { commit_message }
+                }
+                StandaloneFixOutput::WontFix { reason } => {
+                    info!(%finding_id, reason, "batch finding marked as won't fix");
+                    FixResultKind::WontFix { reason }
+                }
+            };
+
+            let ctx = FixContext {
+                item,
+                pr_number,
+                pr_branch: &shared.pr_branch,
+                fix_branch: &batch_branch,
+                fix_config: &shared.fix_config,
+                agent_timeout_retries: shared.agent_timeout_retries,
+                prompt: &prompt,
+            };
+            update_reactions_and_reply(&ctx, &*shared.submission, &fix_result);
+
+            completed_ids.push(finding_id);
+        }
+        None // all findings completed successfully
+    };
+
+    // Always clean up the worktree
+    info!(path = %worktree_path.display(), "cleaning up batch worktree");
+    if let Err(e) = wm.remove(&worktree_path) {
+        warn!(error = %e, "failed to clean up batch worktree");
+    }
+
+    (completed_ids, error)
 }
 
 /// Inner function: spawn agent, parse output, rebase/push with retry, update reactions + reply.
