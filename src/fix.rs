@@ -1300,10 +1300,17 @@ async fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
 
     let remote_ref = format!("origin/{pr_branch}");
 
-    if let Err(_stderr) = git_in_dir(worktree_path, &["rebase", &remote_ref]) {
-        return Err(Error::RebaseConflict {
-            target_ref: remote_ref,
-        });
+    if let Err(stderr) = git_in_dir(worktree_path, &["rebase", &remote_ref]) {
+        if stderr.contains("CONFLICT") || stderr.contains("could not apply") {
+            warn!(remote_ref, stderr = %stderr, "rebase conflict");
+            return Err(Error::RebaseConflict {
+                target_ref: remote_ref,
+            });
+        }
+        warn!(remote_ref, stderr = %stderr, "git rebase failed (non-conflict)");
+        return Err(Error::Orchestrator(format!(
+            "git rebase onto {remote_ref} failed: {stderr}"
+        )));
     }
 
     info!(remote_ref, "rebased onto latest PR branch");
