@@ -1350,9 +1350,7 @@ async fn push_to_pr_branch_with_retry(
         if attempt > 1
             && let Err(e) = rebase_onto(worktree_path, pr_branch).await
         {
-            if matches!(&e, Error::RebaseConflict { .. }) {
-                abort_rebase(worktree_path);
-            }
+            abort_rebase(worktree_path);
             return Err(e);
         }
 
