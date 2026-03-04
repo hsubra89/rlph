@@ -1156,8 +1156,8 @@ mod tests {
             Ok(vec![])
         }
 
-        fn add_review_comment_reaction(&self, _comment_id: u64, _reaction: &str) -> Result<()> {
-            Ok(())
+        fn add_review_comment_reaction(&self, _comment_id: u64, _reaction: &str) -> Result<u64> {
+            Ok(0)
         }
 
         fn delete_review_comment_reaction(

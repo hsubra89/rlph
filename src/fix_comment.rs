@@ -15,6 +15,7 @@ pub type ReplyMap = HashMap<u64, Vec<String>>;
 pub const REACTION_ROCKET: &str = "rocket";
 pub const REACTION_THUMBS_UP: &str = "+1";
 pub const REACTION_CONFUSED: &str = "confused";
+pub const REACTION_EYES: &str = "eyes";
 
 /// State of a finding derived from reactions on its inline review comment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -141,7 +141,7 @@ impl SubmissionBackend for MockFixSubmission {
             .unwrap_or_default())
     }
 
-    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<()> {
+    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<u64> {
         let new_id = self.next_reaction_id.fetch_add(1, Ordering::SeqCst);
         self.added_reactions
             .lock()
@@ -165,7 +165,7 @@ impl SubmissionBackend for MockFixSubmission {
                 }],
             ));
         }
-        Ok(())
+        Ok(new_id)
     }
 
     fn delete_review_comment_reaction(&self, comment_id: u64, reaction_id: u64) -> Result<()> {
@@ -286,23 +286,25 @@ async fn test_parallel_fix_multiple_queued_items() {
 
     assert!(result.is_ok(), "run_fix failed: {:?}", result.err());
 
-    // Each fix should have: removed 🚀, added 👍, posted reply
+    // Each fix should have: added 👀 + 👍, removed 🚀 + 👀, posted reply
     assert_eq!(
         submission.deleted_reaction_count(),
-        3,
-        "expected 3 🚀 reactions removed"
+        6,
+        "expected 6 reactions removed (3 🚀 + 3 👀)"
     );
     assert_eq!(
         submission.added_reaction_count(),
-        3,
-        "expected 3 result reactions added"
+        6,
+        "expected 6 reactions added (3 👀 + 3 👍)"
     );
     assert_eq!(submission.reply_count(), 3, "expected 3 replies posted");
 
-    // All added reactions should be "+1" (fixed)
-    for (_, reaction) in submission.added_reactions() {
-        assert_eq!(reaction, "+1");
-    }
+    // Should have 3 "eyes" and 3 "+1" reactions added
+    let added = submission.added_reactions();
+    let eyes_count = added.iter().filter(|(_, r)| r == "eyes").count();
+    let thumbs_count = added.iter().filter(|(_, r)| r == "+1").count();
+    assert_eq!(eyes_count, 3, "expected 3 👀 reactions added");
+    assert_eq!(thumbs_count, 3, "expected 3 👍 reactions added");
 }
 
 /// Test that `run_fix` with no 🚀-reacted items returns Ok and does nothing.
@@ -483,7 +485,7 @@ impl SubmissionBackend for PollingMockSubmission {
         self.base.list_review_comment_reactions(comment_id)
     }
 
-    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<()> {
+    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<u64> {
         self.base.add_review_comment_reaction(comment_id, reaction)
     }
 

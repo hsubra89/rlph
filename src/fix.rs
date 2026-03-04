@@ -18,8 +18,8 @@ const MAX_CONCURRENT_FIXES: usize = 1;
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
 use crate::fix_comment::{
-    FindingState, FixItem, FixResultKind, REACTION_CONFUSED, REACTION_THUMBS_UP, ReplyMap,
-    build_fix_items_from_review_comments, collect_reply_bodies, format_review_context,
+    FindingState, FixItem, FixResultKind, REACTION_CONFUSED, REACTION_EYES, REACTION_THUMBS_UP,
+    ReplyMap, build_fix_items_from_review_comments, collect_reply_bodies, format_review_context,
 };
 use crate::fix_deps::{FindingDeps, resolved_finding_ids};
 use crate::orchestrator::{CorrectionRunner, retry_with_correction};
@@ -723,6 +723,22 @@ async fn run_fix_agent_and_apply(
     submission: &(impl SubmissionBackend + ?Sized),
     correction_runner: &(impl CorrectionRunner + ?Sized),
 ) -> Result<()> {
+    // Add 👀 reaction to signal "working on it" (best-effort)
+    let eyes_reaction_id =
+        match submission.add_review_comment_reaction(ctx.item.comment_id, REACTION_EYES) {
+            Ok(id) if id > 0 => Some(id),
+            Ok(_) => None,
+            Err(e) => {
+                warn!(
+                    finding_id = %ctx.item.finding.id,
+                    comment_id = ctx.item.comment_id,
+                    error = %e,
+                    "failed to add 👀 reaction"
+                );
+                None
+            }
+        };
+
     // Spawn fix agent
     info!(finding_id = %ctx.item.finding.id, "spawning fix agent");
     let runner = build_runner(
@@ -763,7 +779,7 @@ async fn run_fix_agent_and_apply(
     };
 
     // Update reactions and post reply (best-effort — don't fail on already-pushed code)
-    update_reactions_and_reply(ctx, submission, &fix_result);
+    update_reactions_and_reply(ctx, submission, &fix_result, eyes_reaction_id);
 
     Ok(())
 }
@@ -816,13 +832,15 @@ fn cleanup_stale_rockets(items: &[FixItem], submission: &(impl SubmissionBackend
 /// - Add 👍 (fixed) or 😕 (won't fix)
 /// - Post a reply with details
 /// - Remove all 🚀 reactions
+/// - Remove 👀 reaction if present
 ///
-/// The outcome emoji and reply are added before removing 🚀 so that observers
+/// The outcome emoji and reply are added before removing 🚀/👀 so that observers
 /// always see the result before the queuing signal disappears.
 fn update_reactions_and_reply(
     ctx: &FixContext<'_>,
     submission: &(impl SubmissionBackend + ?Sized),
     fix_result: &FixResultKind,
+    eyes_reaction_id: Option<u64>,
 ) {
     let comment_id = ctx.item.comment_id;
     let finding_id = &ctx.item.finding.id;
@@ -866,6 +884,17 @@ fn update_reactions_and_reply(
         &ctx.item.rocket_reaction_ids,
         submission,
     );
+
+    // Remove 👀 reaction (best-effort)
+    if let Some(reaction_id) = eyes_reaction_id
+        && let Err(e) = submission.delete_review_comment_reaction(comment_id, reaction_id)
+    {
+        warn!(
+            %finding_id, comment_id, reaction_id,
+            error = %e,
+            "failed to remove 👀 reaction"
+        );
+    }
 }
 
 /// Parse fix output with up to 2 retries via session resume.

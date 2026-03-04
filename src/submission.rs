@@ -138,8 +138,10 @@ pub trait SubmissionBackend: Send + Sync {
 
     /// Add a reaction to a PR review comment. `reaction` is one of:
     /// "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes".
-    fn add_review_comment_reaction(&self, _comment_id: u64, _reaction: &str) -> Result<()> {
-        Ok(())
+    ///
+    /// Returns the ID of the created reaction.
+    fn add_review_comment_reaction(&self, _comment_id: u64, _reaction: &str) -> Result<u64> {
+        Ok(0)
     }
 
     /// Remove a reaction from a PR review comment by reaction ID.
@@ -560,11 +562,16 @@ impl SubmissionBackend for GitHubSubmission {
         ))
     }
 
-    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<()> {
+    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<u64> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions");
-        run_gh_api_mutate(&endpoint, "POST", &[("content", reaction)])?;
-        info!(comment_id, reaction, "added reaction to review comment");
-        Ok(())
+        let response =
+            run_gh_api_mutate_with_response(&endpoint, "POST", &[("content", reaction)])?;
+        let id: u64 = serde_json::from_str::<serde_json::Value>(&response)
+            .ok()
+            .and_then(|v| v.get("id")?.as_u64())
+            .unwrap_or(0);
+        info!(comment_id, reaction, id, "added reaction to review comment");
+        Ok(id)
     }
 
     fn delete_review_comment_reaction(&self, comment_id: u64, reaction_id: u64) -> Result<()> {
@@ -699,6 +706,28 @@ pub(crate) fn run_gh_api_paginated<T: DeserializeOwned>(endpoint: &str) -> Resul
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&stdout)
         .map_err(|e| Error::Submission(format!("failed to parse gh api response: {e}")))
+}
+
+fn run_gh_api_mutate_with_response(
+    endpoint: &str,
+    method: &str,
+    fields: &[(&str, &str)],
+) -> Result<String> {
+    let mut cmd = Command::new("gh");
+    cmd.args(["api", endpoint, "-X", method]);
+    for (key, value) in fields {
+        cmd.args(["-f", &format!("{key}={value}")]);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Submission(format!(
+            "gh api {endpoint} failed: {stderr}"
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn run_gh_api_mutate(endpoint: &str, method: &str, fields: &[(&str, &str)]) -> Result<()> {
