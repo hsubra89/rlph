@@ -1,7 +1,7 @@
 mod common;
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -120,6 +120,94 @@ impl MockRunner {
     fn new(task_id: &str) -> Self {
         Self {
             task_id: task_id.to_string(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct WorkingDirCapture {
+    choose_dirs: Vec<PathBuf>,
+    implement_dirs: Vec<PathBuf>,
+}
+
+struct WorkingDirCaptureRunner {
+    task_id: String,
+    capture: Arc<Mutex<WorkingDirCapture>>,
+}
+
+impl WorkingDirCaptureRunner {
+    fn new(task_id: &str, capture: Arc<Mutex<WorkingDirCapture>>) -> Self {
+        Self {
+            task_id: task_id.to_string(),
+            capture,
+        }
+    }
+}
+
+impl AgentRunner for WorkingDirCaptureRunner {
+    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        match phase {
+            Phase::Choose => {
+                let normalized_dir = working_dir
+                    .canonicalize()
+                    .unwrap_or_else(|_| working_dir.to_path_buf());
+                self.capture
+                    .lock()
+                    .unwrap()
+                    .choose_dirs
+                    .push(normalized_dir);
+
+                let ralph_dir = working_dir.join(".rlph");
+                std::fs::create_dir_all(&ralph_dir)
+                    .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                std::fs::write(
+                    ralph_dir.join("task.toml"),
+                    format!("id = \"{}\"", self.task_id),
+                )
+                .map_err(|e| Error::AgentRunner(e.to_string()))?;
+
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "Selected task".into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            }
+            Phase::Implement => {
+                let normalized_dir = working_dir
+                    .canonicalize()
+                    .unwrap_or_else(|_| working_dir.to_path_buf());
+                self.capture
+                    .lock()
+                    .unwrap()
+                    .implement_dirs
+                    .push(normalized_dir);
+
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "IMPLEMENTATION_COMPLETE: done".into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            }
+            Phase::Review => Ok(RunResult {
+                exit_code: 0,
+                stdout: "NO_ISSUES_FOUND".into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+            Phase::ReviewAggregate => Ok(RunResult {
+                exit_code: 0,
+                stdout: APPROVED_AGGREGATOR_JSON.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+            Phase::Fix => Ok(RunResult {
+                exit_code: 0,
+                stdout: r#"{"status":"fixed","commit_message":"fix: done"}"#.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
         }
     }
 }
@@ -944,6 +1032,49 @@ async fn test_local_plan_mode_skips_task_source_fetch() {
 
     assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_choose_and_implement_run_from_worktree_roots() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let capture = Arc::new(Mutex::new(WorkingDirCapture::default()));
+
+    // Two tasks forces choose phase to run.
+    let source = MockSource::new(
+        vec![make_task(42, "Fix the bug"), make_task(43, "Add logs")],
+        Arc::clone(&source_tracker),
+    );
+
+    let orchestrator = Orchestrator::new(
+        source,
+        WorkingDirCaptureRunner::new("gh-42", Arc::clone(&capture)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        make_config(true),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    let capture = capture.lock().unwrap();
+    assert_eq!(capture.choose_dirs.len(), 1);
+    assert_eq!(capture.implement_dirs.len(), 1);
+
+    let canonical_repo = repo_dir.path().canonicalize().unwrap();
+    let canonical_wt_base = wt_dir.path().canonicalize().unwrap();
+
+    assert_eq!(capture.choose_dirs[0], canonical_repo);
+    assert!(capture.implement_dirs[0].starts_with(&canonical_wt_base));
+    assert_ne!(capture.implement_dirs[0], canonical_repo);
 }
 
 #[tokio::test]

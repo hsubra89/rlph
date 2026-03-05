@@ -58,3 +58,9 @@
 - Added prompt tests: `test_load_default_choose` now asserts `NOTHING_LEFT` + plan vars; new `test_render_choose_with_plan_file_refs` verifies one-file and many-file rendering; kept end-to-end choose render test green.
 - Updated plan status: marked complete for choose prompt plan-file rendering, `NOTHING_LEFT` instruction, varying plan file count rendering, and prompt engine variable coverage.
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_load_default_choose) or test(test_render_phase_end_to_end) or test(test_render_choose_with_plan_file_refs)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 4 acceptance criterion: enforce/verify choose+implement cwd roots.
+- Added `WorkingDirCaptureRunner` in `tests/orchestrator_integration.rs` to record the working directory used for choose and implement phases.
+- Added integration test `test_choose_and_implement_run_from_worktree_roots` to verify choose runs at repo worktree root and implement runs at the created issue worktree root.
+- Updated plan status: marked complete for Phase 4 acceptance criterion "Agent cwd is worktree root for both phases".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_choose_and_implement_run_from_worktree_roots)'` (all pass).
