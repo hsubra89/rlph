@@ -1,6 +1,6 @@
 //! Shared test utilities for constructing mock review comments and reactions.
 
-use crate::ids::CommentId;
+use crate::ids::{CommentId, ReactionId};
 use crate::review_schema::{ReviewFinding, Severity, render_inline_finding_comment_for_github};
 use crate::submission::{PrReviewComment, Reaction};
 
@@ -55,7 +55,7 @@ pub fn make_reactions(specs: &[(&str, u64)]) -> Vec<Reaction> {
     specs
         .iter()
         .map(|(content, id)| Reaction {
-            id: CommentId::new(*id),
+            id: ReactionId::new(*id),
             content: content.to_string(),
         })
         .collect()

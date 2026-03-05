@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::fix_deps::{FindingDeps, resolved_finding_ids};
-use crate::ids::CommentId;
+use crate::ids::{CommentId, ReactionId};
 use crate::review_schema::{
     FINDING_MARKER, ReviewFinding, capitalize_first, extract_finding_json, group_by_category,
 };
@@ -51,7 +51,7 @@ pub struct FixItem {
     /// The GitHub comment ID of the inline review comment containing this finding.
     pub comment_id: CommentId,
     /// Reaction IDs for 🚀 reactions on this comment (needed for removal after fix).
-    pub rocket_reaction_ids: Vec<CommentId>,
+    pub rocket_reaction_ids: Vec<ReactionId>,
 }
 
 /// Result of applying a fix to a finding.
@@ -66,7 +66,7 @@ pub enum FixResultKind {
 ///
 /// Priority: Fixed (👍) and WontFix (😕) take precedence over Queued (🚀).
 /// If both 👍 and 😕 are present, Fixed wins.
-pub fn classify_reactions(reactions: &[Reaction]) -> (FindingState, Vec<CommentId>) {
+pub fn classify_reactions(reactions: &[Reaction]) -> (FindingState, Vec<ReactionId>) {
     let mut has_thumbs_up = false;
     let mut has_confused = false;
     let mut rocket_ids = Vec::new();
@@ -330,7 +330,7 @@ mod tests {
         let reactions = make_reactions(&[("rocket", 1)]);
         let (state, rocket_ids) = classify_reactions(&reactions);
         assert_eq!(state, FindingState::Queued);
-        assert_eq!(rocket_ids, vec![CommentId::new(1)]);
+        assert_eq!(rocket_ids, vec![ReactionId::new(1)]);
     }
 
     #[test]
@@ -352,7 +352,7 @@ mod tests {
         let reactions = make_reactions(&[("rocket", 1), ("+1", 2)]);
         let (state, rocket_ids) = classify_reactions(&reactions);
         assert_eq!(state, FindingState::Fixed);
-        assert_eq!(rocket_ids, vec![CommentId::new(1)]);
+        assert_eq!(rocket_ids, vec![ReactionId::new(1)]);
     }
 
     #[test]
@@ -360,7 +360,7 @@ mod tests {
         let reactions = make_reactions(&[("rocket", 1), ("confused", 2)]);
         let (state, rocket_ids) = classify_reactions(&reactions);
         assert_eq!(state, FindingState::WontFix);
-        assert_eq!(rocket_ids, vec![CommentId::new(1)]);
+        assert_eq!(rocket_ids, vec![ReactionId::new(1)]);
     }
 
     #[test]
@@ -389,7 +389,7 @@ mod tests {
     fn test_rocket_ids_collects_all_rocket_reactions() {
         let reactions = make_reactions(&[("rocket", 10), ("heart", 20), ("rocket", 30)]);
         let (_, rocket_ids) = classify_reactions(&reactions);
-        assert_eq!(rocket_ids, vec![CommentId::new(10), CommentId::new(30)]);
+        assert_eq!(rocket_ids, vec![ReactionId::new(10), ReactionId::new(30)]);
     }
 
     // ---- build_fix_items_from_review_comments tests ----
@@ -405,7 +405,7 @@ mod tests {
         assert_eq!(items[0].finding.id, "bug-1");
         assert_eq!(items[0].state, FindingState::Queued);
         assert_eq!(items[0].comment_id, CommentId::new(100));
-        assert_eq!(items[0].rocket_reaction_ids, vec![CommentId::new(1)]);
+        assert_eq!(items[0].rocket_reaction_ids, vec![ReactionId::new(1)]);
     }
 
     #[test]

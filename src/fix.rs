@@ -25,7 +25,7 @@ use crate::fix_comment::{
 };
 use crate::fix_deps::{FindingDeps, resolved_finding_ids};
 use crate::fix_scheduler::{self, ScheduleAction};
-use crate::ids::{CommentId, PrNumber};
+use crate::ids::{CommentId, PrNumber, ReactionId};
 use crate::orchestrator::{CorrectionRunner, retry_with_correction};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
@@ -1149,7 +1149,7 @@ async fn run_fix_agent_and_apply(
 fn remove_rocket_reactions(
     finding_id: &str,
     comment_id: CommentId,
-    rocket_reaction_ids: &[CommentId],
+    rocket_reaction_ids: &[ReactionId],
     submission: &(impl SubmissionBackend + ?Sized),
 ) {
     for &reaction_id in rocket_reaction_ids {
@@ -1683,7 +1683,7 @@ mod tests {
             finding,
             state: FindingState::Queued,
             comment_id: CommentId::new(comment_id),
-            rocket_reaction_ids: vec![CommentId::new(1)],
+            rocket_reaction_ids: vec![ReactionId::new(1)],
         }
     }
 

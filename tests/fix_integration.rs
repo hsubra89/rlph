@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use rlph::config::{Config, ReviewStepConfig};
 use rlph::error::{Error, Result};
 use rlph::fix::{run_fix, run_fix_loop};
-use rlph::ids::{CommentId, PrNumber};
+use rlph::ids::{CommentId, PrNumber, ReactionId};
 use rlph::orchestrator::CorrectionRunner;
 use rlph::review_schema::ReviewFinding;
 use rlph::runner::{RunResult, RunnerKind};
@@ -51,7 +51,7 @@ fn rocket_reactions(comment_id: CommentId) -> (CommentId, Vec<Reaction>) {
     (
         comment_id,
         vec![Reaction {
-            id: CommentId::new(comment_id.get() * 1000 + 1),
+            id: ReactionId::new(comment_id.get() * 1000 + 1),
             content: "rocket".to_string(),
         }],
     )
@@ -61,7 +61,7 @@ fn fixed_reactions(comment_id: CommentId) -> (CommentId, Vec<Reaction>) {
     (
         comment_id,
         vec![Reaction {
-            id: CommentId::new(comment_id.get() * 1000 + 2),
+            id: ReactionId::new(comment_id.get() * 1000 + 2),
             content: "+1".to_string(),
         }],
     )
@@ -98,7 +98,7 @@ struct MockFixSubmission {
     review_comments: Mutex<Vec<PrReviewComment>>,
     reactions: Mutex<Vec<(CommentId, Vec<Reaction>)>>,
     added_reactions: Mutex<Vec<(CommentId, String)>>,
-    deleted_reactions: Mutex<Vec<(CommentId, CommentId)>>,
+    deleted_reactions: Mutex<Vec<(CommentId, ReactionId)>>,
     replies: Mutex<Vec<(PrNumber, CommentId, String)>>,
     next_reaction_id: AtomicU64,
 }
@@ -151,7 +151,7 @@ impl SubmissionBackend for MockFixSubmission {
     }
 
     fn add_review_comment_reaction(&self, comment_id: CommentId, reaction: &str) -> Result<()> {
-        let new_id = CommentId::new(self.next_reaction_id.fetch_add(1, Ordering::SeqCst));
+        let new_id = ReactionId::new(self.next_reaction_id.fetch_add(1, Ordering::SeqCst));
         self.added_reactions
             .lock()
             .unwrap()
@@ -180,7 +180,7 @@ impl SubmissionBackend for MockFixSubmission {
     fn delete_review_comment_reaction(
         &self,
         comment_id: CommentId,
-        reaction_id: CommentId,
+        reaction_id: ReactionId,
     ) -> Result<()> {
         self.deleted_reactions
             .lock()
@@ -577,7 +577,7 @@ impl SubmissionBackend for PollingMockSubmission {
     fn delete_review_comment_reaction(
         &self,
         comment_id: CommentId,
-        reaction_id: CommentId,
+        reaction_id: ReactionId,
     ) -> Result<()> {
         self.base
             .delete_review_comment_reaction(comment_id, reaction_id)

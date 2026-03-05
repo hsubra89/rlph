@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use tracing::{debug, info};
 
 use crate::error::{Error, Result};
-use crate::ids::{CommentId, IssueNumber, PrNumber};
+use crate::ids::{CommentId, IssueNumber, PrNumber, ReactionId};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PrComment {
@@ -38,7 +38,7 @@ pub struct PrReviewComment {
 /// A GitHub reaction on a comment.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Reaction {
-    pub id: CommentId,
+    pub id: ReactionId,
     /// Reaction type: "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"
     pub content: String,
 }
@@ -149,7 +149,7 @@ pub trait SubmissionBackend: Send + Sync {
     fn delete_review_comment_reaction(
         &self,
         _comment_id: CommentId,
-        _reaction_id: CommentId,
+        _reaction_id: ReactionId,
     ) -> Result<()> {
         Ok(())
     }
@@ -581,7 +581,7 @@ impl SubmissionBackend for GitHubSubmission {
     fn delete_review_comment_reaction(
         &self,
         comment_id: CommentId,
-        reaction_id: CommentId,
+        reaction_id: ReactionId,
     ) -> Result<()> {
         let endpoint =
             format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions/{reaction_id}");

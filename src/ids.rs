@@ -1,4 +1,4 @@
-//! Newtype wrappers for domain IDs: [`IssueNumber`], [`PrNumber`], [`CommentId`].
+//! Newtype wrappers for domain IDs: [`IssueNumber`], [`PrNumber`], [`CommentId`], [`ReactionId`].
 
 macro_rules! define_id {
     ($(#[$meta:meta])* $name:ident) => {
@@ -62,6 +62,11 @@ define_id!(
     CommentId
 );
 
+define_id!(
+    /// A GitHub reaction ID.
+    ReactionId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,6 +76,7 @@ mod tests {
         assert_eq!(IssueNumber::new(42).to_string(), "42");
         assert_eq!(PrNumber::new(7).to_string(), "7");
         assert_eq!(CommentId::new(123).to_string(), "123");
+        assert_eq!(ReactionId::new(321).to_string(), "321");
     }
 
     #[test]

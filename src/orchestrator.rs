@@ -1094,7 +1094,7 @@ pub fn parse_issue_number(task_id: &str) -> Result<IssueNumber> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{CommentId, PrNumber};
+    use crate::ids::{CommentId, PrNumber, ReactionId};
     use crate::review_schema::{ReviewFinding, Severity};
     use crate::submission::PrComment;
 
@@ -1172,7 +1172,7 @@ mod tests {
         fn delete_review_comment_reaction(
             &self,
             _comment_id: CommentId,
-            _reaction_id: CommentId,
+            _reaction_id: ReactionId,
         ) -> Result<()> {
             Ok(())
         }
