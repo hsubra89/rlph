@@ -35,13 +35,13 @@ This is a standalone pure function module with no I/O or dependencies on other n
 
 ### Acceptance criteria
 
-- [ ] Rewrites `https://github.com/org/repo/issues/45` to `[#45](./45.md)` when `45.md` is in the local set
-- [ ] Rewrites `https://github.com/org/repo/pull/45` similarly
-- [ ] Rewrites Linear issue URLs to the equivalent local link
-- [ ] Leaves URLs unchanged when the referenced ID is not in the local set
-- [ ] Handles multiple references on the same line
-- [ ] Does not rewrite URLs already inside markdown link syntax that the user manually wrote (avoids double-wrapping)
-- [ ] Works with bare URLs and URLs inside markdown text
+- [x] Rewrites `https://github.com/org/repo/issues/45` to `[#45](./45.md)` when `45.md` is in the local set
+- [x] Rewrites `https://github.com/org/repo/pull/45` similarly
+- [x] Rewrites Linear issue URLs to the equivalent local link
+- [x] Leaves URLs unchanged when the referenced ID is not in the local set
+- [x] Handles multiple references on the same line
+- [x] Does not rewrite URLs already inside markdown link syntax that the user manually wrote (avoids double-wrapping)
+- [x] Works with bare URLs and URLs inside markdown text
 
 ---
 

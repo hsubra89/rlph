@@ -14,6 +14,7 @@ pub mod orchestrator;
 pub mod prd;
 pub mod process;
 pub mod prompts;
+pub mod reference_rewriter;
 pub(crate) mod resolve_threads;
 pub mod review_schema;
 pub mod runner;

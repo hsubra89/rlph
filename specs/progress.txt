@@ -1,0 +1,5 @@
+2026-03-05 - Completed Phase 1 (Reference Rewriter) as highest-priority dependency for plan sync.
+- Added `src/reference_rewriter.rs` with `rewrite_issue_urls(markdown, local_ids)` for GitHub issues/PRs and Linear issue URLs.
+- Rewrites only when local file ID exists; skips markdown link destinations to avoid double-wrapping; leaves fenced code blocks unchanged.
+- Added 8 unit tests covering all Phase 1 acceptance criteria plus fenced code-block safety.
+- Feedback loops run: `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo nextest run -E 'test(reference_rewriter)'` (all pass).
