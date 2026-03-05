@@ -51,3 +51,10 @@
 - Added prompt tests: `test_load_default_implement` now checks plan vars, and new `test_render_implement_with_plan_file_refs` verifies rendering with one and many file references.
 - Updated plan status: Phase 4 acceptance criterion "Implement prompt template renders with `@` file references" marked complete.
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_load_default_implement) or test(test_render_implement_with_plan_file_refs)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 4 choose-prompt migration to local plan files.
+- Updated `src/default_prompts/choose-issue.md` with dual-mode rendering: plan-file mode now uses `{{plan_dir}}` + `{{plan_files}}`, instructs explicit `NOTHING_LEFT`, and preserves legacy GitHub-issues JSON mode for backward compatibility.
+- Updated `PromptEngine::render_phase` to inject default empty values for optional `plan_dir`, `plan_files`, and `issues_json` variables so conditional prompt branches render safely across local and remote paths.
+- Added prompt tests: `test_load_default_choose` now asserts `NOTHING_LEFT` + plan vars; new `test_render_choose_with_plan_file_refs` verifies one-file and many-file rendering; kept end-to-end choose render test green.
+- Updated plan status: marked complete for choose prompt plan-file rendering, `NOTHING_LEFT` instruction, varying plan file count rendering, and prompt engine variable coverage.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_load_default_choose) or test(test_render_phase_end_to_end) or test(test_render_choose_with_plan_file_refs)'` (all pass).

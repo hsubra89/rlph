@@ -81,6 +81,9 @@ impl PromptEngine {
     pub fn render_phase(&self, phase: &str, vars: &HashMap<String, String>) -> Result<String> {
         let template = self.load_template(phase)?;
         let mut all_vars = vars.clone();
+        all_vars.entry("plan_dir".to_string()).or_default();
+        all_vars.entry("plan_files".to_string()).or_default();
+        all_vars.entry("issues_json".to_string()).or_default();
         all_vars
             .entry("findings_schema".to_string())
             .or_insert_with(|| FINDINGS_SCHEMA.to_string());
@@ -116,6 +119,8 @@ mod tests {
         let template = engine.load_template("choose").unwrap();
         assert!(template.contains("Task Selection Agent"));
         assert!(template.contains("{{repo_path}}"));
+        assert!(template.contains("{{plan_files}}"));
+        assert!(template.contains("NOTHING_LEFT"));
     }
 
     #[test]
@@ -320,6 +325,35 @@ mod tests {
         assert!(result.contains("/my/repo"));
         assert!(!result.contains("{{repo_path}}"));
         assert!(result.contains("[{\"id\":\"1\"}]"));
+    }
+
+    #[test]
+    fn test_render_choose_with_plan_file_refs() {
+        let engine = PromptEngine::new(None);
+
+        let mut one_file = HashMap::new();
+        one_file.insert("repo_path".to_string(), "/repo".to_string());
+        one_file.insert("plan_dir".to_string(), "plans/my-feature".to_string());
+        one_file.insert(
+            "plan_files".to_string(),
+            "@plans/my-feature/01-task.md".to_string(),
+        );
+
+        let one_result = engine.render_phase("choose", &one_file).unwrap();
+        assert!(one_result.contains("Plan Files"));
+        assert!(one_result.contains("@plans/my-feature/01-task.md"));
+        assert!(one_result.contains("NOTHING_LEFT"));
+
+        let mut many_files = one_file.clone();
+        many_files.insert(
+            "plan_files".to_string(),
+            "@plans/my-feature/01-task.md, @plans/my-feature/02-context.md".to_string(),
+        );
+
+        let many_result = engine.render_phase("choose", &many_files).unwrap();
+        assert!(
+            many_result.contains("@plans/my-feature/01-task.md, @plans/my-feature/02-context.md")
+        );
     }
 
     #[test]
