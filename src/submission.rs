@@ -303,7 +303,7 @@ impl GitHubSubmission {
     }
 
     /// Find an existing rlph review comment on a PR, returning its ID if found.
-    fn find_review_comment(&self, pr_number: PrNumber) -> Result<Option<u64>> {
+    fn find_review_comment(&self, pr_number: PrNumber) -> Result<Option<CommentId>> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments");
         let output = Command::new("gh")
             .args([
@@ -327,7 +327,7 @@ impl GitHubSubmission {
         let comment_id = stdout
             .lines()
             .next()
-            .and_then(|line| line.trim().parse::<u64>().ok());
+            .and_then(|line| line.trim().parse::<CommentId>().ok());
         Ok(comment_id)
     }
 
@@ -443,7 +443,7 @@ impl SubmissionBackend for GitHubSubmission {
 
             info!(
                 pr_number = %pr_number,
-                comment_id = comment_id,
+                comment_id = %comment_id,
                 "updated review comment on PR"
             );
         } else {
