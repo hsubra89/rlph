@@ -18,6 +18,7 @@ Rust binary crate (edition 2024). Autonomous AI dev-loop CLI: fetches tasks, spi
 
 Read when working in the relevant area:
 
-- [Architecture](.rlph/docs/architecture.md) — key paths, module responsibilities, trait system, orchestrator pipeline
-- [Testing](.rlph/docs/testing.md) — mocking strategy, integration tests, what to test
-- [Conventions](.rlph/docs/conventions.md) — error handling, async patterns, dependency policy
+- [Architecture](.docs/architecture.md) — key paths, module responsibilities, trait system, orchestrator pipeline
+- [Testing](.docs/testing.md) — mocking strategy, integration tests, what to test
+- [Conventions](.docs/conventions.md) — error handling, async patterns, dependency policy
+- [Engineering Checklist](.docs/engineering-checklist.md) — CI gates, async/concurrency patterns, and release hygiene

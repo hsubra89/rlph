@@ -47,6 +47,8 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo nextest run --verbose
+    - name: Run integration tests (CI-safe subset)
+      run: cargo nextest run --profile integration -E 'binary(cli_binary)' --verbose
 
   test-macos:
     runs-on: macos-latest
