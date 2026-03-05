@@ -124,6 +124,20 @@ impl MockRunner {
     }
 }
 
+struct SubmitBeforeImplementRunner {
+    task_id: String,
+    submissions: Arc<Mutex<SubmissionTracker>>,
+}
+
+impl SubmitBeforeImplementRunner {
+    fn new(task_id: &str, submissions: Arc<Mutex<SubmissionTracker>>) -> Self {
+        Self {
+            task_id: task_id.to_string(),
+            submissions,
+        }
+    }
+}
+
 #[derive(Default)]
 struct WorkingDirCapture {
     choose_dirs: Vec<PathBuf>,
@@ -237,6 +251,62 @@ impl AgentRunner for MockRunner {
                 stderr: String::new(),
                 session_id: None,
             }),
+            Phase::Review => Ok(RunResult {
+                exit_code: 0,
+                stdout: "NO_ISSUES_FOUND".into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+            Phase::ReviewAggregate => Ok(RunResult {
+                exit_code: 0,
+                stdout: APPROVED_AGGREGATOR_JSON.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+            Phase::Fix => Ok(RunResult {
+                exit_code: 0,
+                stdout: r#"{"status":"fixed","commit_message":"fix: done"}"#.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+        }
+    }
+}
+
+impl AgentRunner for SubmitBeforeImplementRunner {
+    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        match phase {
+            Phase::Choose => {
+                let ralph_dir = working_dir.join(".rlph");
+                std::fs::create_dir_all(&ralph_dir)
+                    .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                std::fs::write(
+                    ralph_dir.join("task.toml"),
+                    format!("id = \"{}\"", self.task_id),
+                )
+                .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "Selected task".into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            }
+            Phase::Implement => {
+                let submissions = self.submissions.lock().unwrap().submissions.len();
+                if submissions != 1 {
+                    return Err(Error::AgentRunner(format!(
+                        "expected draft PR submission before implement, got {submissions}"
+                    )));
+                }
+
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "IMPLEMENTATION_COMPLETE: done".into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            }
             Phase::Review => Ok(RunResult {
                 exit_code: 0,
                 stdout: "NO_ISSUES_FOUND".into(),
@@ -970,6 +1040,44 @@ async fn test_full_loop_with_push() {
         branches.contains("rlph-42"),
         "remote branch not found: {branches}"
     );
+}
+
+#[tokio::test]
+async fn test_draft_pr_created_before_implement_phase() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let task = make_task(42, "Fix the bug");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
+    let runner = SubmitBeforeImplementRunner::new("gh-42", Arc::clone(&sub_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_mgr = StateManager::new(&state_dir);
+    let prompt_engine = PromptEngine::new(None);
+
+    let orchestrator = Orchestrator::new(
+        source,
+        runner,
+        submission,
+        worktree_mgr,
+        state_mgr,
+        prompt_engine,
+        make_config(false),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    let subs = sub_tracker.lock().unwrap();
+    assert_eq!(subs.submissions.len(), 1);
 }
 
 #[tokio::test]

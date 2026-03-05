@@ -81,3 +81,11 @@
 - Added unit tests: `test_copy_dir_recursive_copies_nested_files` and `test_commit_plan_files_creates_single_plan_commit`.
 - Updated plan status: marked complete for Phase 5 acceptance criterion "Plan files are committed as the first commit on the worktree branch".
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_copy_dir_recursive_copies_nested_files) or test(test_commit_plan_files_creates_single_plan_commit) or test(test_local_plan_mode_skips_task_source_fetch) or test(test_choose_and_implement_run_from_worktree_roots)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 task: open draft PR immediately after the plan commit.
+- Refactored orchestrator flow to create PRs before implement/review by adding `open_draft_pr_if_needed(...)` and moving PR submission out of `run_implement_review`.
+- New flow pushes the branch right after plan-file commit, calls `SubmissionBackend::submit_draft(...)`, stores `pr_url` for review/comment phases, then runs implement.
+- Kept current behavior for already-open PRs (skip creation) and dry-run mode (skip creation); extracted body text into `pr_body(...)` for shared remote/local formatting.
+- Added integration test `test_draft_pr_created_before_implement_phase` to enforce submission ordering.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Draft PR is opened immediately after the plan commit".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_full_loop_with_push) or test(test_draft_pr_created_before_implement_phase)'` (all pass).

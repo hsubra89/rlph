@@ -572,13 +572,20 @@ impl<
         )?;
 
         // Run the implement → submit → review pipeline, cleaning up on success
+        let (pr_number, pr_url) = self.open_draft_pr_if_needed(
+            &task,
+            Some(issue_number),
+            &worktree_info,
+            existing_pr_number,
+        )?;
+
         let result = self
             .run_implement_review(
                 &task,
-                Some(issue_number),
                 Some(task.id.as_str()),
                 &worktree_info,
-                existing_pr_number,
+                pr_number,
+                pr_url.as_deref(),
                 Some(&plan_dir),
             )
             .await;
@@ -635,8 +642,18 @@ impl<
             &worktree_info.path.display().to_string(),
         )?;
 
+        let (pr_number, pr_url) =
+            self.open_draft_pr_if_needed(&task, None, &worktree_info, None)?;
+
         let result = self
-            .run_implement_review(&task, None, None, &worktree_info, None, Some(&plan_dir))
+            .run_implement_review(
+                &task,
+                None,
+                &worktree_info,
+                pr_number,
+                pr_url.as_deref(),
+                Some(&plan_dir),
+            )
             .await;
 
         self.cleanup_worktree(&worktree_info.path);
@@ -678,17 +695,20 @@ impl<
         }
     }
 
-    /// Implement, submit PR, and review — the inner pipeline after worktree creation.
+    /// Implement, push updates, and review — the inner pipeline after worktree creation.
     async fn run_implement_review(
         &self,
         task: &Task,
-        issue_number: Option<IssueNumber>,
         mark_in_review_task_id: Option<&str>,
         worktree_info: &WorktreeInfo,
-        existing_pr_number: Option<PrNumber>,
+        pr_number: Option<PrNumber>,
+        pr_url: Option<&str>,
         plan_dir: Option<&str>,
     ) -> Result<()> {
         let mut vars = self.initial_task_vars(task, worktree_info, plan_dir)?;
+        if let Some(url) = pr_url {
+            vars.insert("pr_url".to_string(), url.to_string());
+        }
 
         // 7. Implement phase
         self.reporter.implement_started();
@@ -704,43 +724,60 @@ impl<
             self.push_branch(worktree_info)?;
         }
 
-        // 9. Submit PR (skip if choose agent reported an existing PR)
-        let pr_number = if let Some(pr) = existing_pr_number {
-            info!(pr = %pr, "skipping PR submission — existing PR");
-            Some(pr)
-        } else if !self.config.dry_run {
-            info!("submitting PR");
-            let pr_body = if let Some(issue_number) = issue_number {
-                format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.")
-            } else if let Some(plan_path) = self.config.plan_path.as_deref() {
-                format!("Implements local plan `{plan_path}`.\n\nAutomated implementation by rlph.")
-            } else {
-                "Automated implementation by rlph.".to_string()
-            };
-            let result = self.submission.submit(
-                &worktree_info.branch,
-                &self.config.base_branch,
-                &task.title,
-                &pr_body,
-            )?;
-            info!(url = result.url, "PR created");
-            self.reporter.pr_created(&result.url);
-            vars.insert("pr_url".to_string(), result.url);
-            result.number
-        } else {
-            info!("dry run — skipping PR submission");
-            None
-        };
-
-        // 10. Mark in-review
+        // 9. Mark in-review
         if !self.config.dry_run
             && let Some(task_id) = mark_in_review_task_id
         {
             self.source.mark_in_review(task_id)?;
         }
 
+        // 10. Run review pipeline.
         self.run_review_pipeline(&vars, worktree_info, pr_number)
             .await
+    }
+
+    fn open_draft_pr_if_needed(
+        &self,
+        task: &Task,
+        issue_number: Option<IssueNumber>,
+        worktree_info: &WorktreeInfo,
+        existing_pr_number: Option<PrNumber>,
+    ) -> Result<(Option<PrNumber>, Option<String>)> {
+        if let Some(pr) = existing_pr_number {
+            info!(pr = %pr, "skipping draft PR creation — existing PR");
+            return Ok((Some(pr), None));
+        }
+
+        if self.config.dry_run {
+            info!("dry run — skipping draft PR creation");
+            return Ok((None, None));
+        }
+
+        info!("pushing branch for draft PR");
+        self.push_branch(worktree_info)?;
+
+        let pr_body = self.pr_body(issue_number);
+        let result = self.submission.submit_draft(
+            &worktree_info.branch,
+            &self.config.base_branch,
+            &task.title,
+            &pr_body,
+        )?;
+
+        info!(url = result.url, "draft PR created");
+        self.reporter.pr_created(&result.url);
+
+        Ok((result.number, Some(result.url)))
+    }
+
+    fn pr_body(&self, issue_number: Option<IssueNumber>) -> String {
+        if let Some(issue_number) = issue_number {
+            format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.")
+        } else if let Some(plan_path) = self.config.plan_path.as_deref() {
+            format!("Implements local plan `{plan_path}`.\n\nAutomated implementation by rlph.")
+        } else {
+            "Automated implementation by rlph.".to_string()
+        }
     }
 
     async fn run_review_pipeline(
