@@ -185,8 +185,7 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
     let mut groups = group_by_category(findings, |f| f.category.as_deref());
 
     for (category, group) in &mut groups {
-        let mut sorted: Vec<&ReviewFinding> = group.clone();
-        sorted.sort_by(|a, b| {
+        group.sort_by(|a, b| {
             a.severity
                 .cmp(&b.severity)
                 .then_with(|| a.file.cmp(&b.file))
@@ -194,7 +193,7 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
         });
 
         write!(body, "\n\n### {}", capitalize_first(category)).unwrap();
-        for f in sorted {
+        for &f in group.iter() {
             write!(
                 body,
                 "\n- [ ] **{}** `{}` L{}: {}",
