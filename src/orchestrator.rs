@@ -1084,8 +1084,7 @@ fn build_inline_review_comments(
 pub fn parse_issue_number(task_id: &str) -> Result<IssueNumber> {
     task_id
         .strip_prefix("gh-")
-        .and_then(|n| n.parse::<u64>().ok())
-        .map(IssueNumber::new)
+        .and_then(|n| n.parse::<IssueNumber>().ok())
         .ok_or_else(|| {
             Error::Orchestrator(format!("invalid task id: {task_id}, expected gh-<number>"))
         })
