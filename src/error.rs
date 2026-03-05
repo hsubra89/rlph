@@ -1,3 +1,5 @@
+//! Error types and `Result` alias for the crate.
+
 use std::path::PathBuf;
 use std::time::Duration;
 

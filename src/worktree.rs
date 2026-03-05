@@ -1,9 +1,12 @@
+//! Git worktree lifecycle: creation, setup script execution, and cleanup.
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
+use crate::ids::{IssueNumber, PrNumber};
 
 /// Convention path for the worktree setup script.
 const CONVENTION_SETUP_SCRIPT: &str = ".rlph/worktree-setup.sh";
@@ -127,7 +130,7 @@ impl WorktreeManager {
     }
 
     /// Generate the worktree directory name: `rlph-{issue_number}-{slug}`.
-    pub fn worktree_name(issue_number: u64, slug: &str) -> String {
+    pub fn worktree_name(issue_number: IssueNumber, slug: &str) -> String {
         format!("rlph-{issue_number}-{slug}")
     }
 
@@ -171,11 +174,11 @@ impl WorktreeManager {
     }
 
     /// Create a worktree for an issue. Reuses existing worktrees.
-    pub fn create(&self, issue_number: u64, slug: &str) -> Result<WorktreeInfo> {
+    pub fn create(&self, issue_number: IssueNumber, slug: &str) -> Result<WorktreeInfo> {
         // Check for existing worktree
         if let Some(existing) = self.find_existing(issue_number)? {
             info!(
-                issue = issue_number,
+                issue_number = %issue_number,
                 path = %existing.path.display(),
                 "reusing existing worktree"
             );
@@ -229,7 +232,7 @@ impl WorktreeManager {
             .unwrap_or_else(|| "unknown".to_string());
 
         info!(
-            issue = issue_number,
+            issue_number = %issue_number,
             path = %canonical_path.display(),
             branch = %branch,
             commit = %commit_sha,
@@ -247,7 +250,7 @@ impl WorktreeManager {
 
     /// Create a worktree for a PR review against an existing branch.
     /// Reuses an existing dedicated PR worktree when present.
-    pub fn create_for_branch(&self, pr_number: u64, branch: &str) -> Result<WorktreeInfo> {
+    pub fn create_for_branch(&self, pr_number: PrNumber, branch: &str) -> Result<WorktreeInfo> {
         validate_branch_name(branch)?;
 
         let slug = {
@@ -263,7 +266,7 @@ impl WorktreeManager {
 
         if let Some(existing) = self.find_existing_by_name(&name)? {
             info!(
-                pr = pr_number,
+                pr_number = %pr_number,
                 branch,
                 path = %existing.path.display(),
                 "reusing existing PR review worktree, updating to latest"
@@ -336,7 +339,7 @@ impl WorktreeManager {
             .unwrap_or_else(|| "unknown".to_string());
 
         info!(
-            pr = pr_number,
+            pr_number = %pr_number,
             path = %canonical_path.display(),
             branch,
             commit = %commit_sha,
@@ -536,7 +539,7 @@ impl WorktreeManager {
     }
 
     /// Find an existing worktree for an issue number.
-    pub fn find_existing(&self, issue_number: u64) -> Result<Option<WorktreeInfo>> {
+    pub fn find_existing(&self, issue_number: IssueNumber) -> Result<Option<WorktreeInfo>> {
         let prefix = format!("rlph-{issue_number}-");
         self.find_worktree(|name| name.starts_with(&prefix))
     }
@@ -634,11 +637,11 @@ mod tests {
     #[test]
     fn test_worktree_name() {
         assert_eq!(
-            WorktreeManager::worktree_name(5, "worktree-management"),
+            WorktreeManager::worktree_name(IssueNumber::new(5), "worktree-management"),
             "rlph-5-worktree-management"
         );
         assert_eq!(
-            WorktreeManager::worktree_name(42, "fix-bug"),
+            WorktreeManager::worktree_name(IssueNumber::new(42), "fix-bug"),
             "rlph-42-fix-bug"
         );
     }

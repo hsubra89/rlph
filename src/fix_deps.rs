@@ -1,3 +1,5 @@
+//! Finding-level dependency resolution for the fix workflow.
+
 use std::collections::{HashMap, HashSet};
 
 use tracing::warn;
@@ -120,13 +122,14 @@ pub fn resolved_finding_ids(items: &[FixItem]) -> HashSet<&str> {
 mod tests {
     use super::*;
     use crate::fix_comment::FixItem;
+    use crate::ids::CommentId;
     use crate::test_helpers::make_finding_with_deps;
 
     fn make_item(id: &str, deps: &[&str], state: FindingState) -> FixItem {
         FixItem {
             finding: make_finding_with_deps(id, deps),
             state,
-            comment_id: 0,
+            comment_id: CommentId::new(0),
             rocket_reaction_ids: vec![],
         }
     }

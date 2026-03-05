@@ -1,3 +1,5 @@
+//! PR submission backend: create PRs, manage review comments via `gh` CLI.
+
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -7,10 +9,11 @@ use serde::de::DeserializeOwned;
 use tracing::{debug, info};
 
 use crate::error::{Error, Result};
+use crate::ids::{CommentId, IssueNumber, PrNumber, ReactionId};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PrComment {
-    pub id: u64,
+    pub id: CommentId,
     #[serde(rename = "user")]
     user_obj: Option<PrCommentUser>,
     pub body: String,
@@ -25,17 +28,17 @@ pub struct PrComment {
 /// Distinct from `PrComment` which represents issue-level comments.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PrReviewComment {
-    pub id: u64,
+    pub id: CommentId,
     pub body: String,
     /// If this comment is a reply to another review comment.
     #[serde(default)]
-    pub in_reply_to_id: Option<u64>,
+    pub in_reply_to_id: Option<CommentId>,
 }
 
 /// A GitHub reaction on a comment.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Reaction {
-    pub id: u64,
+    pub id: ReactionId,
     /// Reaction type: "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"
     pub content: String,
 }
@@ -67,18 +70,18 @@ impl PrComment {
 #[derive(Debug)]
 pub struct SubmitResult {
     pub url: String,
-    pub number: Option<u64>,
+    pub number: Option<PrNumber>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrContext {
-    pub number: u64,
+    pub number: PrNumber,
     pub title: String,
     pub body: String,
     pub url: String,
     pub head_branch: String,
     pub base_branch: String,
-    pub linked_issue_number: Option<u64>,
+    pub linked_issue_number: Option<IssueNumber>,
 }
 
 pub trait SubmissionBackend: Send + Sync {
@@ -86,20 +89,20 @@ pub trait SubmissionBackend: Send + Sync {
     fn submit(&self, branch: &str, base: &str, title: &str, body: &str) -> Result<SubmitResult>;
 
     /// Find an open PR that references the given issue number.
-    fn find_existing_pr_for_issue(&self, _issue_number: u64) -> Result<Option<u64>> {
+    fn find_existing_pr_for_issue(&self, _issue_number: IssueNumber) -> Result<Option<PrNumber>> {
         Ok(None)
     }
 
     /// Post or update a review comment on an existing PR.
     /// If a previous rlph review comment exists, updates it; otherwise creates a new one.
-    fn upsert_review_comment(&self, _pr_number: u64, _body: &str) -> Result<()> {
+    fn upsert_review_comment(&self, _pr_number: PrNumber, _body: &str) -> Result<()> {
         Ok(())
     }
 
     /// Post a single batched PR review with one or more inline comments.
     fn submit_inline_pr_review(
         &self,
-        _pr_number: u64,
+        _pr_number: PrNumber,
         _event: PullRequestReviewEvent,
         _comments: &[InlineReviewComment],
     ) -> Result<()> {
@@ -107,43 +110,47 @@ pub trait SubmissionBackend: Send + Sync {
     }
 
     /// Fetch the full PR diff used for inline comment line mapping.
-    fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
+    fn fetch_pr_diff(&self, _pr_number: PrNumber) -> Result<String> {
         Ok(String::new())
     }
 
     /// Fetch all comments on a PR/issue thread.
-    fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
+    fn fetch_pr_comments(&self, _pr_number: PrNumber) -> Result<Vec<PrComment>> {
         Ok(vec![])
     }
 
     /// Fetch a single comment by its ID.
-    fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<PrComment> {
+    fn fetch_comment_by_id(&self, _comment_id: CommentId) -> Result<PrComment> {
         Err(Error::Submission("not implemented".to_string()))
     }
 
     /// Fetch all inline review comments on a PR (comments on diff lines).
-    fn fetch_pr_review_comments(&self, _pr_number: u64) -> Result<Vec<PrReviewComment>> {
+    fn fetch_pr_review_comments(&self, _pr_number: PrNumber) -> Result<Vec<PrReviewComment>> {
         Ok(vec![])
     }
 
     /// Fetch a single PR review comment by its ID.
-    fn fetch_review_comment_by_id(&self, _comment_id: u64) -> Result<PrReviewComment> {
+    fn fetch_review_comment_by_id(&self, _comment_id: CommentId) -> Result<PrReviewComment> {
         Err(Error::Submission("not implemented".to_string()))
     }
 
     /// List reactions on a PR review comment.
-    fn list_review_comment_reactions(&self, _comment_id: u64) -> Result<Vec<Reaction>> {
+    fn list_review_comment_reactions(&self, _comment_id: CommentId) -> Result<Vec<Reaction>> {
         Ok(vec![])
     }
 
     /// Add a reaction to a PR review comment. `reaction` is one of:
     /// "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes".
-    fn add_review_comment_reaction(&self, _comment_id: u64, _reaction: &str) -> Result<()> {
+    fn add_review_comment_reaction(&self, _comment_id: CommentId, _reaction: &str) -> Result<()> {
         Ok(())
     }
 
     /// Remove a reaction from a PR review comment by reaction ID.
-    fn delete_review_comment_reaction(&self, _comment_id: u64, _reaction_id: u64) -> Result<()> {
+    fn delete_review_comment_reaction(
+        &self,
+        _comment_id: CommentId,
+        _reaction_id: ReactionId,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -152,15 +159,15 @@ pub trait SubmissionBackend: Send + Sync {
     /// Finds unresolved threads whose first comment contains the `<!-- rlph-finding:`
     /// marker and has a ✅ (THUMBS_UP) or 😕 (CONFUSED) reaction, then resolves them
     /// via the GitHub GraphQL API. Returns the count of threads resolved.
-    fn resolve_completed_review_threads(&self, _pr_number: u64) -> Result<u32> {
+    fn resolve_completed_review_threads(&self, _pr_number: PrNumber) -> Result<u32> {
         Ok(0)
     }
 
     /// Post a reply to a PR review comment.
     fn reply_to_review_comment(
         &self,
-        _pr_number: u64,
-        _comment_id: u64,
+        _pr_number: PrNumber,
+        _comment_id: CommentId,
         _body: &str,
     ) -> Result<()> {
         Ok(())
@@ -217,7 +224,7 @@ impl GitHubSubmission {
     }
 
     /// Check if a PR already exists for the given branch.
-    fn find_existing_pr(&self, branch: &str) -> Result<Option<(String, Option<u64>)>> {
+    fn find_existing_pr(&self, branch: &str) -> Result<Option<(String, Option<PrNumber>)>> {
         let output = Command::new("gh")
             .args([
                 "pr",
@@ -244,14 +251,17 @@ impl GitHubSubmission {
         if let Some(pr) = prs.first()
             && let Some(url) = pr.get("url").and_then(|v| v.as_str())
         {
-            let number = pr.get("number").and_then(|v| v.as_u64());
+            let number = pr.get("number").and_then(|v| v.as_u64()).map(PrNumber::new);
             return Ok(Some((url.to_string(), number)));
         }
 
         Ok(None)
     }
 
-    fn find_existing_pr_for_issue_impl(&self, issue_number: u64) -> Result<Option<u64>> {
+    fn find_existing_pr_for_issue_impl(
+        &self,
+        issue_number: IssueNumber,
+    ) -> Result<Option<PrNumber>> {
         let output = Command::new("gh")
             .args([
                 "pr",
@@ -276,7 +286,7 @@ impl GitHubSubmission {
             .map_err(|e| Error::Submission(format!("failed to parse gh output: {e}")))?;
 
         for pr in prs {
-            let Some(number) = pr.get("number").and_then(|v| v.as_u64()) else {
+            let Some(number) = pr.get("number").and_then(|v| v.as_u64()).map(PrNumber::new) else {
                 continue;
             };
             let body = pr
@@ -293,7 +303,7 @@ impl GitHubSubmission {
     }
 
     /// Find an existing rlph review comment on a PR, returning its ID if found.
-    fn find_review_comment(&self, pr_number: u64) -> Result<Option<u64>> {
+    fn find_review_comment(&self, pr_number: PrNumber) -> Result<Option<CommentId>> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments");
         let output = Command::new("gh")
             .args([
@@ -317,11 +327,11 @@ impl GitHubSubmission {
         let comment_id = stdout
             .lines()
             .next()
-            .and_then(|line| line.trim().parse::<u64>().ok());
+            .and_then(|line| line.trim().parse::<CommentId>().ok());
         Ok(comment_id)
     }
 
-    pub fn get_pr_context(&self, pr_number: u64) -> Result<PrContext> {
+    pub fn get_pr_context(&self, pr_number: PrNumber) -> Result<PrContext> {
         let number_str = pr_number.to_string();
         let output = Command::new("gh")
             .args([
@@ -350,7 +360,7 @@ impl GitHubSubmission {
 /// Comment bodies are wrapped in `<untrusted-content>` fences to mitigate prompt
 /// injection from arbitrary GitHub commenters. Trusted collaborators (OWNER, MEMBER,
 /// COLLABORATOR) are labelled as such; all others are marked external/untrusted.
-pub fn format_pr_comments_for_prompt(comments: &[PrComment], pr_number: u64) -> String {
+pub fn format_pr_comments_for_prompt(comments: &[PrComment], pr_number: PrNumber) -> String {
     if comments.is_empty() {
         return format!("No comments on PR #{pr_number} yet.");
     }
@@ -404,11 +414,11 @@ impl SubmissionBackend for GitHubSubmission {
         Ok(SubmitResult { url, number })
     }
 
-    fn find_existing_pr_for_issue(&self, issue_number: u64) -> Result<Option<u64>> {
+    fn find_existing_pr_for_issue(&self, issue_number: IssueNumber) -> Result<Option<PrNumber>> {
         self.find_existing_pr_for_issue_impl(issue_number)
     }
 
-    fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()> {
+    fn upsert_review_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
         // Try to find an existing rlph review comment
         if let Some(comment_id) = self.find_review_comment(pr_number)? {
             let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}");
@@ -432,8 +442,8 @@ impl SubmissionBackend for GitHubSubmission {
             }
 
             info!(
-                pr_number = pr_number,
-                comment_id = comment_id,
+                pr_number = %pr_number,
+                comment_id = %comment_id,
                 "updated review comment on PR"
             );
         } else {
@@ -448,14 +458,14 @@ impl SubmissionBackend for GitHubSubmission {
                 return Err(Error::Submission(format!("gh pr comment failed: {stderr}")));
             }
 
-            info!(pr_number = pr_number, "created review comment on PR");
+            info!(pr_number = %pr_number, "created review comment on PR");
         }
         Ok(())
     }
 
     fn submit_inline_pr_review(
         &self,
-        pr_number: u64,
+        pr_number: PrNumber,
         event: PullRequestReviewEvent,
         comments: &[InlineReviewComment],
     ) -> Result<()> {
@@ -510,7 +520,7 @@ impl SubmissionBackend for GitHubSubmission {
         }
 
         info!(
-            pr_number,
+            pr_number = %pr_number,
             comments = comments.len(),
             event = event.as_api_value(),
             "created batched inline PR review"
@@ -518,7 +528,7 @@ impl SubmissionBackend for GitHubSubmission {
         Ok(())
     }
 
-    fn fetch_pr_diff(&self, pr_number: u64) -> Result<String> {
+    fn fetch_pr_diff(&self, pr_number: PrNumber) -> Result<String> {
         let pr_number = pr_number.to_string();
         let output = Command::new("gh")
             .args(["pr", "diff", &pr_number, "--patch"])
@@ -533,63 +543,72 @@ impl SubmissionBackend for GitHubSubmission {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    fn fetch_pr_comments(&self, pr_number: u64) -> Result<Vec<PrComment>> {
+    fn fetch_pr_comments(&self, pr_number: PrNumber) -> Result<Vec<PrComment>> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments");
         run_gh_api(&endpoint)
     }
 
-    fn fetch_comment_by_id(&self, comment_id: u64) -> Result<PrComment> {
+    fn fetch_comment_by_id(&self, comment_id: CommentId) -> Result<PrComment> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}");
         run_gh_api(&endpoint)
     }
 
-    fn fetch_pr_review_comments(&self, pr_number: u64) -> Result<Vec<PrReviewComment>> {
+    fn fetch_pr_review_comments(&self, pr_number: PrNumber) -> Result<Vec<PrReviewComment>> {
         run_gh_api_paginated(&format!(
             "repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments"
         ))
     }
 
-    fn fetch_review_comment_by_id(&self, comment_id: u64) -> Result<PrReviewComment> {
+    fn fetch_review_comment_by_id(&self, comment_id: CommentId) -> Result<PrReviewComment> {
         run_gh_api(&format!(
             "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}"
         ))
     }
 
-    fn list_review_comment_reactions(&self, comment_id: u64) -> Result<Vec<Reaction>> {
+    fn list_review_comment_reactions(&self, comment_id: CommentId) -> Result<Vec<Reaction>> {
         run_gh_api_paginated(&format!(
             "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions"
         ))
     }
 
-    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<()> {
+    fn add_review_comment_reaction(&self, comment_id: CommentId, reaction: &str) -> Result<()> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions");
         run_gh_api_mutate(&endpoint, "POST", &[("content", reaction)])?;
-        info!(comment_id, reaction, "added reaction to review comment");
+        info!(comment_id = %comment_id, reaction, "added reaction to review comment");
         Ok(())
     }
 
-    fn delete_review_comment_reaction(&self, comment_id: u64, reaction_id: u64) -> Result<()> {
+    fn delete_review_comment_reaction(
+        &self,
+        comment_id: CommentId,
+        reaction_id: ReactionId,
+    ) -> Result<()> {
         let endpoint =
             format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions/{reaction_id}");
         run_gh_api_mutate(&endpoint, "DELETE", &[])?;
         info!(
-            comment_id,
-            reaction_id, "deleted reaction from review comment"
+            comment_id = %comment_id,
+            reaction_id = %reaction_id, "deleted reaction from review comment"
         );
         Ok(())
     }
 
-    fn reply_to_review_comment(&self, pr_number: u64, comment_id: u64, body: &str) -> Result<()> {
+    fn reply_to_review_comment(
+        &self,
+        pr_number: PrNumber,
+        comment_id: CommentId,
+        body: &str,
+    ) -> Result<()> {
         let endpoint =
             format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies");
         run_gh_api_mutate(&endpoint, "POST", &[("body", body)])?;
-        info!(pr_number, comment_id, "replied to review comment");
+        info!(pr_number = %pr_number, comment_id = %comment_id, "replied to review comment");
         Ok(())
     }
 
-    fn resolve_completed_review_threads(&self, pr_number: u64) -> Result<u32> {
+    fn resolve_completed_review_threads(&self, pr_number: PrNumber) -> Result<u32> {
         let (owner, repo) = detect_owner_repo()?;
-        crate::resolve_threads::resolve_completed_threads(&owner, &repo, pr_number as u32)
+        crate::resolve_threads::resolve_completed_threads(&owner, &repo, pr_number)
     }
 }
 
@@ -739,11 +758,15 @@ pub(crate) fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
 }
 
 /// Parse PR number from a URL like `https://github.com/owner/repo/pull/123`.
-fn parse_pr_number_from_url(url: &str) -> Option<u64> {
-    url.rsplit('/').next().and_then(|s| s.parse().ok())
+pub fn parse_pr_number_from_url(url: &str) -> Option<PrNumber> {
+    url.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(PrNumber::new)
 }
 
-fn pr_body_references_issue(body: &str, issue_number: u64) -> bool {
+fn pr_body_references_issue(body: &str, issue_number: IssueNumber) -> bool {
     let needle = format!("#{issue_number}");
     body.split_whitespace().any(|token| {
         token == needle || token.trim_matches(|c: char| ",.;:()[]{}".contains(c)) == needle
@@ -752,7 +775,7 @@ fn pr_body_references_issue(body: &str, issue_number: u64) -> bool {
 
 #[derive(Debug, Deserialize)]
 struct GhPrView {
-    number: u64,
+    number: PrNumber,
     title: String,
     #[serde(default)]
     body: String,
@@ -784,11 +807,11 @@ fn parse_pr_context_json(json: &str) -> std::result::Result<PrContext, String> {
     })
 }
 
-fn extract_issue_number_reference(body: &str) -> Option<u64> {
+fn extract_issue_number_reference(body: &str) -> Option<IssueNumber> {
     body.split_whitespace().find_map(|token| {
         let trimmed = token.trim_matches(|c: char| ",.;:()[]{}".contains(c));
         if let Some(num) = trimmed.strip_prefix('#') {
-            return num.parse::<u64>().ok();
+            return num.parse::<u64>().ok().map(IssueNumber::new);
         }
         None
     })
@@ -801,31 +824,45 @@ mod tests {
         parse_owner_repo_from_remote, parse_pr_context_json, parse_pr_number_from_url,
         pr_body_references_issue,
     };
+    use crate::ids::{CommentId, IssueNumber, PrNumber};
 
     #[test]
     fn test_pr_body_references_issue_exact_match() {
-        assert!(pr_body_references_issue("Resolves #42", 42));
+        assert!(pr_body_references_issue(
+            "Resolves #42",
+            IssueNumber::new(42)
+        ));
     }
 
     #[test]
     fn test_pr_body_references_issue_with_punctuation() {
-        assert!(pr_body_references_issue("Fixes (#42).", 42));
+        assert!(pr_body_references_issue(
+            "Fixes (#42).",
+            IssueNumber::new(42)
+        ));
     }
 
     #[test]
     fn test_pr_body_references_issue_not_partial() {
-        assert!(!pr_body_references_issue("Resolves #142", 42));
+        assert!(!pr_body_references_issue(
+            "Resolves #142",
+            IssueNumber::new(42)
+        ));
     }
 
     #[test]
     fn test_parse_pr_number_from_url() {
         assert_eq!(
             parse_pr_number_from_url("https://github.com/owner/repo/pull/123"),
-            Some(123)
+            Some(PrNumber::new(123))
         );
         assert_eq!(
             parse_pr_number_from_url("https://github.com/owner/repo/pull/1"),
-            Some(1)
+            Some(PrNumber::new(1))
+        );
+        assert_eq!(
+            parse_pr_number_from_url("https://github.com/owner/repo/pull/456/"),
+            Some(PrNumber::new(456))
         );
         assert_eq!(parse_pr_number_from_url("not-a-url"), None);
     }
@@ -842,13 +879,13 @@ mod tests {
         }"#;
 
         let ctx = parse_pr_context_json(json).unwrap();
-        assert_eq!(ctx.number, 9);
+        assert_eq!(ctx.number, PrNumber::new(9));
         assert_eq!(ctx.title, "Fix race condition");
         assert_eq!(ctx.body, "Resolves #42");
         assert_eq!(ctx.url, "https://github.com/o/r/pull/9");
         assert_eq!(ctx.head_branch, "feature/fix-race");
         assert_eq!(ctx.base_branch, "main");
-        assert_eq!(ctx.linked_issue_number, Some(42));
+        assert_eq!(ctx.linked_issue_number, Some(IssueNumber::new(42)));
     }
 
     #[test]
@@ -863,7 +900,7 @@ mod tests {
         }"#;
 
         let ctx = parse_pr_context_json(json).unwrap();
-        assert_eq!(ctx.number, 11);
+        assert_eq!(ctx.number, PrNumber::new(11));
         assert_eq!(ctx.linked_issue_number, None);
     }
 
@@ -899,7 +936,7 @@ mod tests {
 
     #[test]
     fn test_format_pr_comments_empty() {
-        let result = format_pr_comments_for_prompt(&[], 42);
+        let result = format_pr_comments_for_prompt(&[], PrNumber::new(42));
         assert_eq!(result, "No comments on PR #42 yet.");
     }
 
@@ -907,7 +944,7 @@ mod tests {
     fn test_format_pr_comments_with_entries() {
         let comments = vec![
             PrComment {
-                id: 1,
+                id: CommentId::new(1),
                 user_obj: Some(PrCommentUser {
                     login: "alice".to_string(),
                 }),
@@ -916,14 +953,14 @@ mod tests {
                 author_association: Some("OWNER".to_string()),
             },
             PrComment {
-                id: 2,
+                id: CommentId::new(2),
                 user_obj: None,
                 body: "Needs fix".to_string(),
                 created_at: "2025-01-02T00:00:00Z".to_string(),
                 author_association: Some("NONE".to_string()),
             },
         ];
-        let result = format_pr_comments_for_prompt(&comments, 10);
+        let result = format_pr_comments_for_prompt(&comments, PrNumber::new(10));
         assert!(result.contains("PR #10 has 2 comment(s)"));
         assert!(result.contains("@alice"));
         assert!(result.contains("<untrusted-content>\nLooks good!\n</untrusted-content>"));
@@ -937,7 +974,7 @@ mod tests {
     #[test]
     fn test_pr_comment_is_trusted() {
         let trusted = PrComment {
-            id: 1,
+            id: CommentId::new(1),
             user_obj: None,
             body: String::new(),
             created_at: String::new(),
@@ -946,7 +983,7 @@ mod tests {
         assert!(trusted.is_trusted());
 
         let member = PrComment {
-            id: 2,
+            id: CommentId::new(2),
             user_obj: None,
             body: String::new(),
             created_at: String::new(),
@@ -955,7 +992,7 @@ mod tests {
         assert!(member.is_trusted());
 
         let external = PrComment {
-            id: 3,
+            id: CommentId::new(3),
             user_obj: None,
             body: String::new(),
             created_at: String::new(),
@@ -964,7 +1001,7 @@ mod tests {
         assert!(!external.is_trusted());
 
         let missing = PrComment {
-            id: 4,
+            id: CommentId::new(4),
             user_obj: None,
             body: String::new(),
             created_at: String::new(),
@@ -975,8 +1012,14 @@ mod tests {
 
     #[test]
     fn test_extract_issue_number_reference() {
-        assert_eq!(extract_issue_number_reference("Resolves #42"), Some(42));
-        assert_eq!(extract_issue_number_reference("Fixes (#7)."), Some(7));
+        assert_eq!(
+            extract_issue_number_reference("Resolves #42"),
+            Some(IssueNumber::new(42))
+        );
+        assert_eq!(
+            extract_issue_number_reference("Fixes (#7)."),
+            Some(IssueNumber::new(7))
+        );
         assert_eq!(extract_issue_number_reference("No issue refs"), None);
     }
 

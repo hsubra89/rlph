@@ -1,3 +1,5 @@
+//! Linear issue tracker task source via GraphQL API.
+
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
 
@@ -6,6 +8,7 @@ use tracing::{debug, info};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::ids::IssueNumber;
 
 use super::{Priority, Task, TaskSource, retry_with_backoff};
 
@@ -429,7 +432,7 @@ impl TaskSource for LinearSource {
         Ok(Self::parse_issue(node))
     }
 
-    fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>> {
         let mut filter = self.build_issue_filter();
         filter["state"] = serde_json::json!({ "type": { "in": ["completed", "canceled"] } });
 
@@ -447,7 +450,7 @@ impl TaskSource for LinearSource {
 
         #[derive(Deserialize)]
         struct NumberNode {
-            number: u64,
+            number: IssueNumber,
         }
         #[derive(Deserialize)]
         struct NumberConnection {
@@ -458,7 +461,7 @@ impl TaskSource for LinearSource {
             serde_json::from_value(data.get("issues").cloned().unwrap_or_default())
                 .map_err(|e| Error::TaskSource(format!("failed to parse closed issues: {e}")))?;
 
-        let ids: HashSet<u64> = nums.nodes.into_iter().map(|n| n.number).collect();
+        let ids: HashSet<IssueNumber> = nums.nodes.into_iter().map(|n| n.number).collect();
         debug!(?ids, "fetched closed Linear task ids");
         Ok(ids)
     }
@@ -869,7 +872,14 @@ mod tests {
         let client = MockLinearClient::new(vec![Ok(data)]);
         let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
         let ids = source.fetch_closed_task_ids().unwrap();
-        assert_eq!(ids, HashSet::from([10, 20, 30]));
+        assert_eq!(
+            ids,
+            HashSet::from([
+                IssueNumber::new(10),
+                IssueNumber::new(20),
+                IssueNumber::new(30)
+            ])
+        );
     }
 
     #[test]

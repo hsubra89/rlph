@@ -1,3 +1,5 @@
+//! Agent runner abstraction: build CLI commands, handle timeout and resume.
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;

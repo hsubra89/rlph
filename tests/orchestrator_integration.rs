@@ -10,6 +10,7 @@ use std::time::Duration;
 use common::{default_test_config, setup_git_repo};
 use rlph::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
 use rlph::error::{Error, Result};
+use rlph::ids::{IssueNumber, PrNumber};
 use rlph::orchestrator::{
     CorrectionRunner, Orchestrator, ProgressReporter, ReviewInvocation, ReviewRunnerFactory,
     build_task_vars,
@@ -41,13 +42,13 @@ struct SourceTracker {
 #[derive(Default)]
 struct SubmissionTracker {
     submissions: Vec<(String, String, String, String)>,
-    comments: Vec<(u64, String)>,
+    comments: Vec<(PrNumber, String)>,
     reviews: Vec<PostedReview>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PostedReview {
-    pr_number: u64,
+    pr_number: PrNumber,
     event: PullRequestReviewEvent,
     comments: Vec<InlineReviewComment>,
 }
@@ -102,7 +103,7 @@ impl TaskSource for MockSource {
             .ok_or_else(|| Error::TaskSource(format!("task not found: {task_id}")))
     }
 
-    fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>> {
         Ok(HashSet::new())
     }
 }
@@ -207,7 +208,7 @@ impl TaskSource for SequenceSource {
             .ok_or_else(|| Error::TaskSource(format!("task not found: {task_id}")))
     }
 
-    fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>> {
         Ok(HashSet::new())
     }
 }
@@ -362,11 +363,14 @@ impl AgentRunner for FailAtPhaseRunner {
 
 struct MockSubmission {
     tracker: Arc<Mutex<SubmissionTracker>>,
-    existing_pr_for_issue: Option<u64>,
+    existing_pr_for_issue: Option<PrNumber>,
 }
 
 impl MockSubmission {
-    fn new(tracker: Arc<Mutex<SubmissionTracker>>, existing_pr_for_issue: Option<u64>) -> Self {
+    fn new(
+        tracker: Arc<Mutex<SubmissionTracker>>,
+        existing_pr_for_issue: Option<PrNumber>,
+    ) -> Self {
         Self {
             tracker,
             existing_pr_for_issue,
@@ -384,15 +388,15 @@ impl SubmissionBackend for MockSubmission {
         ));
         Ok(SubmitResult {
             url: "https://github.com/test/repo/pull/1".to_string(),
-            number: Some(1),
+            number: Some(PrNumber::new(1)),
         })
     }
 
-    fn find_existing_pr_for_issue(&self, _issue_number: u64) -> Result<Option<u64>> {
+    fn find_existing_pr_for_issue(&self, _issue_number: IssueNumber) -> Result<Option<PrNumber>> {
         Ok(self.existing_pr_for_issue)
     }
 
-    fn upsert_review_comment(&self, pr_number: u64, body: &str) -> Result<()> {
+    fn upsert_review_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
         self.tracker
             .lock()
             .unwrap()
@@ -403,7 +407,7 @@ impl SubmissionBackend for MockSubmission {
 
     fn submit_inline_pr_review(
         &self,
-        pr_number: u64,
+        pr_number: PrNumber,
         event: PullRequestReviewEvent,
         comments: &[InlineReviewComment],
     ) -> Result<()> {
@@ -415,7 +419,7 @@ impl SubmissionBackend for MockSubmission {
         Ok(())
     }
 
-    fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
+    fn fetch_pr_diff(&self, _pr_number: PrNumber) -> Result<String> {
         Ok(
             "diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,3 @@\n+fn main() {}\n+let x = 1;\n+let y = 2;\n"
                 .to_string(),
@@ -430,7 +434,7 @@ impl SubmissionBackend for FailSubmission {
         Err(Error::Submission("mock submission failure".to_string()))
     }
 
-    fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
+    fn fetch_pr_diff(&self, _pr_number: PrNumber) -> Result<String> {
         Ok("diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,1 @@\n+fn main() {}\n".to_string())
     }
 }
@@ -550,15 +554,34 @@ impl ReviewRunnerFactory for FailReviewFactory {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PipelineEvent {
     FetchingTasks,
-    TasksFound { count: usize },
-    TaskSelected { issue_number: u64, title: String },
+    TasksFound {
+        count: usize,
+    },
+    TaskSelected {
+        issue_number: IssueNumber,
+        title: String,
+    },
     ImplementStarted,
-    PrCreated { url: String },
-    IterationComplete { issue_number: u64, title: String },
-    PhasesStarted { count: usize, names: Vec<String> },
-    PhaseComplete { name: String },
-    ReviewSummary { body: String },
-    PrUrl { url: String },
+    PrCreated {
+        url: String,
+    },
+    IterationComplete {
+        issue_number: IssueNumber,
+        title: String,
+    },
+    PhasesStarted {
+        count: usize,
+        names: Vec<String>,
+    },
+    PhaseComplete {
+        name: String,
+    },
+    ReviewSummary {
+        body: String,
+    },
+    PrUrl {
+        url: String,
+    },
 }
 
 /// Test-only reporter that collects events into a shared vec.
@@ -593,7 +616,7 @@ impl ProgressReporter for CapturingReporter {
             .push(PipelineEvent::TasksFound { count });
     }
 
-    fn task_selected(&self, issue_number: u64, title: &str) {
+    fn task_selected(&self, issue_number: IssueNumber, title: &str) {
         self.events
             .lock()
             .unwrap()
@@ -616,7 +639,7 @@ impl ProgressReporter for CapturingReporter {
         });
     }
 
-    fn iteration_complete(&self, issue_number: u64, title: &str) {
+    fn iteration_complete(&self, issue_number: IssueNumber, title: &str) {
         self.events
             .lock()
             .unwrap()
@@ -1085,7 +1108,7 @@ async fn test_existing_pr_skips_submission() {
     let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
         MockRunner::new("gh-42"),
-        MockSubmission::new(Arc::clone(&sub_tracker), Some(99)),
+        MockSubmission::new(Arc::clone(&sub_tracker), Some(PrNumber::new(99))),
         WorktreeManager::new(
             repo_dir.path().to_path_buf(),
             wt_dir.path().to_path_buf(),
@@ -1121,7 +1144,7 @@ async fn test_continuous_mode_polls_with_empty_results() {
     config.once = false;
     config.continuous = true;
     config.max_iterations = Some(2);
-    config.poll_seconds = 1;
+    config.poll_seconds = std::time::Duration::from_secs(1);
 
     let orchestrator = Orchestrator::new(
         source,
@@ -1195,7 +1218,7 @@ async fn test_continuous_shutdown_exits_between_iterations() {
     config.once = false;
     config.continuous = true;
     config.max_iterations = None;
-    config.poll_seconds = 1;
+    config.poll_seconds = std::time::Duration::from_secs(1);
 
     let orchestrator = Orchestrator::new(
         MockSource::new(vec![task], Arc::clone(&source_tracker)),
@@ -1236,7 +1259,9 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
         wt_dir.path().to_path_buf(),
         "main".to_string(),
     );
-    let worktree_info = worktree_mgr.create(42, "review-only").unwrap();
+    let worktree_info = worktree_mgr
+        .create(IssueNumber::new(42), "review-only")
+        .unwrap();
     let state_dir = repo_dir.path().join(".rlph-test-state");
     let vars = make_review_vars(
         &task,
@@ -1262,7 +1287,7 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
         mark_in_review_task_id: Some("42".to_string()),
         worktree_info: worktree_info.clone(),
         vars,
-        comment_pr_number: Some(77),
+        comment_pr_number: Some(PrNumber::new(77)),
     };
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1275,7 +1300,7 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
 
     let submission_data = sub_tracker.lock().unwrap();
     assert_eq!(submission_data.comments.len(), 1);
-    assert_eq!(submission_data.comments[0].0, 77);
+    assert_eq!(submission_data.comments[0].0, PrNumber::new(77));
     assert!(
         submission_data.comments[0]
             .1
@@ -1306,7 +1331,9 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
         wt_dir.path().to_path_buf(),
         "main".to_string(),
     );
-    let worktree_info = worktree_mgr.create(88, "review-pr-only").unwrap();
+    let worktree_info = worktree_mgr
+        .create(IssueNumber::new(88), "review-pr-only")
+        .unwrap();
     let state_dir = repo_dir.path().join(".rlph-test-state");
     let vars = make_review_vars(
         &task,
@@ -1332,7 +1359,7 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
         mark_in_review_task_id: None,
         worktree_info,
         vars,
-        comment_pr_number: Some(88),
+        comment_pr_number: Some(PrNumber::new(88)),
     };
     orchestrator
         .run_review_for_existing_pr(invocation)
@@ -1363,7 +1390,9 @@ async fn test_review_only_needs_fix_completes_successfully() {
         wt_dir.path().to_path_buf(),
         "main".to_string(),
     );
-    let worktree_info = worktree_mgr.create(99, "review-needs-fix").unwrap();
+    let worktree_info = worktree_mgr
+        .create(IssueNumber::new(99), "review-needs-fix")
+        .unwrap();
     let vars = make_review_vars(
         &task,
         repo_dir.path(),
@@ -1389,7 +1418,7 @@ async fn test_review_only_needs_fix_completes_successfully() {
         mark_in_review_task_id: None,
         worktree_info: worktree_info.clone(),
         vars,
-        comment_pr_number: Some(99),
+        comment_pr_number: Some(PrNumber::new(99)),
     };
     // needs_fix verdict should complete without error
     orchestrator
@@ -1407,7 +1436,7 @@ async fn test_review_only_needs_fix_completes_successfully() {
     assert!(!submission_data.comments[0].1.contains(FINDING_MARKER));
 
     assert_eq!(submission_data.reviews.len(), 1);
-    assert_eq!(submission_data.reviews[0].pr_number, 99);
+    assert_eq!(submission_data.reviews[0].pr_number, PrNumber::new(99));
     assert_eq!(
         submission_data.reviews[0].event,
         PullRequestReviewEvent::Comment
@@ -1448,7 +1477,9 @@ fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
         wt_dir.to_path_buf(),
         "main".to_string(),
     );
-    let worktree_info = worktree_mgr.create(42, "review-reporter").unwrap();
+    let worktree_info = worktree_mgr
+        .create(IssueNumber::new(42), "review-reporter")
+        .unwrap();
     let state_dir = repo_dir.join(".rlph-test-state");
     let vars = make_review_vars(task, repo_dir, &worktree_info.branch, &worktree_info.path);
 
@@ -1472,7 +1503,7 @@ fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
         mark_in_review_task_id: Some("42".to_string()),
         worktree_info,
         vars,
-        comment_pr_number: Some(77),
+        comment_pr_number: Some(PrNumber::new(77)),
     };
 
     (orchestrator, invocation, events)
@@ -1617,7 +1648,7 @@ fn build_iteration_orchestrator_with_reporter<F: ReviewRunnerFactory>(
     tasks: Vec<Task>,
     factory: F,
     dry_run: bool,
-    existing_pr_for_issue: Option<u64>,
+    existing_pr_for_issue: Option<PrNumber>,
 ) -> (
     Orchestrator<MockSource, MockRunner, MockSubmission, F, CapturingReporter>,
     Arc<Mutex<Vec<PipelineEvent>>>,
@@ -1716,7 +1747,7 @@ async fn test_iteration_reports_task_selected() {
     let events = events.lock().unwrap();
     assert!(
         events.contains(&PipelineEvent::TaskSelected {
-            issue_number: 42,
+            issue_number: IssueNumber::new(42),
             title: "Fix bug".to_string(),
         }),
         "expected TaskSelected event"
@@ -1797,7 +1828,7 @@ async fn test_iteration_reports_iteration_complete() {
     let events = events.lock().unwrap();
     assert!(
         events.contains(&PipelineEvent::IterationComplete {
-            issue_number: 42,
+            issue_number: IssueNumber::new(42),
             title: "Fix bug".to_string(),
         }),
         "expected IterationComplete event"
@@ -1846,7 +1877,7 @@ async fn test_iteration_reports_full_event_sequence() {
     assert_eq!(
         *iteration_events[2],
         PipelineEvent::TaskSelected {
-            issue_number: 42,
+            issue_number: IssueNumber::new(42),
             title: "Fix bug".to_string(),
         }
     );
@@ -1854,7 +1885,7 @@ async fn test_iteration_reports_full_event_sequence() {
     assert_eq!(
         *iteration_events[4],
         PipelineEvent::IterationComplete {
-            issue_number: 42,
+            issue_number: IssueNumber::new(42),
             title: "Fix bug".to_string(),
         }
     );
@@ -2013,7 +2044,9 @@ fn build_correction_test_orchestrator<F: ReviewRunnerFactory>(
         wt_dir.to_path_buf(),
         "main".to_string(),
     );
-    let worktree_info = worktree_mgr.create(42, "correction-test").unwrap();
+    let worktree_info = worktree_mgr
+        .create(IssueNumber::new(42), "correction-test")
+        .unwrap();
     let state_dir = repo_dir.join(".rlph-test-state");
     let vars = make_review_vars(task, repo_dir, &worktree_info.branch, &worktree_info.path);
 
@@ -2038,7 +2071,7 @@ fn build_correction_test_orchestrator<F: ReviewRunnerFactory>(
         mark_in_review_task_id: None,
         worktree_info,
         vars,
-        comment_pr_number: Some(77),
+        comment_pr_number: Some(PrNumber::new(77)),
     };
 
     let fut = async move { orchestrator.run_review_for_existing_pr(invocation).await };

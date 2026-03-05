@@ -1,3 +1,5 @@
+//! Standalone fix flow for queued findings on a PR.
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -23,6 +25,7 @@ use crate::fix_comment::{
 };
 use crate::fix_deps::{FindingDeps, resolved_finding_ids};
 use crate::fix_scheduler::{self, ScheduleAction};
+use crate::ids::{CommentId, PrNumber, ReactionId};
 use crate::orchestrator::{CorrectionRunner, retry_with_correction};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
@@ -45,7 +48,7 @@ use crate::worktree::{WorktreeManager, git_in_dir, resolve_setup_script, validat
 ///    - Clean up worktree
 /// 4. Collect results, log any errors
 pub async fn run_fix<C: CorrectionRunner + 'static>(
-    pr_number: u64,
+    pr_number: PrNumber,
     pr_branch: &str,
     config: &Config,
     submission: Arc<impl SubmissionBackend + 'static>,
@@ -57,7 +60,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
     validate_branch_name(pr_branch)?;
 
     // 1. Fetch review comments and reactions, build fix items
-    info!(pr_number, "polling GitHub for PR review comments");
+    info!(pr_number = %pr_number, "polling GitHub for PR review comments");
     let (items, comments) = fetch_and_parse_items(pr_number, &*submission)?;
     info!(total = items.len(), "parsed fix items from review comments");
 
@@ -165,7 +168,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 
     // 4. Report results
     if errors.is_empty() {
-        info!(pr_number, "all fixes completed successfully");
+        info!(pr_number = %pr_number, "all fixes completed successfully");
         Ok(())
     } else {
         let count = errors.len();
@@ -187,7 +190,7 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 /// On shutdown signal: completes the current fix (if any), then exits cleanly.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
-    pr_number: u64,
+    pr_number: PrNumber,
     pr_branch: &str,
     config: &Config,
     submission: Arc<impl SubmissionBackend + 'static>,
@@ -208,7 +211,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         Arc::clone(&correction_runner),
         setup_script,
     );
-    let poll_duration = Duration::from_secs(config.poll_seconds);
+    let poll_duration = config.poll_seconds;
 
     let mut completed: HashSet<String> = HashSet::new();
     let mut failed: HashSet<String> = HashSet::new();
@@ -227,7 +230,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         // Fetch and parse
         eprintln!("[rlph] polling for newly 🚀-reacted comments (cycle {cycle})");
         info!(
-            pr_number,
+            pr_number = %pr_number,
             cycle,
             completed = completed.len(),
             failed = failed.len(),
@@ -335,7 +338,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
     completed: &mut HashSet<String>,
     failed: &mut HashSet<String>,
     retries: &mut HashMap<String, u8>,
-    pr_number: u64,
+    pr_number: PrNumber,
     prompt_engine: &PromptEngine,
     reply_map: &mut ReplyMap,
     shutdown: &watch::Receiver<bool>,
@@ -461,7 +464,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
 /// Returns the raw comments alongside the fix items so callers can build
 /// reply maps lazily — only when there are newly-queued items to process.
 pub fn fetch_and_parse_items(
-    pr_number: u64,
+    pr_number: PrNumber,
     submission: &(impl SubmissionBackend + ?Sized),
 ) -> Result<(Vec<FixItem>, Vec<PrReviewComment>)> {
     let comments = submission.fetch_pr_review_comments(pr_number)?;
@@ -474,7 +477,7 @@ pub fn fetch_and_parse_items(
 
     // Fetch reactions in batches to avoid exhausting file descriptors
     // (each `gh api` call opens multiple fds).
-    let reactions_by_comment: Vec<Result<(u64, Vec<Reaction>)>> =
+    let reactions_by_comment: Vec<Result<(CommentId, Vec<Reaction>)>> =
         crate::run_batched(&finding_comments, |comment| {
             let id = comment.id;
             submission
@@ -543,7 +546,7 @@ async fn run_single_fix(
 /// Bundled context for a single fix operation, replacing long parameter lists.
 struct FixContext<'a> {
     item: FixItem,
-    pr_number: u64,
+    pr_number: PrNumber,
     pr_branch: &'a str,
     fix_branch: &'a str,
     fix_config: &'a ReviewStepConfig,
@@ -642,7 +645,7 @@ struct PreparedFixItem {
     fix_branch: String,
     prompt: String,
     /// The GitHub review comment ID (for re-fetching fresh body at execution time).
-    comment_id: u64,
+    comment_id: CommentId,
     /// Reply bodies collected from the review thread.
     replies: Vec<String>,
 }
@@ -654,7 +657,7 @@ struct PreparedFixItem {
 fn lookup_and_prepare(
     finding_id: &str,
     queued_items: &[FixItem],
-    pr_number: u64,
+    pr_number: PrNumber,
     fix_config: &ReviewStepConfig,
     prompt_engine: &PromptEngine,
     reply_map: &mut ReplyMap,
@@ -683,7 +686,7 @@ fn lookup_and_prepare(
 /// rendering failure), with a warning already logged.
 fn prepare_fix_item(
     item: FixItem,
-    pr_number: u64,
+    pr_number: PrNumber,
     fix_config: &ReviewStepConfig,
     prompt_engine: &PromptEngine,
     reply_map: &mut ReplyMap,
@@ -728,7 +731,7 @@ fn prepare_fix_item(
 /// Warns and continues without context on fetch failure.
 fn append_review_context(
     submission: &dyn SubmissionBackend,
-    comment_id: u64,
+    comment_id: CommentId,
     replies: &[String],
     prompt: &mut String,
 ) {
@@ -738,7 +741,7 @@ fn append_review_context(
         }
         Err(e) => {
             warn!(
-                comment_id,
+                comment_id = %comment_id,
                 error = %e,
                 "failed to re-fetch review comment body, proceeding without review context"
             );
@@ -752,7 +755,7 @@ fn append_review_context(
 async fn run_prepared_fix<S: SubmissionBackend, C: CorrectionRunner>(
     shared: &SharedFixState<S, C>,
     prepared: PreparedFixItem,
-    pr_number: u64,
+    pr_number: PrNumber,
 ) -> Result<()> {
     let PreparedFixItem {
         item,
@@ -792,7 +795,7 @@ async fn run_prepared_fix<S: SubmissionBackend, C: CorrectionRunner>(
 async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     shared: &SharedFixState<S, C>,
     prepared_items: Vec<PreparedFixItem>,
-    pr_number: u64,
+    pr_number: PrNumber,
 ) -> (HashSet<String>, Option<(String, Error)>) {
     let batch_size = prepared_items.len();
     let mut completed_ids = HashSet::new();
@@ -1032,7 +1035,7 @@ async fn resume_agent(
             session_id,
             prompt,
             working_dir,
-            fix_config.agent_timeout.map(Duration::from_secs),
+            fix_config.agent_timeout,
         )
         .await
 }
@@ -1091,7 +1094,7 @@ fn build_fix_runner(config: &ReviewStepConfig, agent_timeout_retries: u32) -> An
         config.agent_model.as_deref(),
         config.agent_effort.as_deref(),
         config.agent_variant.as_deref(),
-        config.agent_timeout.map(Duration::from_secs),
+        config.agent_timeout,
         agent_timeout_retries,
     )
     .with_stream_prefix("fix".to_string())
@@ -1145,14 +1148,14 @@ async fn run_fix_agent_and_apply(
 /// Remove 🚀 reactions from a single review comment (best-effort).
 fn remove_rocket_reactions(
     finding_id: &str,
-    comment_id: u64,
-    rocket_reaction_ids: &[u64],
+    comment_id: CommentId,
+    rocket_reaction_ids: &[ReactionId],
     submission: &(impl SubmissionBackend + ?Sized),
 ) {
-    for reaction_id in rocket_reaction_ids {
-        if let Err(e) = submission.delete_review_comment_reaction(comment_id, *reaction_id) {
+    for &reaction_id in rocket_reaction_ids {
+        if let Err(e) = submission.delete_review_comment_reaction(comment_id, reaction_id) {
             warn!(
-                finding_id, comment_id, reaction_id,
+                finding_id, comment_id = %comment_id, reaction_id = %reaction_id,
                 error = %e,
                 "failed to remove 🚀 reaction"
             );
@@ -1171,7 +1174,7 @@ fn cleanup_stale_rockets(items: &[FixItem], submission: &(impl SubmissionBackend
         {
             info!(
                 finding_id = %item.finding.id,
-                comment_id = item.comment_id,
+                comment_id = %item.comment_id,
                 rockets = item.rocket_reaction_ids.len(),
                 "cleaning up stale 🚀 reactions on resolved finding"
             );
@@ -1211,7 +1214,7 @@ fn update_reactions_and_reply(
 
     if let Err(e) = submission.add_review_comment_reaction(comment_id, reaction) {
         warn!(
-            %finding_id, comment_id, reaction,
+            %finding_id, comment_id = %comment_id, reaction,
             error = %e,
             "failed to add result reaction"
         );
@@ -1219,14 +1222,14 @@ fn update_reactions_and_reply(
 
     // Post reply (best-effort)
     info!(
-        pr_number = ctx.pr_number,
+        pr_number = %ctx.pr_number,
         %finding_id,
-        comment_id,
+        comment_id = %comment_id,
         "posting fix reply to review comment"
     );
     if let Err(e) = submission.reply_to_review_comment(ctx.pr_number, comment_id, &reply_body) {
         warn!(
-            %finding_id, comment_id,
+            %finding_id, comment_id = %comment_id,
             error = %e,
             "failed to post fix reply"
         );
@@ -1454,9 +1457,9 @@ mod tests {
 
         // Only "b" has a 🚀 reaction
         let reactions = vec![
-            (100u64, vec![]),
-            (200u64, make_reactions(&[("rocket", 1)])),
-            (300u64, vec![]),
+            (CommentId::new(100), vec![]),
+            (CommentId::new(200), make_reactions(&[("rocket", 1)])),
+            (CommentId::new(300), vec![]),
         ];
 
         let items = build_fix_items_from_review_comments(&[c1, c2, c3], &reactions);
@@ -1478,9 +1481,9 @@ mod tests {
 
         // "a" and "c" have 🚀 reactions
         let reactions = vec![
-            (100u64, make_reactions(&[("rocket", 1)])),
-            (200u64, vec![]),
-            (300u64, make_reactions(&[("rocket", 2)])),
+            (CommentId::new(100), make_reactions(&[("rocket", 1)])),
+            (CommentId::new(200), vec![]),
+            (CommentId::new(300), make_reactions(&[("rocket", 2)])),
         ];
 
         let items = build_fix_items_from_review_comments(&[c1, c2, c3], &reactions);
@@ -1515,7 +1518,7 @@ mod tests {
         let c1 = make_review_comment(100, &findings[0]);
 
         // Has 👍 (fixed) — not eligible
-        let reactions = vec![(100u64, make_reactions(&[("+1", 1)]))];
+        let reactions = vec![(CommentId::new(100), make_reactions(&[("+1", 1)]))];
 
         let items = build_fix_items_from_review_comments(&[c1], &reactions);
         let eligible: Vec<_> = items
@@ -1537,8 +1540,8 @@ mod tests {
 
         // Both have 🚀
         let reactions = vec![
-            (100u64, make_reactions(&[("rocket", 1)])),
-            (200u64, make_reactions(&[("rocket", 2)])),
+            (CommentId::new(100), make_reactions(&[("rocket", 1)])),
+            (CommentId::new(200), make_reactions(&[("rocket", 2)])),
         ];
 
         let items = build_fix_items_from_review_comments(&[c1, c2], &reactions);
@@ -1559,8 +1562,8 @@ mod tests {
 
         // a has 👍 (fixed), b has 🚀
         let reactions = vec![
-            (100u64, make_reactions(&[("+1", 1)])),
-            (200u64, make_reactions(&[("rocket", 2)])),
+            (CommentId::new(100), make_reactions(&[("+1", 1)])),
+            (CommentId::new(200), make_reactions(&[("rocket", 2)])),
         ];
 
         let items = build_fix_items_from_review_comments(&[c1, c2], &reactions);
@@ -1578,8 +1581,8 @@ mod tests {
 
         // a has 😕 (wontfix), b has 🚀
         let reactions = vec![
-            (100u64, make_reactions(&[("confused", 1)])),
-            (200u64, make_reactions(&[("rocket", 2)])),
+            (CommentId::new(100), make_reactions(&[("confused", 1)])),
+            (CommentId::new(200), make_reactions(&[("rocket", 2)])),
         ];
 
         let items = build_fix_items_from_review_comments(&[c1, c2], &reactions);
@@ -1599,8 +1602,8 @@ mod tests {
         let c2 = make_review_comment(200, &findings[1]);
 
         let reactions = vec![
-            (100u64, make_reactions(&[("rocket", 1)])),
-            (200u64, make_reactions(&[("rocket", 2)])),
+            (CommentId::new(100), make_reactions(&[("rocket", 1)])),
+            (CommentId::new(200), make_reactions(&[("rocket", 2)])),
         ];
 
         let items = build_fix_items_from_review_comments(&[c1, c2], &reactions);
@@ -1622,9 +1625,9 @@ mod tests {
 
         // All queued
         let reactions = vec![
-            (100u64, make_reactions(&[("rocket", 1)])),
-            (200u64, make_reactions(&[("rocket", 2)])),
-            (300u64, make_reactions(&[("rocket", 3)])),
+            (CommentId::new(100), make_reactions(&[("rocket", 1)])),
+            (CommentId::new(200), make_reactions(&[("rocket", 2)])),
+            (CommentId::new(300), make_reactions(&[("rocket", 3)])),
         ];
 
         let items = build_fix_items_from_review_comments(&[c1, c2, c3], &reactions);
@@ -1646,9 +1649,9 @@ mod tests {
         let d2 = make_review_comment(200, &findings2[1]);
         let d3 = make_review_comment(300, &findings2[2]);
         let reactions2 = vec![
-            (100u64, make_reactions(&[("+1", 10)])),    // a fixed
-            (200u64, make_reactions(&[("rocket", 2)])), // b queued
-            (300u64, make_reactions(&[("rocket", 3)])), // c queued
+            (CommentId::new(100), make_reactions(&[("+1", 10)])), // a fixed
+            (CommentId::new(200), make_reactions(&[("rocket", 2)])), // b queued
+            (CommentId::new(300), make_reactions(&[("rocket", 3)])), // c queued
         ];
         let items2 = build_fix_items_from_review_comments(&[d1, d2, d3], &reactions2);
         let resolved2 = resolved_finding_ids(&items2);
@@ -1662,7 +1665,7 @@ mod tests {
         let findings = [make_finding_with_deps("a", &["nonexistent"])];
         let c1 = make_review_comment(100, &findings[0]);
 
-        let reactions = vec![(100u64, make_reactions(&[("rocket", 1)]))];
+        let reactions = vec![(CommentId::new(100), make_reactions(&[("rocket", 1)]))];
 
         let items = build_fix_items_from_review_comments(&[c1], &reactions);
         let deps = FindingDeps::build(&items);
@@ -1679,8 +1682,8 @@ mod tests {
         FixItem {
             finding,
             state: FindingState::Queued,
-            comment_id,
-            rocket_reaction_ids: vec![1],
+            comment_id: CommentId::new(comment_id),
+            rocket_reaction_ids: vec![ReactionId::new(1)],
         }
     }
 
@@ -1703,7 +1706,13 @@ mod tests {
 
         for item in items {
             let finding_id = item.finding.id.clone();
-            match prepare_fix_item(item, 42, &fix_config, &engine, &mut reply_map) {
+            match prepare_fix_item(
+                item,
+                PrNumber::new(42),
+                &fix_config,
+                &engine,
+                &mut reply_map,
+            ) {
                 Some(p) => prepared.push(p),
                 None => {
                     failed.insert(finding_id);

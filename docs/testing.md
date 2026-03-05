@@ -15,6 +15,15 @@
   - `prd_integration.rs` — PRD session flow
 - **CI-friendly output:** Use `--reporter default --failure-output immediate --success-output immediate` (or set `CI=true`) to disable the progress bar and print test names as they complete.
 
+## Execution Policy
+
+- **Required pre-merge gates (mirror CI):**
+  - `cargo nextest run`
+  - `cargo nextest run --profile integration -E 'binary(cli_binary)'`
+- **Optional local sweep (not merge-blocking):**
+  - `cargo nextest run --profile integration`
+- **Runner binary prerequisites:** `claude_binary`, `codex_binary`, and `opencode_binary` tests may require local CLI binaries and auth/session setup. Run these when validating runner-specific changes.
+
 ## Mocking Strategy
 
 No mocking framework. Mocks are hand-rolled per module:

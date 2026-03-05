@@ -1,3 +1,5 @@
+//! TOML-based state persistence with flock-based file locking.
+
 use std::collections::HashMap;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};

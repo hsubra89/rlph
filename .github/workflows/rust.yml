@@ -21,6 +21,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: rustfmt
+    - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
     - name: Check formatting
       run: cargo fmt --all -- --check
 
@@ -31,6 +32,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy
+    - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
     - name: Lint
       run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -39,6 +41,21 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+    - uses: taiki-e/install-action@nextest
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
+      run: cargo nextest run --verbose
+    - name: Run integration tests (CI-safe subset)
+      run: cargo nextest run --profile integration -E 'binary(cli_binary)' --verbose
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
     - uses: taiki-e/install-action@nextest
     - name: Build
       run: cargo build --verbose

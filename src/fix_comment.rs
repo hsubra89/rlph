@@ -1,15 +1,18 @@
+//! Finding extraction from PR review comments and reaction-based state classification.
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 
 use crate::fix_deps::{FindingDeps, resolved_finding_ids};
+use crate::ids::{CommentId, ReactionId};
 use crate::review_schema::{
     FINDING_MARKER, ReviewFinding, capitalize_first, extract_finding_json, group_by_category,
 };
 use crate::submission::{PrReviewComment, Reaction};
 
 /// Reply bodies grouped by their parent review comment ID.
-pub type ReplyMap = HashMap<u64, Vec<String>>;
+pub type ReplyMap = HashMap<CommentId, Vec<String>>;
 
 /// GitHub reaction content strings used for fix workflow signaling.
 pub const REACTION_ROCKET: &str = "rocket";
@@ -46,9 +49,9 @@ pub struct FixItem {
     pub finding: ReviewFinding,
     pub state: FindingState,
     /// The GitHub comment ID of the inline review comment containing this finding.
-    pub comment_id: u64,
+    pub comment_id: CommentId,
     /// Reaction IDs for 🚀 reactions on this comment (needed for removal after fix).
-    pub rocket_reaction_ids: Vec<u64>,
+    pub rocket_reaction_ids: Vec<ReactionId>,
 }
 
 /// Result of applying a fix to a finding.
@@ -63,7 +66,7 @@ pub enum FixResultKind {
 ///
 /// Priority: Fixed (👍) and WontFix (😕) take precedence over Queued (🚀).
 /// If both 👍 and 😕 are present, Fixed wins.
-pub fn classify_reactions(reactions: &[Reaction]) -> (FindingState, Vec<u64>) {
+pub fn classify_reactions(reactions: &[Reaction]) -> (FindingState, Vec<ReactionId>) {
     let mut has_thumbs_up = false;
     let mut has_confused = false;
     let mut rocket_ids = Vec::new();
@@ -97,9 +100,9 @@ pub fn classify_reactions(reactions: &[Reaction]) -> (FindingState, Vec<u64>) {
 /// Reply comments (`in_reply_to_id` set) are skipped.
 pub fn build_fix_items_from_review_comments(
     comments: &[PrReviewComment],
-    reactions_by_comment: &[(u64, Vec<Reaction>)],
+    reactions_by_comment: &[(CommentId, Vec<Reaction>)],
 ) -> Vec<FixItem> {
-    let reactions_map: HashMap<u64, &[Reaction]> = reactions_by_comment
+    let reactions_map: HashMap<CommentId, &[Reaction]> = reactions_by_comment
         .iter()
         .map(|(id, r)| (*id, r.as_slice()))
         .collect();
@@ -327,7 +330,7 @@ mod tests {
         let reactions = make_reactions(&[("rocket", 1)]);
         let (state, rocket_ids) = classify_reactions(&reactions);
         assert_eq!(state, FindingState::Queued);
-        assert_eq!(rocket_ids, vec![1]);
+        assert_eq!(rocket_ids, vec![ReactionId::new(1)]);
     }
 
     #[test]
@@ -349,7 +352,7 @@ mod tests {
         let reactions = make_reactions(&[("rocket", 1), ("+1", 2)]);
         let (state, rocket_ids) = classify_reactions(&reactions);
         assert_eq!(state, FindingState::Fixed);
-        assert_eq!(rocket_ids, vec![1]);
+        assert_eq!(rocket_ids, vec![ReactionId::new(1)]);
     }
 
     #[test]
@@ -357,7 +360,7 @@ mod tests {
         let reactions = make_reactions(&[("rocket", 1), ("confused", 2)]);
         let (state, rocket_ids) = classify_reactions(&reactions);
         assert_eq!(state, FindingState::WontFix);
-        assert_eq!(rocket_ids, vec![1]);
+        assert_eq!(rocket_ids, vec![ReactionId::new(1)]);
     }
 
     #[test]
@@ -386,7 +389,7 @@ mod tests {
     fn test_rocket_ids_collects_all_rocket_reactions() {
         let reactions = make_reactions(&[("rocket", 10), ("heart", 20), ("rocket", 30)]);
         let (_, rocket_ids) = classify_reactions(&reactions);
-        assert_eq!(rocket_ids, vec![10, 30]);
+        assert_eq!(rocket_ids, vec![ReactionId::new(10), ReactionId::new(30)]);
     }
 
     // ---- build_fix_items_from_review_comments tests ----
@@ -395,20 +398,20 @@ mod tests {
     fn test_build_items_from_comments_with_finding() {
         let finding = make_finding("bug-1", Severity::Critical, "correctness");
         let comment = make_review_comment(100, &finding);
-        let reactions = vec![(100u64, make_reactions(&[("rocket", 1)]))];
+        let reactions = vec![(CommentId::new(100), make_reactions(&[("rocket", 1)]))];
 
         let items = build_fix_items_from_review_comments(&[comment], &reactions);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].finding.id, "bug-1");
         assert_eq!(items[0].state, FindingState::Queued);
-        assert_eq!(items[0].comment_id, 100);
-        assert_eq!(items[0].rocket_reaction_ids, vec![1]);
+        assert_eq!(items[0].comment_id, CommentId::new(100));
+        assert_eq!(items[0].rocket_reaction_ids, vec![ReactionId::new(1)]);
     }
 
     #[test]
     fn test_build_items_skips_comments_without_marker() {
         let comment = PrReviewComment {
-            id: 100,
+            id: CommentId::new(100),
             body: "Just a regular comment".to_string(),
             in_reply_to_id: None,
         };
@@ -421,11 +424,11 @@ mod tests {
         let finding = make_finding("bug-1", Severity::Critical, "correctness");
         let body = render_inline_finding_comment_for_github(&finding, &[], None);
         let comment = PrReviewComment {
-            id: 100,
+            id: CommentId::new(100),
             body,
-            in_reply_to_id: Some(50), // This is a reply
+            in_reply_to_id: Some(CommentId::new(50)), // This is a reply
         };
-        let reactions = vec![(100u64, make_reactions(&[("rocket", 1)]))];
+        let reactions = vec![(CommentId::new(100), make_reactions(&[("rocket", 1)]))];
 
         let items = build_fix_items_from_review_comments(&[comment], &reactions);
         assert!(items.is_empty());
@@ -441,9 +444,9 @@ mod tests {
         let c3 = make_review_comment(300, &f3);
 
         let reactions = vec![
-            (100u64, make_reactions(&[("rocket", 1)])), // Queued
-            (200u64, make_reactions(&[("+1", 2)])),     // Fixed
-            (300u64, vec![]),                           // Pending (no reactions)
+            (CommentId::new(100), make_reactions(&[("rocket", 1)])), // Queued
+            (CommentId::new(200), make_reactions(&[("+1", 2)])),     // Fixed
+            (CommentId::new(300), vec![]),                           // Pending (no reactions)
         ];
 
         let items = build_fix_items_from_review_comments(&[c1, c2, c3], &reactions);
@@ -472,7 +475,7 @@ mod tests {
     #[test]
     fn test_build_items_malformed_json_skipped() {
         let comment = PrReviewComment {
-            id: 100,
+            id: CommentId::new(100),
             body: "**CRITICAL** `f.rs` L1: bug <!-- rlph-finding:{bad json} -->".to_string(),
             in_reply_to_id: None,
         };
@@ -492,7 +495,7 @@ mod tests {
             depends_on: vec!["null-check".to_string()],
         };
         let comment = make_review_comment(100, &f);
-        let reactions = vec![(100u64, make_reactions(&[("rocket", 1)]))];
+        let reactions = vec![(CommentId::new(100), make_reactions(&[("rocket", 1)]))];
 
         let items = build_fix_items_from_review_comments(&[comment], &reactions);
         assert_eq!(items.len(), 1);
@@ -513,13 +516,13 @@ mod tests {
             FixItem {
                 finding: make_finding("s1", Severity::Info, "style"),
                 state: FindingState::Pending,
-                comment_id: 1,
+                comment_id: CommentId::new(1),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
                 finding: make_finding("c1", Severity::Critical, "correctness"),
                 state: FindingState::Queued,
-                comment_id: 2,
+                comment_id: CommentId::new(2),
                 rocket_reaction_ids: vec![],
             },
         ];
@@ -536,25 +539,25 @@ mod tests {
             FixItem {
                 finding: make_finding("a", Severity::Critical, "test"),
                 state: FindingState::Pending,
-                comment_id: 1,
+                comment_id: CommentId::new(1),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
                 finding: make_finding("b", Severity::Warning, "test"),
                 state: FindingState::Queued,
-                comment_id: 2,
+                comment_id: CommentId::new(2),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
                 finding: make_finding("c", Severity::Info, "test"),
                 state: FindingState::Fixed,
-                comment_id: 3,
+                comment_id: CommentId::new(3),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
                 finding: make_finding("d", Severity::Info, "test"),
                 state: FindingState::WontFix,
-                comment_id: 4,
+                comment_id: CommentId::new(4),
                 rocket_reaction_ids: vec![],
             },
         ];
@@ -579,13 +582,13 @@ mod tests {
             FixItem {
                 finding: dep_finding,
                 state: FindingState::Queued,
-                comment_id: 1,
+                comment_id: CommentId::new(1),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
                 finding: blocked_finding,
                 state: FindingState::Queued,
-                comment_id: 2,
+                comment_id: CommentId::new(2),
                 rocket_reaction_ids: vec![],
             },
         ];
@@ -607,13 +610,13 @@ mod tests {
             FixItem {
                 finding: f1,
                 state: FindingState::Queued,
-                comment_id: 1,
+                comment_id: CommentId::new(1),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
                 finding: f2,
                 state: FindingState::Queued,
-                comment_id: 2,
+                comment_id: CommentId::new(2),
                 rocket_reaction_ids: vec![],
             },
         ];
@@ -628,19 +631,19 @@ mod tests {
             FixItem {
                 finding: make_finding("a", Severity::Critical, "test"),
                 state: FindingState::Queued,
-                comment_id: 1,
+                comment_id: CommentId::new(1),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
                 finding: make_finding("b", Severity::Warning, "test"),
                 state: FindingState::Fixed,
-                comment_id: 2,
+                comment_id: CommentId::new(2),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
                 finding: make_finding("c", Severity::Info, "test"),
                 state: FindingState::Pending,
-                comment_id: 3,
+                comment_id: CommentId::new(3),
                 rocket_reaction_ids: vec![],
             },
         ];
@@ -672,7 +675,7 @@ mod tests {
     #[test]
     fn test_collect_reply_bodies_skips_top_level() {
         let comments = vec![PrReviewComment {
-            id: 1,
+            id: CommentId::new(1),
             body: "top-level".to_string(),
             in_reply_to_id: None,
         }];
@@ -684,30 +687,30 @@ mod tests {
     fn test_collect_reply_bodies_groups_by_parent() {
         let comments = vec![
             PrReviewComment {
-                id: 1,
+                id: CommentId::new(1),
                 body: "top-level".to_string(),
                 in_reply_to_id: None,
             },
             PrReviewComment {
-                id: 2,
+                id: CommentId::new(2),
                 body: "reply A".to_string(),
-                in_reply_to_id: Some(1),
+                in_reply_to_id: Some(CommentId::new(1)),
             },
             PrReviewComment {
-                id: 3,
+                id: CommentId::new(3),
                 body: "reply B".to_string(),
-                in_reply_to_id: Some(1),
+                in_reply_to_id: Some(CommentId::new(1)),
             },
             PrReviewComment {
-                id: 4,
+                id: CommentId::new(4),
                 body: "reply to other".to_string(),
-                in_reply_to_id: Some(99),
+                in_reply_to_id: Some(CommentId::new(99)),
             },
         ];
         let map = collect_reply_bodies(&comments);
         assert_eq!(map.len(), 2);
-        assert_eq!(map[&1], vec!["reply A", "reply B"]);
-        assert_eq!(map[&99], vec!["reply to other"]);
+        assert_eq!(map[&CommentId::new(1)], vec!["reply A", "reply B"]);
+        assert_eq!(map[&CommentId::new(99)], vec!["reply to other"]);
     }
 
     // ---- format_review_context tests ----

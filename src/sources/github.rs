@@ -1,3 +1,5 @@
+//! GitHub Issues task source via `gh` CLI.
+
 use std::collections::HashSet;
 use std::process::Command;
 
@@ -6,6 +8,7 @@ use tracing::{debug, warn};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::ids::IssueNumber;
 
 use super::{Priority, Task, TaskSource, retry_with_backoff};
 
@@ -156,14 +159,14 @@ impl TaskSource for GitHubSource {
         Ok(())
     }
 
-    fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>> {
         let json = self.client.run(&[
             "issue", "list", "--state", "closed", "--json", "number", "--limit", "200",
         ])?;
 
         #[derive(Deserialize)]
         struct Num {
-            number: u64,
+            number: IssueNumber,
         }
 
         let nums: Vec<Num> = serde_json::from_str(&json)

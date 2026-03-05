@@ -1,3 +1,5 @@
+//! CLI argument parsing via `clap`.
+
 use clap::{Args, Parser, Subcommand};
 
 /// rlph — autonomous AI development loop
