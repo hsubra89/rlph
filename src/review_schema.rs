@@ -88,7 +88,7 @@ pub struct ReviewFinding {
     pub line: u32,
     pub severity: Severity,
     pub description: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub suggested_fixes: Vec<String>,
     pub category: Option<String>,
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
@@ -731,6 +731,24 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_suggested_fixes_null_deserializes_as_empty() {
+        let json = r#"{
+            "findings": [
+                {
+                    "id": "null-suggested-fixes",
+                    "file": "src/main.rs",
+                    "line": 1,
+                    "severity": "info",
+                    "description": "test",
+                    "suggested_fixes": null
+                }
+            ]
+        }"#;
+        let output = parse_phase_output(json).unwrap();
+        assert!(output.findings[0].suggested_fixes.is_empty());
+    }
+
+    #[test]
     fn test_parse_phase_output_with_depends_on() {
         let json = r#"{
             "findings": [
@@ -793,6 +811,28 @@ mod tests {
         assert_eq!(
             rendered,
             "- (null-ptr-deref) **CRITICAL** [correctness] `src/main.rs` L15: Null pointer dereference (depends on: null-check-missing)"
+        );
+    }
+
+    #[test]
+    fn test_render_findings_with_suggested_fixes() {
+        let findings = vec![ReviewFinding {
+            id: "sql-injection".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 42,
+            severity: Severity::Critical,
+            description: "SQL injection vulnerability".to_string(),
+            suggested_fixes: vec![
+                "Use prepared statements".to_string(),
+                "Validate user input".to_string(),
+            ],
+            category: Some("security".to_string()),
+            depends_on: vec![],
+        }];
+        let rendered = render_findings_for_prompt(&findings, None);
+        assert_eq!(
+            rendered,
+            "- (sql-injection) **CRITICAL** [security] `src/main.rs` L42: SQL injection vulnerability\n  1. Use prepared statements\n  2. Validate user input"
         );
     }
 
@@ -939,6 +979,26 @@ mod tests {
         }];
         let result = render_findings_for_github(&findings, "S.");
         assert!(result.contains("*(depends on: null-check, init-val)*"));
+    }
+
+    #[test]
+    fn test_github_render_with_suggested_fixes() {
+        let findings = vec![ReviewFinding {
+            id: "sql-inj".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 42,
+            severity: Severity::Critical,
+            description: "SQL injection".to_string(),
+            suggested_fixes: vec![
+                "Use prepared statements".to_string(),
+                "Validate user input".to_string(),
+            ],
+            category: Some("correctness".to_string()),
+            depends_on: vec![],
+        }];
+        let result = render_findings_for_github(&findings, "Issues found.");
+        assert!(result.contains("  1. Use prepared statements"));
+        assert!(result.contains("  2. Validate user input"));
     }
 
     #[test]
@@ -1147,6 +1207,28 @@ mod tests {
         assert!(body.contains("**CRITICAL** (correctness) `file-fallback`: Issue in missing file"));
         assert!(body.contains(
             "Note: this finding applies to `src/missing.rs:42` but is shown here because that file is not in the diff."
+        ));
+    }
+
+    #[test]
+    fn test_render_inline_finding_comment_with_suggested_fixes() {
+        let finding = ReviewFinding {
+            id: "with-fixes".to_string(),
+            file: "src/main.rs".to_string(),
+            line: 5,
+            severity: Severity::Warning,
+            description: "Potential issue".to_string(),
+            suggested_fixes: vec![
+                "Check bounds before indexing".to_string(),
+                "Add unit test for empty input".to_string(),
+            ],
+            category: Some("correctness".to_string()),
+            depends_on: vec![],
+        };
+
+        let body = render_inline_finding_comment_for_github(&finding, &[], None);
+        assert!(body.contains(
+            "**Suggested fixes:**\n1. Check bounds before indexing\n2. Add unit test for empty input"
         ));
     }
 
