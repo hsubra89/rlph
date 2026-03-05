@@ -283,7 +283,8 @@ fn runner_default_effort(runner: RunnerKind) -> Option<&'static str> {
 pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<Config> {
     let agent = cli.agent_args();
     let runner: RunnerKind = agent
-        .and_then(|a| a.runner.as_deref())
+        .runner
+        .as_deref()
         .or(file.runner.as_deref())
         .unwrap_or("claude")
         .parse()?;
@@ -307,8 +308,8 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
         done_state: lc.done_state.unwrap_or_else(|| "Done".to_string()),
     });
 
-    let build_binary = agent.and_then(|a| a.agent_binary.clone());
-    let build_model = agent.and_then(|a| a.agent_model.clone());
+    let build_binary = agent.agent_binary.clone();
+    let build_model = agent.agent_model.clone();
     let build_effort = build.and_then(|b| b.agent_effort.clone());
     let build_variant = build.and_then(|b| b.agent_variant.clone());
     let global_binary_override = build_binary.or(file.agent_binary);
