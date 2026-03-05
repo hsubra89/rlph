@@ -266,7 +266,7 @@ impl WorktreeManager {
 
         if let Some(existing) = self.find_existing_by_name(&name)? {
             info!(
-                pr = %pr_number,
+                pr_number = %pr_number,
                 branch,
                 path = %existing.path.display(),
                 "reusing existing PR review worktree, updating to latest"
@@ -339,7 +339,7 @@ impl WorktreeManager {
             .unwrap_or_else(|| "unknown".to_string());
 
         info!(
-            pr = %pr_number,
+            pr_number = %pr_number,
             path = %canonical_path.display(),
             branch,
             commit = %commit_sha,
