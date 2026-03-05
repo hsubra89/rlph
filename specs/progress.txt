@@ -24,3 +24,10 @@
 - Updated config/test helpers to include new `Config.plan_path` field (`src/prd.rs`, `tests/common/mod.rs`, `tests/prd_integration.rs`) to keep type checks green.
 - Added tests for CLI parsing, config merge, and local plan directory validation success/failure cases.
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_parse_build_with_plan_path) or test(test_plan_path_from_build_args) or test(validate_local_plan_dir_accepts_directory_with_files) or test(validate_local_plan_dir_rejects_missing_directory) or test(validate_local_plan_dir_rejects_empty_directory)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 3 task: local mode now bypasses `TaskSource` fetch loop.
+- Updated `Orchestrator::run_iteration` to short-circuit into a local-plan iteration when `Config.plan_path` is set; no `fetch_eligible_tasks`, `fetch_closed_task_ids`, or `get_task_details` calls in this path.
+- Added local-plan task bootstrap with task identity derived from the plan directory slug and reused implement/review flow without source status marking.
+- Updated PR body generation for local plans to reference the plan path instead of adding `Resolves #...`.
+- Added integration coverage `test_local_plan_mode_skips_task_source_fetch` using a fail-fast `TaskSource` implementation.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_local_plan_mode_skips_task_source_fetch)'` (all pass).

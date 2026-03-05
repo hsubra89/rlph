@@ -176,6 +176,44 @@ struct SequenceSource {
     task_details: HashMap<String, Task>,
 }
 
+struct FailIfFetchedSource;
+
+impl TaskSource for FailIfFetchedSource {
+    fn fetch_eligible_tasks(&self) -> Result<Vec<Task>> {
+        Err(Error::TaskSource(
+            "fetch_eligible_tasks should not be called in local plan mode".to_string(),
+        ))
+    }
+
+    fn mark_in_progress(&self, _task_id: &str) -> Result<()> {
+        Err(Error::TaskSource(
+            "mark_in_progress should not be called in local plan mode".to_string(),
+        ))
+    }
+
+    fn mark_in_review(&self, _task_id: &str) -> Result<()> {
+        Err(Error::TaskSource(
+            "mark_in_review should not be called in local plan mode".to_string(),
+        ))
+    }
+
+    fn get_task_details(&self, _task_id: &str) -> Result<Task> {
+        Err(Error::TaskSource(
+            "get_task_details should not be called in local plan mode".to_string(),
+        ))
+    }
+
+    fn fetch_sub_issues(&self, _task_id: &str) -> Result<Vec<Task>> {
+        Ok(Vec::new())
+    }
+
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>> {
+        Err(Error::TaskSource(
+            "fetch_closed_task_ids should not be called in local plan mode".to_string(),
+        ))
+    }
+}
+
 impl SequenceSource {
     fn new(tasks_by_fetch: Vec<Vec<Task>>) -> Self {
         let mut task_details = HashMap::new();
@@ -871,6 +909,37 @@ async fn test_no_eligible_tasks() {
 
     // Should succeed without doing anything
     orchestrator.run_once().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_local_plan_mode_skips_task_source_fetch() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let counts = Arc::new(RunnerCounts::default());
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let mut config = make_config(true);
+    config.plan_path = Some("plans/my-feature".to_string());
+
+    let orchestrator = Orchestrator::new(
+        FailIfFetchedSource,
+        CountingRunner::new("gh-42", Arc::clone(&counts)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
+    assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

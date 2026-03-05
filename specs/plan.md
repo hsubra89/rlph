@@ -97,7 +97,7 @@ For local plans: the plan directory must already exist and contain at least one 
 
 - [x] `rlph build plans/my-feature` parses successfully with `plan_path` set
 - [x] `rlph build` without a path continues to work as before (remote source mode)
-- [ ] Local mode skips `TaskSource` fetch entirely
+- [x] Local mode skips `TaskSource` fetch entirely
 - [x] Error if the provided plan path doesn't exist or is empty
 - [ ] Task identity (for branch name, state) is derived from the directory name
 - [ ] The plan file list is correctly resolved and passed through the orchestrator

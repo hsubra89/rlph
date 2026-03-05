@@ -350,6 +350,30 @@ impl<
     C: CorrectionRunner,
 > Orchestrator<S, R, B, F, P, C>
 {
+    fn local_plan_slug(&self) -> Result<String> {
+        let plan_path =
+            self.config.plan_path.as_deref().ok_or_else(|| {
+                Error::Orchestrator("local plan path is not configured".to_string())
+            })?;
+        let plan_name = Path::new(plan_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                Error::Orchestrator(format!(
+                    "invalid local plan path '{plan_path}': missing terminal directory name"
+                ))
+            })?;
+
+        let slug = WorktreeManager::slugify(plan_name);
+        if slug.is_empty() {
+            return Err(Error::Orchestrator(format!(
+                "invalid local plan path '{plan_path}': directory name slug is empty"
+            )));
+        }
+
+        Ok(slug)
+    }
+
     /// Run according to configured loop mode.
     ///
     /// When `shutdown` becomes true, the orchestrator exits between iterations.
@@ -448,6 +472,10 @@ impl<
     }
 
     async fn run_iteration(&self) -> Result<IterationOutcome> {
+        if self.config.plan_path.is_some() {
+            return self.run_local_plan_iteration().await;
+        }
+
         // 1. Fetch eligible tasks and filter by dependency graph
         self.reporter.fetching_tasks();
         info!("fetching eligible tasks");
@@ -541,7 +569,13 @@ impl<
 
         // Run the implement → submit → review pipeline, cleaning up on success
         let result = self
-            .run_implement_review(&task, issue_number, &worktree_info, existing_pr_number)
+            .run_implement_review(
+                &task,
+                Some(issue_number),
+                Some(task.id.as_str()),
+                &worktree_info,
+                existing_pr_number,
+            )
             .await;
 
         // 11. Clean up worktree
@@ -560,6 +594,56 @@ impl<
             }
             Err(e) => {
                 warn!(error = %e, "iteration failed");
+                Err(e)
+            }
+        }
+    }
+
+    async fn run_local_plan_iteration(&self) -> Result<IterationOutcome> {
+        let slug = self.local_plan_slug()?;
+        let task_id = format!("local-{slug}");
+        let issue_number = IssueNumber::new(0);
+
+        let task = Task {
+            id: task_id.clone(),
+            title: format!("Implement local plan: {slug}"),
+            body: self
+                .config
+                .plan_path
+                .as_ref()
+                .map(|p| format!("Work from plan directory: {p}"))
+                .unwrap_or_default(),
+            labels: Vec::new(),
+            url: self.config.plan_path.clone().unwrap_or_default(),
+            priority: None,
+        };
+
+        self.reporter.task_selected(issue_number, &task.title);
+
+        info!("creating worktree for local plan");
+        let worktree_info = self.worktree_mgr.create(issue_number, &slug)?;
+
+        self.state_mgr.set_current_task(
+            &task_id,
+            "implement",
+            &worktree_info.path.display().to_string(),
+        )?;
+
+        let result = self
+            .run_implement_review(&task, None, None, &worktree_info, None)
+            .await;
+
+        self.cleanup_worktree(&worktree_info.path);
+
+        match result {
+            Ok(()) => {
+                self.state_mgr.complete_current_task()?;
+                let _ = self.state_mgr.remove_worktree_mapping(&task_id);
+                self.reporter.iteration_complete(issue_number, &task.title);
+                Ok(IterationOutcome::ProcessedTask)
+            }
+            Err(e) => {
+                warn!(error = %e, "local plan iteration failed");
                 Err(e)
             }
         }
@@ -592,7 +676,8 @@ impl<
     async fn run_implement_review(
         &self,
         task: &Task,
-        issue_number: IssueNumber,
+        issue_number: Option<IssueNumber>,
+        mark_in_review_task_id: Option<&str>,
         worktree_info: &WorktreeInfo,
         existing_pr_number: Option<PrNumber>,
     ) -> Result<()> {
@@ -618,7 +703,13 @@ impl<
             Some(pr)
         } else if !self.config.dry_run {
             info!("submitting PR");
-            let pr_body = format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.");
+            let pr_body = if let Some(issue_number) = issue_number {
+                format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.")
+            } else if let Some(plan_path) = self.config.plan_path.as_deref() {
+                format!("Implements local plan `{plan_path}`.\n\nAutomated implementation by rlph.")
+            } else {
+                "Automated implementation by rlph.".to_string()
+            };
             let result = self.submission.submit(
                 &worktree_info.branch,
                 &self.config.base_branch,
@@ -635,8 +726,10 @@ impl<
         };
 
         // 10. Mark in-review
-        if !self.config.dry_run {
-            self.source.mark_in_review(&task.id)?;
+        if !self.config.dry_run
+            && let Some(task_id) = mark_in_review_task_id
+        {
+            self.source.mark_in_review(task_id)?;
         }
 
         self.run_review_pipeline(&vars, worktree_info, pr_number)
