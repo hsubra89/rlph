@@ -798,7 +798,7 @@ async fn run_prepared_fix<S: SubmissionBackend, C: CorrectionRunner>(
 /// Run a batch of WARNING/INFO findings in a single shared agent session.
 ///
 /// Creates one worktree and one agent session. The first finding starts the
-/// session normally; subsequent findings are fed via `resume_with_correction`
+/// session normally; subsequent findings are fed via `resume_agent`
 /// using the session ID from the previous run. Each finding gets its own
 /// commit/push/reaction cycle. Aborts on the first failure.
 ///
