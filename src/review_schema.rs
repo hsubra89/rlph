@@ -461,7 +461,6 @@ mod tests {
         category: Option<&str>,
     ) -> ReviewFinding {
         ReviewFinding {
-            id: id.to_string(),
             file: file.to_string(),
             line,
             severity,
