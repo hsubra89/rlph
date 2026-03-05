@@ -3,3 +3,10 @@
 - Rewrites only when local file ID exists; skips markdown link destinations to avoid double-wrapping; leaves fenced code blocks unchanged.
 - Added 8 unit tests covering all Phase 1 acceptance criteria plus fenced code-block safety.
 - Feedback loops run: `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo nextest run -E 'test(reference_rewriter)'` (all pass).
+
+2026-03-05 - Implemented Phase 2 trait groundwork as highest-priority unblocker for plan sync.
+- Added `fetch_sub_issues(task_id) -> Result<Vec<Task>>` to `TaskSource` and wired dispatch in `AnySource`.
+- Implemented `GitHubSource::fetch_sub_issues` via `gh issue view --json subIssues`, supporting both list and `{ nodes: [...] }` payload shapes.
+- Added `LinearSource::fetch_sub_issues` stub returning empty vec (compile-safe placeholder per plan).
+- Added/updated tests: 2 new GitHub sub-issue unit tests, plus TaskSource test mocks updated for new trait method.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_fetch_sub_issues_parses_connection_shape) or test(test_fetch_sub_issues_handles_missing_field)'` (all pass).

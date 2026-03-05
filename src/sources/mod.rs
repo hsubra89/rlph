@@ -91,6 +91,9 @@ pub trait TaskSource {
     /// Get full details for a task.
     fn get_task_details(&self, task_id: &str) -> Result<Task>;
 
+    /// Fetch sub-issues/child tasks for a task.
+    fn fetch_sub_issues(&self, task_id: &str) -> Result<Vec<Task>>;
+
     /// Fetch IDs of closed/done tasks (used for dependency resolution).
     fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>>;
 }
@@ -126,6 +129,13 @@ impl TaskSource for AnySource {
         match self {
             AnySource::GitHub(s) => s.get_task_details(task_id),
             AnySource::Linear(s) => s.get_task_details(task_id),
+        }
+    }
+
+    fn fetch_sub_issues(&self, task_id: &str) -> Result<Vec<Task>> {
+        match self {
+            AnySource::GitHub(s) => s.fetch_sub_issues(task_id),
+            AnySource::Linear(s) => s.fetch_sub_issues(task_id),
         }
     }
 

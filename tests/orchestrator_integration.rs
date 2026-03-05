@@ -103,6 +103,10 @@ impl TaskSource for MockSource {
             .ok_or_else(|| Error::TaskSource(format!("task not found: {task_id}")))
     }
 
+    fn fetch_sub_issues(&self, _task_id: &str) -> Result<Vec<Task>> {
+        Ok(Vec::new())
+    }
+
     fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>> {
         Ok(HashSet::new())
     }
@@ -206,6 +210,10 @@ impl TaskSource for SequenceSource {
             .get(task_id)
             .cloned()
             .ok_or_else(|| Error::TaskSource(format!("task not found: {task_id}")))
+    }
+
+    fn fetch_sub_issues(&self, _task_id: &str) -> Result<Vec<Task>> {
+        Ok(Vec::new())
     }
 
     fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>> {

@@ -74,8 +74,8 @@ Slug generation reuses the existing `WorktreeManager::slugify` logic (or extract
 - [ ] Circular references are deduplicated (no infinite loops)
 - [ ] Cross-references in written files are rewritten to local markdown links
 - [ ] Slug is derived from issue title, falling back to issue number
-- [ ] `fetch_sub_issues` added to `TaskSource` trait with GitHub implementation
-- [ ] `LinearSource` compiles with a stub `fetch_sub_issues`
+- [x] `fetch_sub_issues` added to `TaskSource` trait with GitHub implementation
+- [x] `LinearSource` compiles with a stub `fetch_sub_issues`
 
 ---
 
