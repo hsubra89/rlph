@@ -89,3 +89,9 @@
 - Added integration test `test_draft_pr_created_before_implement_phase` to enforce submission ordering.
 - Updated plan status: marked complete for Phase 5 acceptance criterion "Draft PR is opened immediately after the plan commit".
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_full_loop_with_push) or test(test_draft_pr_created_before_implement_phase)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 PR-body task for local plans.
+- Added integration test `test_local_plan_draft_pr_body_references_plan_folder` to verify local-plan draft PR body includes `Implements local plan \`plans/my-feature\`.` and does not include `Resolves #...`.
+- Confirmed existing `Orchestrator::pr_body` behavior satisfies local-plan plan-folder reference requirement without changing runtime logic.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Local-plan draft PRs reference the plan folder in body".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_local_plan_draft_pr_body_references_plan_folder) or test(test_local_plan_branch_name_derived_from_directory_name) or test(test_full_loop_with_push)'` (all pass).

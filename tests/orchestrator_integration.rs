@@ -1221,6 +1221,46 @@ async fn test_local_plan_branch_name_derived_from_directory_name() {
 }
 
 #[tokio::test]
+async fn test_local_plan_draft_pr_body_references_plan_folder() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let plan_dir = repo_dir.path().join("plans/my-feature");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    std::fs::write(plan_dir.join("task.md"), "- implement this").unwrap();
+
+    let mut config = make_config(false);
+    config.plan_path = Some("plans/my-feature".to_string());
+
+    let orchestrator = Orchestrator::new(
+        FailIfFetchedSource,
+        CountingRunner::new("gh-42", Arc::new(RunnerCounts::default())),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    let subs = sub_tracker.lock().unwrap();
+    assert_eq!(subs.submissions.len(), 1);
+    assert!(
+        subs.submissions[0]
+            .3
+            .contains("Implements local plan `plans/my-feature`.")
+    );
+    assert!(!subs.submissions[0].3.contains("Resolves #"));
+}
+
+#[tokio::test]
 async fn test_local_plan_state_id_derived_from_directory_name() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let plan_dir = repo_dir.path().join("plans/My Feature");
