@@ -169,5 +169,5 @@ The `SubmissionBackend` trait needs a way to submit draft PRs and mark them read
 - [x] Each cycle produces a separate commit
 - [x] PR is marked ready after inner loop completes
 - [x] Review pipeline runs after PR is marked ready
-- [ ] Plan directory persists after completion (not cleaned up)
+- [x] Plan directory persists after completion (not cleaned up)
 - [x] `SubmissionBackend` supports draft PR creation and ready marking

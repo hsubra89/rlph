@@ -591,7 +591,8 @@ impl<
                 pr_url.as_deref(),
                 Some(&plan_dir),
             )
-            .await;
+            .await
+            .and_then(|_| self.persist_plan_dir_to_repo(&worktree_info, &plan_dir));
 
         // 11. Clean up worktree
         self.cleanup_worktree(&worktree_info.path);
@@ -680,6 +681,18 @@ impl<
         if let Err(e) = self.worktree_mgr.remove(path) {
             warn!(error = %e, "failed to clean up worktree");
         }
+    }
+
+    fn persist_plan_dir_to_repo(&self, worktree: &WorktreeInfo, plan_dir: &str) -> Result<()> {
+        let source = worktree.path.join(plan_dir);
+        let destination = self.repo_root.join(plan_dir);
+        copy_dir_recursive(&source, &destination)?;
+        info!(
+            source = %source.display(),
+            destination = %destination.display(),
+            "persisted plan directory to repo root"
+        );
+        Ok(())
     }
 
     fn shutdown_requested(shutdown: Option<&watch::Receiver<bool>>) -> bool {

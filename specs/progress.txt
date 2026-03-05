@@ -126,3 +126,10 @@
 - Strengthened integration coverage in `test_draft_pr_created_before_implement_phase` to assert draft PR body includes `Resolves #42` for remote-sourced runs.
 - Updated plan status: marked complete for Phase 5 acceptance criterion "Remote-sourced draft PRs include `Resolves #<issue_number>` in body".
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_draft_pr_created_before_implement_phase) or test(test_local_plan_draft_pr_body_references_plan_folder)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 persistence task: synced remote plan directories now persist after completion.
+- Updated `Orchestrator::run_iteration` to persist the synced `plan_dir` back into repo-root before worktree cleanup via new `persist_plan_dir_to_repo(...)`.
+- Kept worktree cleanup behavior intact while ensuring plan artifacts remain in `<repo>/plans/<slug>/` as durable records.
+- Added integration test `test_remote_plan_directory_persists_after_completion` asserting `plans/fix-bug/42.md` exists after a successful run.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Plan directory persists after completion (not cleaned up)".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_remote_plan_directory_persists_after_completion) or test(test_worktree_cleaned_up_after_success)'` (all pass).
