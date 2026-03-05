@@ -24,15 +24,16 @@ use rlph::sources::github::GitHubSource;
 use rlph::sources::linear::LinearSource;
 use rlph::sources::{Task, TaskSource};
 use rlph::state::StateManager;
-use rlph::submission::{GitHubSubmission, PrContext};
+use rlph::submission::{GitHubSubmission, PrContext, parse_pr_number_from_url};
 use rlph::worktree::{WorktreeManager, resolve_setup_script};
 
 /// Parse a PR reference that is either a plain number or a GitHub PR URL.
 fn parse_pr_ref(s: &str) -> Result<PrNumber, String> {
-    s.parse::<u64>()
-        .or_else(|_| s.trim_end_matches('/').rsplit('/').next().unwrap().parse())
-        .map(PrNumber::new)
-        .map_err(|_| format!("invalid PR reference '{s}' — expected a number or GitHub PR URL"))
+    if let Ok(number) = s.parse::<PrNumber>() {
+        return Ok(number);
+    }
+    parse_pr_number_from_url(s)
+        .ok_or_else(|| format!("invalid PR reference '{s}' — expected a number or GitHub PR URL"))
 }
 
 /// Parse a PR ref or print an error and exit.

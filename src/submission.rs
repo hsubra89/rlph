@@ -758,8 +758,9 @@ pub(crate) fn run_gh_api<T: DeserializeOwned>(endpoint: &str) -> Result<T> {
 }
 
 /// Parse PR number from a URL like `https://github.com/owner/repo/pull/123`.
-fn parse_pr_number_from_url(url: &str) -> Option<PrNumber> {
-    url.rsplit('/')
+pub fn parse_pr_number_from_url(url: &str) -> Option<PrNumber> {
+    url.trim_end_matches('/')
+        .rsplit('/')
         .next()
         .and_then(|s| s.parse::<u64>().ok())
         .map(PrNumber::new)
@@ -858,6 +859,10 @@ mod tests {
         assert_eq!(
             parse_pr_number_from_url("https://github.com/owner/repo/pull/1"),
             Some(PrNumber::new(1))
+        );
+        assert_eq!(
+            parse_pr_number_from_url("https://github.com/owner/repo/pull/456/"),
+            Some(PrNumber::new(456))
         );
         assert_eq!(parse_pr_number_from_url("not-a-url"), None);
     }
