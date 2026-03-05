@@ -1204,6 +1204,7 @@ async fn test_draft_pr_created_before_implement_phase() {
 
     let subs = sub_tracker.lock().unwrap();
     assert_eq!(subs.submissions.len(), 1);
+    assert!(subs.submissions[0].3.contains("Resolves #42"));
 }
 
 #[tokio::test]

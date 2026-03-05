@@ -121,3 +121,8 @@
 - Added unit tests: `test_ensure_cycle_commit_creates_allow_empty_commit_when_needed` and `test_ensure_cycle_commit_skips_when_head_already_advanced`.
 - Updated plan status: marked complete for Phase 5 acceptance criterion "Each cycle produces a separate commit".
 - Feedback loops run: `cargo fmt --all`, `cargo check`, `cargo nextest run -E 'test(test_ensure_cycle_commit_creates_allow_empty_commit_when_needed) or test(test_ensure_cycle_commit_skips_when_head_already_advanced)'`, `cargo nextest run -E 'test(test_local_plan_mode_skips_task_source_fetch) or test(test_draft_pr_created_before_implement_phase)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 PR-body task for remote-sourced drafts.
+- Strengthened integration coverage in `test_draft_pr_created_before_implement_phase` to assert draft PR body includes `Resolves #42` for remote-sourced runs.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Remote-sourced draft PRs include `Resolves #<issue_number>` in body".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_draft_pr_created_before_implement_phase) or test(test_local_plan_draft_pr_body_references_plan_folder)'` (all pass).
