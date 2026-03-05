@@ -570,6 +570,28 @@ impl SubmissionBackend for PollingMockSubmission {
     }
 }
 
+/// Spawn a poller that sends shutdown once reply/fetch thresholds are met.
+fn spawn_shutdown_poller(
+    submission: Arc<PollingMockSubmission>,
+    shutdown_tx: watch::Sender<bool>,
+    min_replies: usize,
+    min_fetches: Option<usize>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let replies_ok = submission.reply_count() >= min_replies;
+            let fetches_ok = min_fetches
+                .map(|f| submission.fetch_count.load(Ordering::SeqCst) >= f)
+                .unwrap_or(true);
+            if replies_ok && fetches_ok {
+                let _ = shutdown_tx.send(true);
+                return;
+            }
+        }
+    })
+}
+
 /// Test fixture for `run_fix_loop` tests.
 struct FixLoopFixture {
     _bare_dir: tempfile::TempDir,
@@ -674,17 +696,8 @@ async fn test_fix_loop_picks_up_newly_queued_items() {
         Some(101), // beta (comment 101) gets 🚀 after first fix
     );
 
-    let submission = Arc::clone(&f.submission);
-    let shutdown_tx = f.take_shutdown_tx();
-    let shutdown_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if submission.reply_count() >= 2 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 2, None);
 
     let result = f.run().await;
     shutdown_handle.abort();
@@ -715,18 +728,8 @@ async fn test_fix_loop_skips_completed_items() {
         None,
     );
 
-    let submission = Arc::clone(&f.submission);
-    let shutdown_tx = f.take_shutdown_tx();
-    let shutdown_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let fetches = submission.fetch_count.load(Ordering::SeqCst);
-            if submission.reply_count() >= 1 && fetches >= 4 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 1, Some(4));
 
     let result = f.run().await;
     shutdown_handle.abort();
@@ -797,19 +800,8 @@ async fn test_fix_loop_handles_warning_findings_via_batch() {
         None,
     );
 
-    let submission = Arc::clone(&f.submission);
-    let shutdown_tx = f.take_shutdown_tx();
-    let shutdown_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let fetches = submission.fetch_count.load(Ordering::SeqCst);
-            // After first batch item processed and at least 2 poll cycles
-            if submission.reply_count() >= 1 && fetches >= 2 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 1, Some(2));
 
     let result = f.run().await;
     shutdown_handle.abort();
@@ -840,19 +832,8 @@ async fn test_fix_loop_processes_criticals_then_batches_lower_severity() {
         None,
     );
 
-    let submission = Arc::clone(&f.submission);
-    let shutdown_tx = f.take_shutdown_tx();
-    let shutdown_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let fetches = submission.fetch_count.load(Ordering::SeqCst);
-            // CRITICAL (1 reply) + first batch item (1 reply) = 2; wait for 2 poll cycles
-            if submission.reply_count() >= 2 && fetches >= 2 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 2, Some(2));
 
     let result = f.run().await;
     shutdown_handle.abort();
@@ -918,16 +899,7 @@ async fn test_fix_loop_batch_full_session_reuse() {
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let sub_clone = Arc::clone(&submission);
-    let shutdown_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if sub_clone.reply_count() >= 3 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 3, None);
 
     let result = run_fix_loop(
         42,
@@ -982,20 +954,8 @@ async fn test_fix_loop_batch_abort_remaining_picked_up_next_poll() {
         None,
     );
 
-    let submission = Arc::clone(&f.submission);
-    let shutdown_tx = f.take_shutdown_tx();
-    let shutdown_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let fetches = submission.fetch_count.load(Ordering::SeqCst);
-            // After first batch (1 reply) + second batch picks up remaining (1 reply)
-            // and multiple poll cycles
-            if submission.reply_count() >= 2 && fetches >= 3 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 2, Some(3));
 
     let result = f.run().await;
     shutdown_handle.abort();
@@ -1057,16 +1017,7 @@ async fn test_fix_loop_batch_wontfix_continues() {
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let sub_clone = Arc::clone(&submission);
-    let shutdown_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if sub_clone.reply_count() >= 2 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 2, None);
 
     let result = run_fix_loop(
         42,
@@ -1142,19 +1093,7 @@ async fn test_fix_loop_batch_abort_when_no_session_id() {
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let sub_clone = Arc::clone(&submission);
-    let shutdown_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let fetches = sub_clone.fetch_count.load(Ordering::SeqCst);
-            // warn-a fixed in first batch, warn-b marked as failed (no retry).
-            // Wait for at least 1 reply and 2 poll cycles to confirm warn-b is not retried.
-            if sub_clone.reply_count() >= 1 && fetches >= 2 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 1, Some(2));
 
     let result = run_fix_loop(
         42,
@@ -1282,16 +1221,7 @@ echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"comm
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let sub_clone = Arc::clone(&submission);
-    let shutdown_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if sub_clone.reply_count() >= 1 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 1, None);
 
     let result = run_fix_loop(
         42,
