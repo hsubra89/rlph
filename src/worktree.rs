@@ -178,7 +178,7 @@ impl WorktreeManager {
         // Check for existing worktree
         if let Some(existing) = self.find_existing(issue_number)? {
             info!(
-                issue = %issue_number,
+                issue_number = %issue_number,
                 path = %existing.path.display(),
                 "reusing existing worktree"
             );
@@ -232,7 +232,7 @@ impl WorktreeManager {
             .unwrap_or_else(|| "unknown".to_string());
 
         info!(
-            issue = %issue_number,
+            issue_number = %issue_number,
             path = %canonical_path.display(),
             branch = %branch,
             commit = %commit_sha,
