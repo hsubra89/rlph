@@ -18,6 +18,12 @@ use tokio::sync::watch;
 
 use common::{default_test_config, run_git, setup_git_repo};
 
+#[cfg(unix)]
+fn make_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 /// Create a remote PR branch with a commit.
 fn create_pr_branch(repo: &Path, branch: &str) {
     run_git(repo, &["checkout", "-b", branch]);
@@ -202,8 +208,38 @@ impl SubmissionBackend for MockFixSubmission {
     }
 }
 
-/// No-op correction runner for tests.
-struct MockCorrectionRunner;
+/// Configurable mock correction runner for tests.
+///
+/// By default returns an error (no-op). Use `with_handler` to supply custom
+/// resume logic (e.g. for batch tests that need real commits).
+type ResumeHandler = Box<dyn Fn(&Path, usize) -> Result<RunResult> + Send + Sync>;
+
+struct MockCorrectionRunner {
+    handler: ResumeHandler,
+    call_count: AtomicUsize,
+}
+
+impl MockCorrectionRunner {
+    /// No-op runner that always returns an error.
+    fn noop() -> Self {
+        Self {
+            handler: Box::new(|_, _| {
+                Err(Error::AgentRunner("no-op correction runner".to_string()))
+            }),
+            call_count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Runner that delegates to the given handler, passing `(working_dir, call_index)`.
+    fn with_handler(
+        handler: impl Fn(&Path, usize) -> Result<RunResult> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            handler: Box::new(handler),
+            call_count: AtomicUsize::new(0),
+        }
+    }
+}
 
 impl CorrectionRunner for MockCorrectionRunner {
     async fn resume(
@@ -215,10 +251,11 @@ impl CorrectionRunner for MockCorrectionRunner {
         _variant: Option<&str>,
         _session_id: &str,
         _correction_prompt: &str,
-        _working_dir: &Path,
+        working_dir: &Path,
         _timeout: Option<std::time::Duration>,
     ) -> Result<RunResult> {
-        Err(Error::AgentRunner("no-op correction runner".to_string()))
+        let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+        (self.handler)(working_dir, n)
     }
 }
 
@@ -226,21 +263,50 @@ impl CorrectionRunner for MockCorrectionRunner {
 
 /// Create a mock agent script that makes a commit and outputs fix JSON.
 fn create_mock_agent_script(dir: &Path) -> String {
+    create_mock_agent_script_inner(dir, true)
+}
+
+/// Create a mock agent script that omits session_id from output.
+fn create_mock_agent_script_no_session_id(dir: &Path) -> String {
+    create_mock_agent_script_inner(dir, false)
+}
+
+fn create_mock_agent_script_inner(dir: &Path, emit_session_id: bool) -> String {
     let script_path = dir.join("mock-fix-agent.sh");
-    let script = r#"#!/bin/bash
+    let session_line = if emit_session_id {
+        r#"echo "{\"session_id\":\"mock-session-$ID\"}""#
+    } else {
+        ""
+    };
+    let script = format!(
+        r#"#!/bin/bash
 # Mock fix agent: creates a file, commits it, outputs fix result
 ID="$$-$RANDOM"
 echo "fix-$ID" > "fix-$ID.txt"
 git add .
 git commit -m "fix: applied-$ID" 2>/dev/null
-echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit_message\\\":\\\"fix: applied-$ID\\\"}\"}"
+{session_line}
+echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"commit_message\\\":\\\"fix: applied-$ID\\\"}}\"}}"
+"#
+    );
+    std::fs::write(&script_path, &script).unwrap();
+    #[cfg(unix)]
+    make_executable(&script_path);
+    script_path.to_str().unwrap().to_string()
+}
+
+/// Create a mock agent script that returns WontFix with a session_id (no commit).
+fn create_mock_wontfix_agent_script(dir: &Path) -> String {
+    let script_path = dir.join("mock-wontfix-agent.sh");
+    let script = r#"#!/bin/bash
+# Mock fix agent: returns WontFix with session_id (no commit)
+ID="$$-$RANDOM"
+echo "{\"session_id\":\"mock-session-$ID\"}"
+echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"wont_fix\\\",\\\"reason\\\":\\\"False positive\\\"}\"}"
 "#;
     std::fs::write(&script_path, script).unwrap();
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    make_executable(&script_path);
     script_path.to_str().unwrap().to_string()
 }
 
@@ -268,7 +334,7 @@ async fn test_parallel_fix_multiple_queued_items() {
     ];
 
     let submission = Arc::new(MockFixSubmission::new(comments, reactions));
-    let correction_runner = Arc::new(MockCorrectionRunner);
+    let correction_runner = Arc::new(MockCorrectionRunner::noop());
 
     let wt_dir = tempfile::TempDir::new().unwrap();
     let mut config = make_config();
@@ -319,7 +385,7 @@ async fn test_fix_no_queued_items() {
     let reactions = vec![no_reactions(100), no_reactions(101)];
 
     let submission = Arc::new(MockFixSubmission::new(comments, reactions));
-    let correction_runner = Arc::new(MockCorrectionRunner);
+    let correction_runner = Arc::new(MockCorrectionRunner::noop());
 
     let config = make_config();
 
@@ -353,7 +419,7 @@ async fn test_parallel_fix_worktrees_cleaned_up() {
     let reactions = vec![rocket_reactions(100), rocket_reactions(101)];
 
     let submission = Arc::new(MockFixSubmission::new(comments, reactions));
-    let correction_runner = Arc::new(MockCorrectionRunner);
+    let correction_runner = Arc::new(MockCorrectionRunner::noop());
 
     let wt_dir = tempfile::TempDir::new().unwrap();
     let mut config = make_config();
@@ -403,7 +469,7 @@ async fn test_fix_skips_already_fixed_items() {
     let reactions = vec![fixed_reactions(100), no_reactions(101)];
 
     let submission = Arc::new(MockFixSubmission::new(comments, reactions));
-    let correction_runner = Arc::new(MockCorrectionRunner);
+    let correction_runner = Arc::new(MockCorrectionRunner::noop());
 
     let config = make_config();
 
@@ -504,6 +570,28 @@ impl SubmissionBackend for PollingMockSubmission {
     }
 }
 
+/// Spawn a poller that sends shutdown once reply/fetch thresholds are met.
+fn spawn_shutdown_poller(
+    submission: Arc<PollingMockSubmission>,
+    shutdown_tx: watch::Sender<bool>,
+    min_replies: usize,
+    min_fetches: Option<usize>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let replies_ok = submission.reply_count() >= min_replies;
+            let fetches_ok = min_fetches
+                .map(|f| submission.fetch_count.load(Ordering::SeqCst) >= f)
+                .unwrap_or(true);
+            if replies_ok && fetches_ok {
+                let _ = shutdown_tx.send(true);
+                return;
+            }
+        }
+    })
+}
+
 /// Test fixture for `run_fix_loop` tests.
 struct FixLoopFixture {
     _bare_dir: tempfile::TempDir,
@@ -548,7 +636,7 @@ impl FixLoopFixture {
             reactions,
             deferred_rocket_comment_id,
         ));
-        let correction_runner = Arc::new(MockCorrectionRunner);
+        let correction_runner = Arc::new(MockCorrectionRunner::noop());
 
         let wt_dir = tempfile::TempDir::new().unwrap();
         let mut config = make_config();
@@ -608,17 +696,8 @@ async fn test_fix_loop_picks_up_newly_queued_items() {
         Some(101), // beta (comment 101) gets 🚀 after first fix
     );
 
-    let submission = Arc::clone(&f.submission);
-    let shutdown_tx = f.take_shutdown_tx();
-    let shutdown_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if submission.reply_count() >= 2 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 2, None);
 
     let result = f.run().await;
     shutdown_handle.abort();
@@ -649,18 +728,8 @@ async fn test_fix_loop_skips_completed_items() {
         None,
     );
 
-    let submission = Arc::clone(&f.submission);
-    let shutdown_tx = f.take_shutdown_tx();
-    let shutdown_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let fetches = submission.fetch_count.load(Ordering::SeqCst);
-            if submission.reply_count() >= 1 && fetches >= 4 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 1, Some(4));
 
     let result = f.run().await;
     shutdown_handle.abort();
@@ -696,10 +765,7 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit
 "#;
     std::fs::write(&script_path, script).unwrap();
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    make_executable(&script_path);
     f.config.fix = make_fix_step_config(script_path.to_str().unwrap().to_string());
     f.config.poll_seconds = 5;
 
@@ -722,45 +788,40 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit
     );
 }
 
-/// Test that `run_fix_loop` gracefully handles WARNING-only findings (RunBatch path).
+/// Test that `run_fix_loop` processes WARNING findings via RunBatch.
+///
+/// With the no-op correction runner, only the first finding in the batch
+/// succeeds (via runner.run()); the second fails on session resume.
 #[tokio::test]
-async fn test_fix_loop_handles_warning_findings_gracefully() {
+async fn test_fix_loop_handles_warning_findings_via_batch() {
     let mut f = FixLoopFixture::new(
         &[make_finding("warn-a"), make_finding("warn-b")],
         &[100, 101], // both queued
         None,
     );
 
-    let submission = Arc::clone(&f.submission);
-    let shutdown_tx = f.take_shutdown_tx();
-    let shutdown_handle = tokio::spawn(async move {
-        // Wait for at least 2 poll cycles to confirm loop doesn't crash
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let fetches = submission.fetch_count.load(Ordering::SeqCst);
-            if fetches >= 2 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 1, Some(2));
 
     let result = f.run().await;
     shutdown_handle.abort();
 
     assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
 
-    // RunBatch path warns and breaks — no replies expected
+    // First batch finding succeeds; second fails on correction_runner.resume()
     assert_eq!(
         f.submission.reply_count(),
-        0,
-        "WARNING findings should be skipped (RunBatch not yet implemented)"
+        1,
+        "first batch finding should be fixed, second fails on session resume"
     );
 }
 
-/// Test that `run_fix_loop` processes CRITICAL findings and gracefully skips WARNING/INFO.
+/// Test that `run_fix_loop` processes CRITICAL first, then batches WARNING/INFO.
+///
+/// With no-op correction runner: CRITICAL runs solo, then batch starts with
+/// the first WARNING/INFO (succeeds), second fails on session resume.
 #[tokio::test]
-async fn test_fix_loop_processes_criticals_skips_lower_severity() {
+async fn test_fix_loop_processes_criticals_then_batches_lower_severity() {
     let mut f = FixLoopFixture::new(
         &[
             make_finding_critical("crit-item"),
@@ -771,29 +832,422 @@ async fn test_fix_loop_processes_criticals_skips_lower_severity() {
         None,
     );
 
-    let submission = Arc::clone(&f.submission);
-    let shutdown_tx = f.take_shutdown_tx();
-    let shutdown_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let fetches = submission.fetch_count.load(Ordering::SeqCst);
-            // After critical is fixed (1 reply) and at least 2 poll cycles
-            if submission.reply_count() >= 1 && fetches >= 2 {
-                let _ = shutdown_tx.send(true);
-                return;
-            }
-        }
-    });
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 2, Some(2));
 
     let result = f.run().await;
     shutdown_handle.abort();
 
     assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
 
-    // Only the CRITICAL finding should have been processed
+    // CRITICAL processed solo + first batch finding succeeds
     assert_eq!(
         f.submission.reply_count(),
-        1,
-        "only CRITICAL finding should be fixed (WARNING/INFO skipped via RunBatch)"
+        2,
+        "CRITICAL + first batch finding should be fixed"
     );
+}
+
+/// Test full batch session reuse: all WARNING findings processed in one session.
+///
+/// Uses `MockCorrectionRunner::with_handler` which creates real commits on resume,
+/// so all 3 findings complete successfully with commit/push/reaction per finding.
+#[tokio::test]
+async fn test_fix_loop_batch_full_session_reuse() {
+    let (_bare_dir, repo_dir) = setup_git_repo();
+    let repo_root = repo_dir.path();
+
+    let pr_branch = "feature/batch-session-test";
+    create_pr_branch(repo_root, pr_branch);
+
+    let agent_script = create_mock_agent_script(repo_root);
+
+    let findings = vec![
+        make_finding("warn-a"),
+        make_finding("warn-b"),
+        make_finding("warn-c"),
+    ];
+    let comments = make_review_comments(&findings);
+    let reactions = vec![
+        rocket_reactions(100),
+        rocket_reactions(101),
+        rocket_reactions(102),
+    ];
+
+    let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
+    let correction_runner = Arc::new(MockCorrectionRunner::with_handler(|working_dir, n| {
+        let filename = format!("batch-resume-{n}.txt");
+        let commit_msg = format!("fix: batch-resume-{n}");
+
+        std::fs::write(working_dir.join(&filename), "batch fix content").unwrap();
+        run_git(working_dir, &["add", "."]);
+        run_git(working_dir, &["commit", "-m", &commit_msg]);
+
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: format!(r#"{{"status":"fixed","commit_message":"{commit_msg}"}}"#),
+            stderr: String::new(),
+            session_id: Some("mock-batch-session".to_string()),
+        })
+    }));
+
+    let wt_dir = tempfile::TempDir::new().unwrap();
+    let mut config = make_config();
+    config.fix = make_fix_step_config(agent_script);
+    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    config.poll_seconds = 1;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 3, None);
+
+    let result = run_fix_loop(
+        42,
+        pr_branch,
+        &config,
+        Arc::clone(&submission),
+        &rlph::prompts::PromptEngine::new(None),
+        repo_root,
+        correction_runner,
+        shutdown_rx,
+    )
+    .await;
+
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // All 3 findings should have been processed in a single batch session
+    assert_eq!(
+        submission.reply_count(),
+        3,
+        "expected 3 replies (one per finding in batch)"
+    );
+
+    // All reactions should be "+1" (fixed)
+    for (_, reaction) in submission.base.added_reactions() {
+        assert_eq!(reaction, "+1");
+    }
+
+    // 3 rocket reactions should have been removed (one per finding)
+    assert_eq!(
+        submission.base.deleted_reaction_count(),
+        3,
+        "expected 3 🚀 reactions removed"
+    );
+}
+
+/// Test that batch abort leaves remaining findings as Queued for next poll.
+///
+/// 3 WARNING findings batched. First succeeds, second fails on correction
+/// resume (no-op runner), third is never attempted. On the next poll cycle,
+/// the third finding is picked up as a new single-element batch.
+#[tokio::test]
+async fn test_fix_loop_batch_abort_remaining_picked_up_next_poll() {
+    let mut f = FixLoopFixture::new(
+        &[
+            make_finding("warn-a"),
+            make_finding("warn-b"),
+            make_finding("warn-c"),
+        ],
+        &[100, 101, 102], // all queued
+        None,
+    );
+
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 2, Some(3));
+
+    let result = f.run().await;
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // First batch: warn-a succeeds, warn-b fails (correction runner error)
+    // Second batch (next poll): warn-c runs as single-element batch, succeeds
+    // warn-b stays failed
+    assert_eq!(
+        f.submission.reply_count(),
+        2,
+        "warn-a + warn-c should be fixed (warn-b failed on correction resume)"
+    );
+}
+
+/// Test that a WontFix result in a batch marks the finding complete and continues.
+///
+/// 2 WARNING findings batched. First returns WontFix (via agent script), second
+/// returns Fixed (via correction runner resume). Both should be marked complete
+/// with appropriate reactions: 😕 for WontFix, 👍 for Fixed.
+#[tokio::test]
+async fn test_fix_loop_batch_wontfix_continues() {
+    let (_bare_dir, repo_dir) = setup_git_repo();
+    let repo_root = repo_dir.path();
+
+    let pr_branch = "feature/batch-wontfix-test";
+    create_pr_branch(repo_root, pr_branch);
+
+    // Agent script that returns WontFix (no commit needed) with a session_id
+    let agent_script = create_mock_wontfix_agent_script(repo_root);
+
+    let findings = vec![make_finding("warn-wontfix"), make_finding("warn-fixable")];
+    let comments = make_review_comments(&findings);
+    let reactions = vec![rocket_reactions(100), rocket_reactions(101)];
+
+    let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
+    let correction_runner = Arc::new(MockCorrectionRunner::with_handler(|working_dir, n| {
+        let filename = format!("batch-resume-{n}.txt");
+        let commit_msg = format!("fix: batch-resume-{n}");
+
+        std::fs::write(working_dir.join(&filename), "batch fix content").unwrap();
+        run_git(working_dir, &["add", "."]);
+        run_git(working_dir, &["commit", "-m", &commit_msg]);
+
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: format!(r#"{{"status":"fixed","commit_message":"{commit_msg}"}}"#),
+            stderr: String::new(),
+            session_id: Some("mock-batch-session".to_string()),
+        })
+    }));
+
+    let wt_dir = tempfile::TempDir::new().unwrap();
+    let mut config = make_config();
+    config.fix = make_fix_step_config(agent_script);
+    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    config.poll_seconds = 1;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 2, None);
+
+    let result = run_fix_loop(
+        42,
+        pr_branch,
+        &config,
+        Arc::clone(&submission),
+        &rlph::prompts::PromptEngine::new(None),
+        repo_root,
+        correction_runner,
+        shutdown_rx,
+    )
+    .await;
+
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // Both findings should have been processed
+    assert_eq!(
+        submission.reply_count(),
+        2,
+        "expected 2 replies: WontFix + Fixed"
+    );
+
+    // Verify reactions: first finding gets "confused" (WontFix), second gets "+1" (Fixed)
+    let reactions = submission.base.added_reactions();
+    assert!(
+        reactions.iter().any(|(_, r)| r == "confused"),
+        "expected 😕 reaction for WontFix finding, got: {reactions:?}"
+    );
+    assert!(
+        reactions.iter().any(|(_, r)| r == "+1"),
+        "expected 👍 reaction for Fixed finding, got: {reactions:?}"
+    );
+
+    // Both rocket reactions should have been removed
+    assert_eq!(
+        submission.base.deleted_reaction_count(),
+        2,
+        "expected 2 🚀 reactions removed"
+    );
+}
+
+/// Test that batch aborts on the second finding when the first finding's agent
+/// returns no session_id (cannot resume without one).
+///
+/// 2 WARNING findings batched. First succeeds but returns no session_id,
+/// so the second finding cannot resume and the batch aborts. The first
+/// non-completed finding (warn-b) is marked as failed.
+#[tokio::test]
+async fn test_fix_loop_batch_abort_when_no_session_id() {
+    let (_bare_dir, repo_dir) = setup_git_repo();
+    let repo_root = repo_dir.path();
+
+    let pr_branch = "feature/no-session-id-test";
+    create_pr_branch(repo_root, pr_branch);
+
+    // Agent script that does NOT emit session_id
+    let agent_script = create_mock_agent_script_no_session_id(repo_root);
+
+    let findings = vec![make_finding("warn-a"), make_finding("warn-b")];
+    let comments = make_review_comments(&findings);
+    let reactions = vec![rocket_reactions(100), rocket_reactions(101)];
+
+    let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
+    let correction_runner = Arc::new(MockCorrectionRunner::noop());
+
+    let wt_dir = tempfile::TempDir::new().unwrap();
+    let mut config = make_config();
+    config.fix = make_fix_step_config(agent_script);
+    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    config.poll_seconds = 1;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 1, Some(2));
+
+    let result = run_fix_loop(
+        42,
+        pr_branch,
+        &config,
+        Arc::clone(&submission),
+        &rlph::prompts::PromptEngine::new(None),
+        repo_root,
+        correction_runner,
+        shutdown_rx,
+    )
+    .await;
+
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // Only warn-a should be fixed; warn-b failed (no session_id to resume)
+    assert_eq!(
+        submission.reply_count(),
+        1,
+        "only warn-a should be fixed (warn-b failed: no session_id for resume)"
+    );
+}
+
+/// Test that rebase conflicts during push trigger agent resume for resolution.
+///
+/// The mock agent script pushes a conflicting commit to origin (via a subshell
+/// clone that writes all output to /dev/null), then makes its own conflicting
+/// commit in the worktree. When the push fails and the rebase conflicts,
+/// `resolve_conflict_and_push` is invoked and the mock correction runner
+/// resolves the conflict.
+#[tokio::test]
+async fn test_fix_loop_rebase_conflict_triggers_agent_resume() {
+    let (bare_dir, repo_dir) = setup_git_repo();
+    let repo_root = repo_dir.path();
+
+    let pr_branch = "feature/conflict-test";
+    create_pr_branch(repo_root, pr_branch);
+
+    // Pre-create shared.txt on the PR branch so both sides can conflict on it
+    run_git(repo_root, &["checkout", pr_branch]);
+    std::fs::write(repo_root.join("shared.txt"), "original content").unwrap();
+    run_git(repo_root, &["add", "."]);
+    run_git(repo_root, &["commit", "-m", "add shared.txt"]);
+    run_git(repo_root, &["push", "origin", pr_branch]);
+    run_git(repo_root, &["checkout", "main"]);
+
+    // Agent script: pushes a conflicting commit to origin (from a subshell clone
+    // with all output redirected to /dev/null), then makes a conflicting commit
+    // in the worktree on the same file.
+    let bare_path = bare_dir.path().to_str().unwrap().to_string();
+    let script_path = repo_root.join("mock-conflict-agent.sh");
+    let script = format!(
+        r#"#!/bin/bash
+ID="$$-$RANDOM"
+
+# Push a conflicting commit to origin from a throwaway clone (subshell, all
+# output to /dev/null so it doesn't pollute stdout which the runner parses).
+TMPCLONE=$(mktemp -d)
+(
+  git clone "{bare_path}" "$TMPCLONE"
+  cd "$TMPCLONE"
+  git checkout feature/conflict-test
+  echo "origin-side-change" > shared.txt
+  git add shared.txt
+  git commit -m "conflict: origin-side"
+  git push origin feature/conflict-test
+) >/dev/null 2>&1
+rm -rf "$TMPCLONE"
+
+# Make a conflicting change in the worktree
+echo "worktree-side-change" > shared.txt
+git add shared.txt
+git commit -m "fix: worktree-side-$ID" >/dev/null 2>&1
+
+echo "{{\"session_id\":\"mock-conflict-session\"}}"
+echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"commit_message\\\":\\\"fix: conflict-resolved\\\"}}\"}}"
+"#
+    );
+    std::fs::write(&script_path, &script).unwrap();
+    #[cfg(unix)]
+    make_executable(&script_path);
+    let agent_script = script_path.to_str().unwrap().to_string();
+
+    let findings = vec![make_finding("conflict-finding")];
+    let comments = make_review_comments(&findings);
+    let reactions = vec![rocket_reactions(100)];
+
+    let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
+
+    // Mock correction runner: resolves merge conflicts by writing a resolution,
+    // git-adding, and continuing the rebase.
+    let correction_runner = Arc::new(MockCorrectionRunner::with_handler(|working_dir, _n| {
+        std::fs::write(working_dir.join("shared.txt"), "resolved content").unwrap();
+        run_git(working_dir, &["add", "shared.txt"]);
+
+        // Use Command directly to avoid panic if rebase --continue "fails"
+        // (git sometimes exits non-zero for editor-related reasons)
+        let output = std::process::Command::new("git")
+            .args(["rebase", "--continue"])
+            .current_dir(working_dir)
+            .env("GIT_EDITOR", "true")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "rebase --continue failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        Ok(RunResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            session_id: Some("mock-conflict-session".to_string()),
+        })
+    }));
+
+    let wt_dir = tempfile::TempDir::new().unwrap();
+    let mut config = make_config();
+    config.fix = make_fix_step_config(agent_script);
+    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    config.poll_seconds = 1;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 1, None);
+
+    let result = run_fix_loop(
+        42,
+        pr_branch,
+        &config,
+        Arc::clone(&submission),
+        &rlph::prompts::PromptEngine::new(None),
+        repo_root,
+        correction_runner,
+        shutdown_rx,
+    )
+    .await;
+
+    shutdown_handle.abort();
+
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
+
+    // The finding should have been fixed (conflict resolved by agent)
+    assert_eq!(
+        submission.reply_count(),
+        1,
+        "expected 1 reply (conflict-finding fixed after resolution)"
+    );
+
+    // Reaction should be +1 (fixed)
+    let reactions = submission.base.added_reactions();
+    assert_eq!(reactions.len(), 1);
+    assert_eq!(reactions[0].1, "+1");
 }

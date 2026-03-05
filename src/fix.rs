@@ -28,7 +28,7 @@ use crate::prompts::PromptEngine;
 use crate::review_schema::{
     FINDING_MARKER, SchemaName, StandaloneFixOutput, parse_standalone_fix_output,
 };
-use crate::runner::{AgentRunner, Phase, RunResult, build_runner};
+use crate::runner::{AgentRunner, AnyRunner, Phase, RunResult, build_runner};
 use crate::submission::{PrReviewComment, Reaction, SubmissionBackend};
 use crate::worktree::{WorktreeManager, git_in_dir, resolve_setup_script, validate_branch_name};
 
@@ -225,6 +225,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         }
 
         // Fetch and parse
+        eprintln!("[rlph] polling for newly 🚀-reacted comments (cycle {cycle})");
         info!(
             pr_number,
             cycle,
@@ -295,6 +296,11 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         )
         .await;
 
+        eprintln!(
+            "[rlph] poll cycle {cycle} summary: {} completed, {} failed",
+            completed.len(),
+            failed.len()
+        );
         info!(
             cycle,
             completed = completed.len(),
@@ -346,31 +352,24 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
 
         match fix_scheduler::next_action(queued_items, deps, &sched_completed, &sched_failed) {
             ScheduleAction::RunCritical(finding_id) => {
+                eprintln!("[rlph] Critical: scheduling single-finding fix for {finding_id}");
                 info!(%finding_id, "Critical processing mode: scheduling single-finding fix session");
 
-                let Some(item) = queued_items
-                    .iter()
-                    .find(|i| i.finding.id == finding_id)
-                    .cloned()
-                else {
-                    warn!(%finding_id, "scheduler returned unknown finding ID, marking as failed");
-                    failed.insert(finding_id);
-                    continue;
-                };
-
-                let Some(prepared) = prepare_fix_item(
-                    item,
+                let Some(prepared) = lookup_and_prepare(
+                    &finding_id,
+                    queued_items,
                     pr_number,
                     &shared.fix_config,
                     prompt_engine,
                     reply_map,
+                    failed,
                 ) else {
-                    failed.insert(finding_id);
                     continue;
                 };
 
                 match run_prepared_fix(shared, prepared, pr_number).await {
                     Ok(()) => {
+                        eprintln!("[rlph] Critical fix completed successfully: {finding_id}");
                         info!(%finding_id, "Critical fix completed successfully");
                         completed.insert(finding_id);
                     }
@@ -378,6 +377,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                         let attempts = retries.entry(finding_id.clone()).or_insert(0);
                         *attempts += 1;
                         if *attempts >= MAX_CRITICAL_ATTEMPTS {
+                            eprintln!("[rlph] Critical fix failed after retry: {finding_id}: {e}");
                             warn!(
                                 %finding_id,
                                 error = %e,
@@ -385,6 +385,10 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                             );
                             failed.insert(finding_id);
                         } else {
+                            eprintln!(
+                                "[rlph] Critical fix failed (attempt {}, will retry): {finding_id}: {e}",
+                                *attempts
+                            );
                             warn!(
                                 %finding_id,
                                 error = %e,
@@ -395,9 +399,54 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                     }
                 }
             }
-            ScheduleAction::RunBatch(_) => {
-                warn!("RunBatch not yet implemented, skipping batch findings for now");
-                break;
+            ScheduleAction::RunBatch(finding_ids) => {
+                let batch_size = finding_ids.len();
+                eprintln!("[rlph] Batch: scheduling {batch_size} findings: {finding_ids:?}");
+                info!(
+                    batch_size,
+                    ?finding_ids,
+                    "batch processing mode: scheduling session"
+                );
+
+                // Prepare all items, skipping any that fail validation
+                let mut prepared_items = Vec::with_capacity(batch_size);
+                for finding_id in &finding_ids {
+                    if let Some(prepared) = lookup_and_prepare(
+                        finding_id,
+                        queued_items,
+                        pr_number,
+                        &shared.fix_config,
+                        prompt_engine,
+                        reply_map,
+                        failed,
+                    ) {
+                        prepared_items.push(prepared);
+                    }
+                }
+
+                if prepared_items.is_empty() {
+                    warn!("all batch items failed preparation, skipping batch");
+                    continue;
+                }
+
+                let (batch_completed, batch_error) =
+                    run_batch_fix(shared, prepared_items, pr_number).await;
+
+                for id in &batch_completed {
+                    eprintln!("[rlph] Batch finding completed successfully: {id}");
+                    info!(%id, "batch finding completed successfully");
+                }
+                completed.extend(batch_completed);
+
+                if let Some((failed_id, e)) = batch_error {
+                    eprintln!("[rlph] Batch finding failed: {failed_id}: {e}");
+                    warn!(
+                        finding_id = %failed_id,
+                        error = %e,
+                        "batch finding failed, remaining items left as Queued"
+                    );
+                    failed.insert(failed_id);
+                }
             }
             ScheduleAction::Idle => {
                 break;
@@ -423,27 +472,15 @@ pub fn fetch_and_parse_items(
         .filter(|c| c.in_reply_to_id.is_none() && c.body.contains(FINDING_MARKER))
         .collect();
 
-    // Fetch reactions in parallel across threads
-    let reactions_by_comment: Vec<Result<(u64, Vec<Reaction>)>> = std::thread::scope(|s| {
-        let handles: Vec<_> = finding_comments
-            .iter()
-            .map(|comment| {
-                let id = comment.id;
-                s.spawn(move || {
-                    submission
-                        .list_review_comment_reactions(id)
-                        .map(|reactions| (id, reactions))
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| {
-                h.join()
-                    .map_err(|_| Error::Submission("reaction-fetch thread panicked".into()))?
-            })
-            .collect()
-    });
+    // Fetch reactions in batches to avoid exhausting file descriptors
+    // (each `gh api` call opens multiple fds).
+    let reactions_by_comment: Vec<Result<(u64, Vec<Reaction>)>> =
+        crate::run_batched(&finding_comments, |comment| {
+            let id = comment.id;
+            submission
+                .list_review_comment_reactions(id)
+                .map(|reactions| (id, reactions))
+        });
 
     let collected: Vec<_> = reactions_by_comment.into_iter().collect::<Result<_>>()?;
 
@@ -475,18 +512,10 @@ pub(crate) async fn wait_or_shutdown(
 /// Run a single fix: create worktree, run agent, push, update reactions, cleanup.
 async fn run_single_fix(
     ctx: FixContext<'_>,
-    worktree_dir: &str,
-    repo_root: &Path,
+    wm: &WorktreeManager,
     submission: &(impl SubmissionBackend + ?Sized),
     correction_runner: &(impl CorrectionRunner + ?Sized),
-    setup_script: Option<&Path>,
 ) -> Result<()> {
-    let wm = WorktreeManager::new(
-        repo_root.to_path_buf(),
-        repo_root.join(worktree_dir),
-        ctx.pr_branch.to_string(),
-    )
-    .with_setup_script(setup_script.map(Path::to_path_buf));
     let worktree_path = wm.create_fresh(ctx.fix_branch, ctx.pr_branch)?.path;
     info!(
         finding_id = %ctx.item.finding.id,
@@ -560,6 +589,17 @@ impl<S, C> SharedFixState<S, C> {
     }
 }
 
+impl<S, C> SharedFixState<S, C> {
+    fn make_worktree_manager(&self) -> WorktreeManager {
+        WorktreeManager::new(
+            self.repo_root.to_path_buf(),
+            self.repo_root.join(&*self.worktree_dir),
+            self.pr_branch.to_string(),
+        )
+        .with_setup_script(self.setup_script.as_deref().map(Path::to_path_buf))
+    }
+}
+
 impl<S, C> Clone for SharedFixState<S, C> {
     fn clone(&self) -> Self {
         Self {
@@ -605,6 +645,36 @@ struct PreparedFixItem {
     comment_id: u64,
     /// Reply bodies collected from the review thread.
     replies: Vec<String>,
+}
+
+/// Look up a finding by ID in `queued_items`, then prepare it via [`prepare_fix_item`].
+///
+/// Returns `None` (and inserts into `failed`) when the finding ID is unknown or
+/// preparation fails.
+fn lookup_and_prepare(
+    finding_id: &str,
+    queued_items: &[FixItem],
+    pr_number: u64,
+    fix_config: &ReviewStepConfig,
+    prompt_engine: &PromptEngine,
+    reply_map: &mut ReplyMap,
+    failed: &mut HashSet<String>,
+) -> Option<PreparedFixItem> {
+    let Some(item) = queued_items
+        .iter()
+        .find(|i| i.finding.id == finding_id)
+        .cloned()
+    else {
+        warn!(%finding_id, "scheduler returned unknown finding ID, marking as failed");
+        failed.insert(finding_id.to_owned());
+        return None;
+    };
+
+    let prepared = prepare_fix_item(item, pr_number, fix_config, prompt_engine, reply_map);
+    if prepared.is_none() {
+        failed.insert(finding_id.to_owned());
+    }
+    prepared
 }
 
 /// Validate branch name, render the prompt, and log the spawn.
@@ -653,6 +723,29 @@ fn prepare_fix_item(
     })
 }
 
+/// Re-fetch a review comment and append formatted review context to the prompt.
+///
+/// Warns and continues without context on fetch failure.
+fn append_review_context(
+    submission: &dyn SubmissionBackend,
+    comment_id: u64,
+    replies: &[String],
+    prompt: &mut String,
+) {
+    match submission.fetch_review_comment_by_id(comment_id) {
+        Ok(comment) => {
+            prompt.push_str(&format_review_context(&comment.body, replies));
+        }
+        Err(e) => {
+            warn!(
+                comment_id,
+                error = %e,
+                "failed to re-fetch review comment body, proceeding without review context"
+            );
+        }
+    }
+}
+
 /// Build [`FixContext`] and run a single fix.
 ///
 /// Shared by both [`run_fix`] (one-shot) and [`run_fix_loop`] (polling).
@@ -669,19 +762,7 @@ async fn run_prepared_fix<S: SubmissionBackend, C: CorrectionRunner>(
         replies,
     } = prepared;
 
-    // Re-fetch the comment body at execution time for the freshest content
-    match shared.submission.fetch_review_comment_by_id(comment_id) {
-        Ok(comment) => {
-            prompt.push_str(&format_review_context(&comment.body, &replies));
-        }
-        Err(e) => {
-            warn!(
-                comment_id,
-                error = %e,
-                "failed to re-fetch review comment body, proceeding without review context"
-            );
-        }
-    }
+    append_review_context(&*shared.submission, comment_id, &replies, &mut prompt);
 
     let ctx = FixContext {
         item,
@@ -692,15 +773,328 @@ async fn run_prepared_fix<S: SubmissionBackend, C: CorrectionRunner>(
         agent_timeout_retries: shared.agent_timeout_retries,
         prompt: &prompt,
     };
-    run_single_fix(
-        ctx,
-        &shared.worktree_dir,
-        &shared.repo_root,
-        &*shared.submission,
-        &*shared.correction_runner,
-        shared.setup_script.as_deref(),
+    let wm = shared.make_worktree_manager();
+    run_single_fix(ctx, &wm, &*shared.submission, &*shared.correction_runner).await
+}
+
+/// Run a batch of WARNING/INFO findings in a single shared agent session.
+///
+/// Creates one worktree and one agent session. The first finding starts the
+/// session normally; subsequent findings are fed via `resume_agent`
+/// using the session ID from the previous run. Each finding gets its own
+/// commit/push/reaction cycle. Aborts on the first failure.
+///
+/// # Preconditions
+///
+/// `prepared_items` must be non-empty (caller is responsible for filtering).
+///
+/// Returns `(completed_finding_ids, optional_error)`.
+async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
+    shared: &SharedFixState<S, C>,
+    prepared_items: Vec<PreparedFixItem>,
+    pr_number: u64,
+) -> (HashSet<String>, Option<(String, Error)>) {
+    let batch_size = prepared_items.len();
+    let mut completed_ids = HashSet::new();
+
+    // Capture the first finding ID before we move prepared_items, so we can
+    // attribute worktree-creation failures to a specific finding.
+    let first_finding_id = prepared_items[0].item.finding.id.clone();
+
+    // Use the first item's fix_branch as the worktree branch for the whole batch
+    let batch_branch = prepared_items[0].fix_branch.clone();
+
+    // Create a single worktree for the batch
+    let wm = shared.make_worktree_manager();
+
+    let worktree_path = match wm.create_fresh(&batch_branch, &shared.pr_branch) {
+        Ok(info) => info.path,
+        Err(e) => return (completed_ids, Some((first_finding_id, e))),
+    };
+
+    info!(
+        batch_size,
+        branch = %batch_branch,
+        path = %worktree_path.display(),
+        "created batch worktree"
+    );
+
+    // Build runner for the initial agent invocation
+    let runner = build_fix_runner(&shared.fix_config, shared.agent_timeout_retries);
+
+    // Run each finding sequentially, sharing the session
+    let mut session_id: Option<String> = None;
+    let error: Option<(String, Error)> = 'batch: {
+        for (idx, prepared) in prepared_items.into_iter().enumerate() {
+            let PreparedFixItem {
+                item,
+                fix_branch: _,
+                mut prompt,
+                comment_id,
+                replies,
+            } = prepared;
+
+            let finding_id = item.finding.id.clone();
+            let position = idx + 1;
+
+            info!(
+                %finding_id,
+                position,
+                batch_size,
+                "batch session: fixing finding ({position} of {batch_size})"
+            );
+
+            // Append review context (re-fetch comment for freshness)
+            append_review_context(&*shared.submission, comment_id, &replies, &mut prompt);
+
+            // Run agent (first finding) or resume session (subsequent findings)
+            let run_result = if idx == 0 {
+                info!(%finding_id, "spawning batch fix agent");
+                runner.run(Phase::Fix, &prompt, &worktree_path).await
+            } else {
+                let Some(ref sid) = session_id else {
+                    let err = Error::Orchestrator(
+                        "no session_id from previous finding, cannot resume batch".into(),
+                    );
+                    warn!(%finding_id, %err, "batch abort");
+                    break 'batch Some((finding_id, err));
+                };
+                info!(%finding_id, session_id = %sid, "resuming batch session");
+                resume_agent(
+                    &*shared.correction_runner,
+                    &shared.fix_config,
+                    sid,
+                    &prompt,
+                    &worktree_path,
+                )
+                .await
+            };
+
+            let run_result = match run_result {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[rlph] Batch abort (agent failed): {finding_id}: {e}");
+                    warn!(%finding_id, error = %e, "batch abort: agent failed");
+                    break 'batch Some((finding_id, e));
+                }
+            };
+
+            // Track session_id for subsequent resumes
+            match (&run_result.session_id, idx) {
+                (Some(_), _) => session_id.clone_from(&run_result.session_id),
+                (None, 0) if batch_size > 1 => {
+                    let err = Error::Orchestrator(
+                        "agent returned no session_id on first finding, cannot resume batch".into(),
+                    );
+                    warn!(%finding_id, %err, "batch abort");
+                    break 'batch Some((finding_id, err));
+                }
+                (None, 0) => {} // single-item batch, session_id not needed
+                (None, _) => {
+                    warn!(
+                        %finding_id,
+                        "runner returned no session_id mid-batch, keeping previous (possibly stale) session_id"
+                    );
+                }
+            }
+
+            // Parse output (with retry via session correction)
+            let fix_output = match parse_fix_with_retry(
+                &run_result,
+                &shared.fix_config,
+                &worktree_path,
+                &*shared.correction_runner,
+            )
+            .await
+            {
+                Ok(output) => output,
+                Err(e) => {
+                    eprintln!("[rlph] Batch abort (parse failed): {finding_id}: {e}");
+                    warn!(%finding_id, error = %e, "batch abort: parse failed");
+                    break 'batch Some((finding_id, e));
+                }
+            };
+
+            info!(%finding_id, ?fix_output, "batch fix agent completed");
+
+            // Apply result: push if fixed, update reactions
+            let fix_result = match apply_fix_output(
+                fix_output,
+                &finding_id,
+                &worktree_path,
+                &batch_branch,
+                &shared.pr_branch,
+                &ConflictResolutionCtx {
+                    session_id: session_id.as_deref(),
+                    fix_config: &shared.fix_config,
+                    correction_runner: &*shared.correction_runner,
+                },
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    eprintln!("[rlph] Batch abort (push failed): {finding_id}: {e}");
+                    warn!(%finding_id, error = %e, "batch abort: push failed");
+                    break 'batch Some((finding_id, e));
+                }
+            };
+
+            let ctx = FixContext {
+                item,
+                pr_number,
+                pr_branch: &shared.pr_branch,
+                fix_branch: &batch_branch,
+                fix_config: &shared.fix_config,
+                agent_timeout_retries: shared.agent_timeout_retries,
+                prompt: &prompt,
+            };
+            update_reactions_and_reply(&ctx, &*shared.submission, &fix_result);
+
+            completed_ids.insert(finding_id);
+        }
+        None // all findings completed successfully
+    };
+
+    // Always clean up the worktree
+    info!(path = %worktree_path.display(), "cleaning up batch worktree");
+    if let Err(e) = wm.remove(&worktree_path) {
+        warn!(error = %e, "failed to clean up batch worktree");
+    }
+
+    (completed_ids, error)
+}
+
+/// Params only needed for the conflict-resolution branch in [`apply_fix_output`].
+struct ConflictResolutionCtx<'a, C: ?Sized> {
+    session_id: Option<&'a str>,
+    fix_config: &'a ReviewStepConfig,
+    correction_runner: &'a C,
+}
+
+/// Map agent output to a fix result, pushing to the PR branch if the fix was applied.
+async fn apply_fix_output<C: CorrectionRunner + ?Sized>(
+    fix_output: StandaloneFixOutput,
+    finding_id: &str,
+    worktree_path: &Path,
+    fix_branch: &str,
+    pr_branch: &str,
+    conflict_ctx: &ConflictResolutionCtx<'_, C>,
+) -> Result<FixResultKind> {
+    match fix_output {
+        StandaloneFixOutput::Fixed { commit_message } => {
+            eprintln!("[rlph] Fix applied — rebasing and pushing: {finding_id}");
+            info!(%finding_id, commit_message, "fix applied — rebasing and pushing");
+            match (
+                push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await,
+                conflict_ctx.session_id,
+            ) {
+                (Ok(()), _) => Ok(FixResultKind::Fixed { commit_message }),
+                (Err(Error::RebaseConflict { .. }), Some(sid)) => {
+                    eprintln!("[rlph] Rebase conflict — resuming agent to resolve: {finding_id}");
+                    resolve_conflict_and_push(
+                        worktree_path,
+                        fix_branch,
+                        pr_branch,
+                        sid,
+                        conflict_ctx.fix_config,
+                        conflict_ctx.correction_runner,
+                    )
+                    .await?;
+                    Ok(FixResultKind::Fixed { commit_message })
+                }
+                (Err(e), _) => Err(e),
+            }
+        }
+        StandaloneFixOutput::WontFix { reason } => {
+            eprintln!("[rlph] Finding marked as won't fix: {finding_id}");
+            info!(%finding_id, reason, "finding marked as won't fix");
+            Ok(FixResultKind::WontFix { reason })
+        }
+    }
+}
+
+/// Resume an agent session using config fields from [`ReviewStepConfig`].
+async fn resume_agent(
+    correction_runner: &(impl CorrectionRunner + ?Sized),
+    fix_config: &ReviewStepConfig,
+    session_id: &str,
+    prompt: &str,
+    working_dir: &Path,
+) -> Result<RunResult> {
+    correction_runner
+        .resume(
+            fix_config.runner,
+            &fix_config.agent_binary,
+            fix_config.agent_model.as_deref(),
+            fix_config.agent_effort.as_deref(),
+            fix_config.agent_variant.as_deref(),
+            session_id,
+            prompt,
+            working_dir,
+            fix_config.agent_timeout.map(Duration::from_secs),
+        )
+        .await
+}
+
+/// Attempt to resolve rebase conflicts by resuming the agent session.
+///
+/// Starts a rebase (leaving conflicts in the worktree), then resumes the agent
+/// asking it to resolve conflict markers and continue the rebase. On success,
+/// pushes the result.
+///
+/// Fetches before rebasing to avoid using a stale ref when a concurrent push
+/// landed between the prior abort and this retry.
+async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
+    worktree_path: &Path,
+    fix_branch: &str,
+    pr_branch: &str,
+    session_id: &str,
+    fix_config: &ReviewStepConfig,
+    correction_runner: &C,
+) -> Result<()> {
+    match rebase_onto(worktree_path, pr_branch).await {
+        Ok(()) => { /* Rebase clean — fall through to push */ }
+        Err(Error::RebaseConflict { .. }) => {
+            // Conflicts in worktree — resume agent to resolve
+            let prompt = "The rebase onto the PR branch has merge conflicts. \
+                Please resolve ALL conflicts:\n\
+                1. Edit each conflicted file to remove conflict markers (<<<<<<< / ======= / >>>>>>>)\n\
+                2. `git add` each resolved file\n\
+                3. `git rebase --continue`\n\
+                Do not abort the rebase.";
+
+            resume_agent(
+                correction_runner,
+                fix_config,
+                session_id,
+                prompt,
+                worktree_path,
+            )
+            .await
+            .inspect_err(|_| abort_rebase(worktree_path))?;
+        }
+        Err(e) => return Err(e),
+    }
+
+    // Push with retry. If this hits another RebaseConflict we intentionally
+    // propagate the error rather than resuming the agent again to avoid an
+    // infinite conflict-resolution loop.
+    push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await
+}
+
+/// Build the runner used for fix agent invocations.
+fn build_fix_runner(config: &ReviewStepConfig, agent_timeout_retries: u32) -> AnyRunner {
+    build_runner(
+        config.runner,
+        &config.agent_binary,
+        config.agent_model.as_deref(),
+        config.agent_effort.as_deref(),
+        config.agent_variant.as_deref(),
+        config.agent_timeout.map(Duration::from_secs),
+        agent_timeout_retries,
     )
-    .await
+    .with_stream_prefix("fix".to_string())
 }
 
 /// Inner function: spawn agent, parse output, rebase/push with retry, update reactions + reply.
@@ -712,16 +1106,7 @@ async fn run_fix_agent_and_apply(
 ) -> Result<()> {
     // Spawn fix agent
     info!(finding_id = %ctx.item.finding.id, "spawning fix agent");
-    let runner = build_runner(
-        ctx.fix_config.runner,
-        &ctx.fix_config.agent_binary,
-        ctx.fix_config.agent_model.as_deref(),
-        ctx.fix_config.agent_effort.as_deref(),
-        ctx.fix_config.agent_variant.as_deref(),
-        ctx.fix_config.agent_timeout.map(Duration::from_secs),
-        ctx.agent_timeout_retries,
-    )
-    .with_stream_prefix("fix".to_string());
+    let runner = build_fix_runner(ctx.fix_config, ctx.agent_timeout_retries);
 
     let run_result = runner.run(Phase::Fix, ctx.prompt, worktree_path).await?;
 
@@ -737,17 +1122,19 @@ async fn run_fix_agent_and_apply(
     info!(finding_id = %ctx.item.finding.id, ?fix_output, "fix agent completed");
 
     // Apply result
-    let fix_result = match fix_output {
-        StandaloneFixOutput::Fixed { commit_message } => {
-            info!(finding_id = %ctx.item.finding.id, commit_message, "fix applied — rebasing and pushing");
-            push_to_pr_branch_with_retry(worktree_path, ctx.fix_branch, ctx.pr_branch).await?;
-            FixResultKind::Fixed { commit_message }
-        }
-        StandaloneFixOutput::WontFix { reason } => {
-            info!(finding_id = %ctx.item.finding.id, reason, "finding marked as won't fix");
-            FixResultKind::WontFix { reason }
-        }
-    };
+    let fix_result = apply_fix_output(
+        fix_output,
+        &ctx.item.finding.id,
+        worktree_path,
+        ctx.fix_branch,
+        ctx.pr_branch,
+        &ConflictResolutionCtx {
+            session_id: run_result.session_id.as_deref(),
+            fix_config: ctx.fix_config,
+            correction_runner,
+        },
+    )
+    .await?;
 
     // Update reactions and post reply (best-effort — don't fail on already-pushed code)
     update_reactions_and_reply(ctx, submission, &fix_result);
@@ -917,14 +1304,30 @@ async fn fetch_with_retry(cwd: &Path, refspec: &str) -> Result<()> {
     )))
 }
 
-/// Rebase current branch onto origin/<pr-branch>.
+/// Rebase current branch onto origin/<pr-branch>, fetching first.
+///
+/// On conflict the rebase is **not** aborted — the caller decides whether to
+/// resume the agent for conflict resolution or abort itself.
 async fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
     fetch_with_retry(worktree_path, pr_branch).await?;
+    start_rebase(worktree_path, pr_branch)
+}
 
+/// Start a rebase onto origin/<pr-branch> (assumes refs are already fetched).
+///
+/// On conflict the rebase is **not** aborted — the caller decides whether to
+/// resume the agent for conflict resolution or abort itself.
+fn start_rebase(worktree_path: &Path, pr_branch: &str) -> Result<()> {
     let remote_ref = format!("origin/{pr_branch}");
 
     if let Err(stderr) = git_in_dir(worktree_path, &["rebase", &remote_ref]) {
-        let _ = git_in_dir(worktree_path, &["rebase", "--abort"]);
+        if stderr.contains("CONFLICT") || stderr.contains("could not apply") {
+            warn!(remote_ref, stderr = %stderr, "rebase conflict");
+            return Err(Error::RebaseConflict {
+                target_ref: remote_ref,
+            });
+        }
+        warn!(remote_ref, stderr = %stderr, "git rebase failed (non-conflict)");
         return Err(Error::Orchestrator(format!(
             "git rebase onto {remote_ref} failed: {stderr}"
         )));
@@ -932,6 +1335,11 @@ async fn rebase_onto(worktree_path: &Path, pr_branch: &str) -> Result<()> {
 
     info!(remote_ref, "rebased onto latest PR branch");
     Ok(())
+}
+
+/// Best-effort abort of a rebase in progress.
+fn abort_rebase(worktree_path: &Path) {
+    let _ = git_in_dir(worktree_path, &["rebase", "--abort"]);
 }
 
 /// Push fix branch to PR branch with rebase+retry on conflict.
@@ -946,9 +1354,12 @@ async fn push_to_pr_branch_with_retry(
     let refspec = format!("{fix_branch}:{pr_branch}");
     let mut last_err = String::new();
     for attempt in 1..=MAX_PUSH_ATTEMPTS {
-        // Skip rebase on first attempt: worktree was just created from origin/<pr-branch>
-        if attempt > 1 {
-            rebase_onto(worktree_path, pr_branch).await?;
+        // First attempt pushes as-is; rebase only after a conflict reveals divergence
+        if attempt > 1
+            && let Err(e) = rebase_onto(worktree_path, pr_branch).await
+        {
+            abort_rebase(worktree_path);
+            return Err(e);
         }
 
         match git_in_dir(worktree_path, &["push", "origin", &refspec]) {
@@ -1259,5 +1670,53 @@ mod tests {
 
         // Unknown deps are ignored → eligible
         assert!(deps.deps_met("a", &resolved));
+    }
+
+    // --- Batch preparation tests ---
+
+    /// Helper to build a FixItem directly from a ReviewFinding.
+    fn make_fix_item(finding: crate::review_schema::ReviewFinding, comment_id: u64) -> FixItem {
+        FixItem {
+            finding,
+            state: FindingState::Queued,
+            comment_id,
+            rocket_reaction_ids: vec![1],
+        }
+    }
+
+    #[test]
+    fn test_batch_prep_partial_failure() {
+        // "bad finding" contains a space → invalid branch name
+        // "good-a" and "good-b" are valid
+        let items = vec![
+            make_fix_item(make_finding("good-a"), 100),
+            make_fix_item(make_finding("bad finding"), 200),
+            make_fix_item(make_finding("good-b"), 300),
+        ];
+
+        let engine = PromptEngine::new(None);
+        let fix_config = crate::config::default_review_step("fix");
+        let mut reply_map: ReplyMap = HashMap::new();
+
+        let mut prepared = Vec::new();
+        let mut failed = HashSet::new();
+
+        for item in items {
+            let finding_id = item.finding.id.clone();
+            match prepare_fix_item(item, 42, &fix_config, &engine, &mut reply_map) {
+                Some(p) => prepared.push(p),
+                None => {
+                    failed.insert(finding_id);
+                }
+            }
+        }
+
+        // Two items succeed, one fails
+        assert_eq!(prepared.len(), 2);
+        assert_eq!(prepared[0].item.finding.id, "good-a");
+        assert_eq!(prepared[1].item.finding.id, "good-b");
+
+        assert_eq!(failed.len(), 1);
+        assert!(failed.contains("bad finding"));
     }
 }
