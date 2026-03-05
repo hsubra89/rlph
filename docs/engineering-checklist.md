@@ -8,7 +8,7 @@ Use this checklist to keep `rlph` quality aligned with mature Rust projects (for
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
 - [ ] `cargo nextest run`
 - [ ] `cargo nextest run --profile integration -E 'binary(cli_binary)'`
-- [ ] Local/full integration sweep: `cargo nextest run --profile integration`
+- [ ] Optional local/full integration sweep (not merge-blocking): `cargo nextest run --profile integration`
 
 ## Design And API
 

@@ -4,15 +4,21 @@ Rust binary crate (edition 2024). Autonomous AI dev-loop CLI: fetches tasks, spi
 
 ## Commands
 
-- **Lint:** `cargo clippy`
+- **Format:** `cargo fmt --all -- --check`
+- **Lint:** `cargo clippy --all-targets --all-features -- -D warnings`
 - **Test:** `cargo nextest run`
-- **Integration:** `cargo nextest run --profile integration`
+- **Integration (CI gate):** `cargo nextest run --profile integration -E 'binary(cli_binary)'`
+- **Integration (full local sweep, optional):** `cargo nextest run --profile integration`
 - **Single test:** `cargo nextest run -E 'test(test_name)'`
 
 ## Development Methodology
 
 - TDD (red-green-refactor) for features. Use `/tdd` skill.
-- `cargo fmt && cargo clippy` before finishing — zero warnings.
+- Mirror CI locally before finishing:
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo nextest run`
+  - `cargo nextest run --profile integration -E 'binary(cli_binary)'`
 
 ## Docs
 
