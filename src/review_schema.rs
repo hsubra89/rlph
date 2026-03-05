@@ -88,6 +88,8 @@ pub struct ReviewFinding {
     pub line: u32,
     pub severity: Severity,
     pub description: String,
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub suggested_fixes: Vec<String>,
     pub category: Option<String>,
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub depends_on: Vec<String>,
@@ -148,8 +150,15 @@ pub fn render_findings_for_prompt(
         if !f.depends_on.is_empty() {
             write!(result, " (depends on: {})", f.depends_on.join(", ")).unwrap();
         }
+        append_suggested_fixes(&mut result, &f.suggested_fixes, "  ");
     }
     result
+}
+
+fn append_suggested_fixes(buf: &mut String, fixes: &[String], indent: &str) {
+    for (i, fix) in fixes.iter().enumerate() {
+        write!(buf, "\n{indent}{}. {}", i + 1, fix).unwrap();
+    }
 }
 
 pub fn capitalize_first(s: &str) -> String {
@@ -176,8 +185,7 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
     let mut groups = group_by_category(findings, |f| f.category.as_deref());
 
     for (category, group) in &mut groups {
-        let mut sorted: Vec<&ReviewFinding> = group.clone();
-        sorted.sort_by(|a, b| {
+        group.sort_by(|a, b| {
             a.severity
                 .cmp(&b.severity)
                 .then_with(|| a.file.cmp(&b.file))
@@ -185,7 +193,7 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
         });
 
         write!(body, "\n\n### {}", capitalize_first(category)).unwrap();
-        for f in sorted {
+        for &f in group.iter() {
             write!(
                 body,
                 "\n- [ ] **{}** `{}` L{}: {}",
@@ -198,8 +206,9 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
             if !f.depends_on.is_empty() {
                 write!(body, " *(depends on: {})*", f.depends_on.join(", ")).unwrap();
             }
+            append_suggested_fixes(&mut body, &f.suggested_fixes, "  ");
             let json = escaped_finding_marker_json(f);
-            write!(body, " {FINDING_MARKER}{json} -->").unwrap();
+            write!(body, "\n  {FINDING_MARKER}{json} -->").unwrap();
         }
     }
 
@@ -280,6 +289,11 @@ pub fn render_inline_finding_comment_for_github(
         finding.description
     );
 
+    if !finding.suggested_fixes.is_empty() {
+        body.push_str("\n\n**Suggested fixes:**");
+        append_suggested_fixes(&mut body, &finding.suggested_fixes, "");
+    }
+
     if !dependency_descriptions.is_empty() {
         write!(
             body,
@@ -358,10 +372,10 @@ impl SchemaName {
     pub fn example_json(&self) -> &'static str {
         match self {
             SchemaName::Phase => {
-                r#"{"findings": [{"id": "example-issue", "file": "src/main.rs", "line": 42, "severity": "critical", "description": "issue description", "category": "style", "depends_on": []}]}"#
+                r#"{"findings": [{"id": "example-issue", "file": "src/main.rs", "line": 42, "severity": "critical", "description": "issue description", "suggested_fixes": ["use X instead"], "category": "style", "depends_on": []}]}"#
             }
             SchemaName::Aggregator => {
-                r#"{"verdict": "approved", "comment": "summary", "findings": [{"id": "example-issue", "file": "src/main.rs", "line": 1, "severity": "warning", "description": "issue", "category": "style", "depends_on": []}]}"#
+                r#"{"verdict": "approved", "comment": "summary", "findings": [{"id": "example-issue", "file": "src/main.rs", "line": 1, "severity": "warning", "description": "issue", "suggested_fixes": ["use X instead"], "category": "style", "depends_on": []}]}"#
             }
             SchemaName::StandaloneFix => {
                 r#"{"status": "fixed", "commit_message": "finding-id: description of fix"}"#
@@ -435,6 +449,25 @@ fn strip_markdown_fences(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::make_finding;
+
+    fn finding(
+        id: &str,
+        file: &str,
+        line: u32,
+        severity: Severity,
+        description: &str,
+        category: Option<&str>,
+    ) -> ReviewFinding {
+        ReviewFinding {
+            file: file.to_string(),
+            line,
+            severity,
+            description: description.to_string(),
+            category: category.map(str::to_string),
+            ..make_finding(id)
+        }
+    }
 
     #[test]
     fn test_parse_valid_approved() {
@@ -617,15 +650,14 @@ mod tests {
 
     #[test]
     fn test_render_findings_single() {
-        let findings = vec![ReviewFinding {
-            id: "sql-injection".to_string(),
-            file: "src/main.rs".to_string(),
-            line: 42,
-            severity: Severity::Critical,
-            description: "SQL injection vulnerability".to_string(),
-            category: None,
-            depends_on: vec![],
-        }];
+        let findings = vec![finding(
+            "sql-injection",
+            "src/main.rs",
+            42,
+            Severity::Critical,
+            "SQL injection vulnerability",
+            None,
+        )];
         let rendered = render_findings_for_prompt(&findings, Some("security"));
         assert_eq!(
             rendered,
@@ -636,33 +668,23 @@ mod tests {
     #[test]
     fn test_render_findings_multiple() {
         let findings = vec![
-            ReviewFinding {
-                id: "bug-main".to_string(),
-                file: "src/main.rs".to_string(),
-                line: 42,
-                severity: Severity::Critical,
-                description: "Bug".to_string(),
-                category: Some("correctness".to_string()),
-                depends_on: vec![],
-            },
-            ReviewFinding {
-                id: "unused-import".to_string(),
-                file: "src/lib.rs".to_string(),
-                line: 10,
-                severity: Severity::Warning,
-                description: "Unused import".to_string(),
-                category: None,
-                depends_on: vec![],
-            },
-            ReviewFinding {
-                id: "nit-util".to_string(),
-                file: "src/util.rs".to_string(),
-                line: 5,
-                severity: Severity::Info,
-                description: "Nit".to_string(),
-                category: None,
-                depends_on: vec![],
-            },
+            finding(
+                "bug-main",
+                "src/main.rs",
+                42,
+                Severity::Critical,
+                "Bug",
+                Some("correctness"),
+            ),
+            finding(
+                "unused-import",
+                "src/lib.rs",
+                10,
+                Severity::Warning,
+                "Unused import",
+                None,
+            ),
+            finding("nit-util", "src/util.rs", 5, Severity::Info, "Nit", None),
         ];
         let rendered = render_findings_for_prompt(&findings, Some("style"));
         let expected = "\
@@ -674,15 +696,14 @@ mod tests {
 
     #[test]
     fn test_render_findings_no_default_category() {
-        let findings = vec![ReviewFinding {
-            id: "nit-main".to_string(),
-            file: "src/main.rs".to_string(),
-            line: 1,
-            severity: Severity::Info,
-            description: "nit".to_string(),
-            category: None,
-            depends_on: vec![],
-        }];
+        let findings = vec![finding(
+            "nit-main",
+            "src/main.rs",
+            1,
+            Severity::Info,
+            "nit",
+            None,
+        )];
         let rendered = render_findings_for_prompt(&findings, None);
         assert_eq!(
             rendered,
@@ -708,6 +729,24 @@ mod tests {
         }"#;
         let output = parse_phase_output(json).unwrap();
         assert!(output.findings[0].depends_on.is_empty());
+    }
+
+    #[test]
+    fn test_parse_suggested_fixes_null_deserializes_as_empty() {
+        let json = r#"{
+            "findings": [
+                {
+                    "id": "null-suggested-fixes",
+                    "file": "src/main.rs",
+                    "line": 1,
+                    "severity": "info",
+                    "description": "test",
+                    "suggested_fixes": null
+                }
+            ]
+        }"#;
+        let output = parse_phase_output(json).unwrap();
+        assert!(output.findings[0].suggested_fixes.is_empty());
     }
 
     #[test]
@@ -740,15 +779,14 @@ mod tests {
 
     #[test]
     fn test_render_findings_shows_id() {
-        let findings = vec![ReviewFinding {
-            id: "redundant-clone-in-loop".to_string(),
-            file: "src/lib.rs".to_string(),
-            line: 99,
-            severity: Severity::Warning,
-            description: "Redundant clone inside loop".to_string(),
-            category: Some("efficiency".to_string()),
-            depends_on: vec![],
-        }];
+        let findings = vec![finding(
+            "redundant-clone-in-loop",
+            "src/lib.rs",
+            99,
+            Severity::Warning,
+            "Redundant clone inside loop",
+            Some("efficiency"),
+        )];
         let rendered = render_findings_for_prompt(&findings, None);
         assert_eq!(
             rendered,
@@ -759,18 +797,43 @@ mod tests {
     #[test]
     fn test_render_findings_with_depends_on() {
         let findings = vec![ReviewFinding {
-            id: "null-ptr-deref".to_string(),
-            file: "src/main.rs".to_string(),
-            line: 15,
-            severity: Severity::Critical,
-            description: "Null pointer dereference".to_string(),
-            category: Some("correctness".to_string()),
             depends_on: vec!["null-check-missing".to_string()],
+            ..finding(
+                "null-ptr-deref",
+                "src/main.rs",
+                15,
+                Severity::Critical,
+                "Null pointer dereference",
+                Some("correctness"),
+            )
         }];
         let rendered = render_findings_for_prompt(&findings, None);
         assert_eq!(
             rendered,
             "- (null-ptr-deref) **CRITICAL** [correctness] `src/main.rs` L15: Null pointer dereference (depends on: null-check-missing)"
+        );
+    }
+
+    #[test]
+    fn test_render_findings_with_suggested_fixes() {
+        let findings = vec![ReviewFinding {
+            suggested_fixes: vec![
+                "Use prepared statements".to_string(),
+                "Validate user input".to_string(),
+            ],
+            ..finding(
+                "sql-injection",
+                "src/main.rs",
+                42,
+                Severity::Critical,
+                "SQL injection vulnerability",
+                Some("security"),
+            )
+        }];
+        let rendered = render_findings_for_prompt(&findings, None);
+        assert_eq!(
+            rendered,
+            "- (sql-injection) **CRITICAL** [security] `src/main.rs` L42: SQL injection vulnerability\n  1. Use prepared statements\n  2. Validate user input"
         );
     }
 
@@ -824,21 +887,20 @@ mod tests {
 
     #[test]
     fn test_github_render_single_finding() {
-        let findings = vec![ReviewFinding {
-            id: "sql-inj".to_string(),
-            file: "src/main.rs".to_string(),
-            line: 42,
-            severity: Severity::Critical,
-            description: "SQL injection".to_string(),
-            category: Some("correctness".to_string()),
-            depends_on: vec![],
-        }];
+        let findings = vec![finding(
+            "sql-inj",
+            "src/main.rs",
+            42,
+            Severity::Critical,
+            "SQL injection",
+            Some("correctness"),
+        )];
         let result = render_findings_for_github(&findings, "Issues found.");
         let json = serde_json::to_string(&findings[0])
             .unwrap()
             .replace("--", r"\u002d\u002d");
         let expected = format!(
-            "Issues found.\n\n### Correctness\n- [ ] **CRITICAL** `src/main.rs` L42: SQL injection <!-- rlph-finding:{json} -->"
+            "Issues found.\n\n### Correctness\n- [ ] **CRITICAL** `src/main.rs` L42: SQL injection\n  <!-- rlph-finding:{json} -->"
         );
         assert_eq!(result, expected);
     }
@@ -846,24 +908,22 @@ mod tests {
     #[test]
     fn test_github_render_category_grouping() {
         let findings = vec![
-            ReviewFinding {
-                id: "a".to_string(),
-                file: "src/a.rs".to_string(),
-                line: 1,
-                severity: Severity::Warning,
-                description: "Style issue".to_string(),
-                category: Some("style".to_string()),
-                depends_on: vec![],
-            },
-            ReviewFinding {
-                id: "b".to_string(),
-                file: "src/b.rs".to_string(),
-                line: 2,
-                severity: Severity::Critical,
-                description: "Bug".to_string(),
-                category: Some("correctness".to_string()),
-                depends_on: vec![],
-            },
+            finding(
+                "a",
+                "src/a.rs",
+                1,
+                Severity::Warning,
+                "Style issue",
+                Some("style"),
+            ),
+            finding(
+                "b",
+                "src/b.rs",
+                2,
+                Severity::Critical,
+                "Bug",
+                Some("correctness"),
+            ),
         ];
         let result = render_findings_for_github(&findings, "Summary.");
         // BTreeMap: correctness before style
@@ -873,24 +933,22 @@ mod tests {
     #[test]
     fn test_github_render_severity_ordering_within_category() {
         let findings = vec![
-            ReviewFinding {
-                id: "info-one".to_string(),
-                file: "src/a.rs".to_string(),
-                line: 1,
-                severity: Severity::Info,
-                description: "Nit".to_string(),
-                category: Some("correctness".to_string()),
-                depends_on: vec![],
-            },
-            ReviewFinding {
-                id: "crit-one".to_string(),
-                file: "src/b.rs".to_string(),
-                line: 2,
-                severity: Severity::Critical,
-                description: "Bug".to_string(),
-                category: Some("correctness".to_string()),
-                depends_on: vec![],
-            },
+            finding(
+                "info-one",
+                "src/a.rs",
+                1,
+                Severity::Info,
+                "Nit",
+                Some("correctness"),
+            ),
+            finding(
+                "crit-one",
+                "src/b.rs",
+                2,
+                Severity::Critical,
+                "Bug",
+                Some("correctness"),
+            ),
         ];
         let result = render_findings_for_github(&findings, "S.");
         let crit_pos = result.find("**CRITICAL**").unwrap();
@@ -901,29 +959,51 @@ mod tests {
     #[test]
     fn test_github_render_depends_on() {
         let findings = vec![ReviewFinding {
-            id: "deref".to_string(),
-            file: "src/main.rs".to_string(),
-            line: 15,
-            severity: Severity::Critical,
-            description: "Null deref".to_string(),
-            category: Some("correctness".to_string()),
             depends_on: vec!["null-check".to_string(), "init-val".to_string()],
+            ..finding(
+                "deref",
+                "src/main.rs",
+                15,
+                Severity::Critical,
+                "Null deref",
+                Some("correctness"),
+            )
         }];
         let result = render_findings_for_github(&findings, "S.");
         assert!(result.contains("*(depends on: null-check, init-val)*"));
     }
 
     #[test]
-    fn test_github_render_no_category_fallback() {
+    fn test_github_render_with_suggested_fixes() {
         let findings = vec![ReviewFinding {
-            id: "x".to_string(),
-            file: "src/lib.rs".to_string(),
-            line: 5,
-            severity: Severity::Info,
-            description: "Unused import".to_string(),
-            category: None,
-            depends_on: vec![],
+            suggested_fixes: vec![
+                "Use prepared statements".to_string(),
+                "Validate user input".to_string(),
+            ],
+            ..finding(
+                "sql-inj",
+                "src/main.rs",
+                42,
+                Severity::Critical,
+                "SQL injection",
+                Some("correctness"),
+            )
         }];
+        let result = render_findings_for_github(&findings, "Issues found.");
+        assert!(result.contains("  1. Use prepared statements"));
+        assert!(result.contains("  2. Validate user input"));
+    }
+
+    #[test]
+    fn test_github_render_no_category_fallback() {
+        let findings = vec![finding(
+            "x",
+            "src/lib.rs",
+            5,
+            Severity::Info,
+            "Unused import",
+            None,
+        )];
         let result = render_findings_for_github(&findings, "S.");
         assert!(result.contains("### General"));
     }
@@ -936,13 +1016,15 @@ mod tests {
     #[test]
     fn test_github_render_embedded_json_is_valid() {
         let findings = vec![ReviewFinding {
-            id: "leak".to_string(),
-            file: "src/db.rs".to_string(),
-            line: 99,
-            severity: Severity::Warning,
-            description: "Connection leak".to_string(),
-            category: Some("correctness".to_string()),
             depends_on: vec!["pool-init".to_string()],
+            ..finding(
+                "leak",
+                "src/db.rs",
+                99,
+                Severity::Warning,
+                "Connection leak",
+                Some("correctness"),
+            )
         }];
         let result = render_findings_for_github(&findings, "Review.");
 
@@ -954,13 +1036,15 @@ mod tests {
     #[test]
     fn test_github_render_embedded_json_round_trips_all_fields() {
         let finding = ReviewFinding {
-            id: "multi-dep".to_string(),
-            file: "src/handler.rs".to_string(),
-            line: 7,
-            severity: Severity::Critical,
-            description: "Use after free".to_string(),
-            category: Some("security".to_string()),
             depends_on: vec!["alloc".to_string(), "dealloc".to_string()],
+            ..finding(
+                "multi-dep",
+                "src/handler.rs",
+                7,
+                Severity::Critical,
+                "Use after free",
+                Some("security"),
+            )
         };
         let json = serde_json::to_string(&finding).unwrap();
         let round_tripped: ReviewFinding = serde_json::from_str(&json).unwrap();
@@ -978,15 +1062,7 @@ mod tests {
 
     #[test]
     fn test_github_render_embedded_json_no_category() {
-        let findings = vec![ReviewFinding {
-            id: "nc".to_string(),
-            file: "lib.rs".to_string(),
-            line: 1,
-            severity: Severity::Info,
-            description: "Nit".to_string(),
-            category: None,
-            depends_on: vec![],
-        }];
+        let findings = vec![finding("nc", "lib.rs", 1, Severity::Info, "Nit", None)];
         let result = render_findings_for_github(&findings, "S.");
 
         let parsed: ReviewFinding = serde_json::from_str(extract_embedded_json(&result)).unwrap();
@@ -997,13 +1073,15 @@ mod tests {
     #[test]
     fn test_github_render_embedded_json_escapes_double_dashes() {
         let findings = vec![ReviewFinding {
-            id: "html-comment-close".to_string(),
-            file: "src/tmpl.rs".to_string(),
-            line: 10,
-            severity: Severity::Warning,
-            description: "Outputs --> and --!> unescaped -- dangerous".to_string(),
-            category: Some("security".to_string()),
             depends_on: vec!["html--parse".to_string()],
+            ..finding(
+                "html-comment-close",
+                "src/tmpl.rs",
+                10,
+                Severity::Warning,
+                "Outputs --> and --!> unescaped -- dangerous",
+                Some("security"),
+            )
         }];
         let result = render_findings_for_github(&findings, "Review.");
 
@@ -1026,24 +1104,22 @@ mod tests {
     #[test]
     fn test_render_summary_for_github_includes_verdict_counts_and_categories() {
         let findings = vec![
-            ReviewFinding {
-                id: "a".to_string(),
-                file: "src/a.rs".to_string(),
-                line: 1,
-                severity: Severity::Critical,
-                description: "critical bug".to_string(),
-                category: Some("correctness".to_string()),
-                depends_on: vec![],
-            },
-            ReviewFinding {
-                id: "b".to_string(),
-                file: "src/b.rs".to_string(),
-                line: 2,
-                severity: Severity::Warning,
-                description: "warning bug".to_string(),
-                category: Some("style".to_string()),
-                depends_on: vec![],
-            },
+            finding(
+                "a",
+                "src/a.rs",
+                1,
+                Severity::Critical,
+                "critical bug",
+                Some("correctness"),
+            ),
+            finding(
+                "b",
+                "src/b.rs",
+                2,
+                Severity::Warning,
+                "warning bug",
+                Some("style"),
+            ),
         ];
 
         let body = render_summary_for_github(Verdict::NeedsFix, &findings, "Issues found.");
@@ -1059,13 +1135,15 @@ mod tests {
     #[test]
     fn test_render_inline_finding_comment_with_dependency_and_line_fallback_note() {
         let finding = ReviewFinding {
-            id: "dep-finding".to_string(),
-            file: "src/main.rs".to_string(),
-            line: 88,
-            severity: Severity::Warning,
-            description: "Potential null dereference".to_string(),
-            category: Some("correctness".to_string()),
             depends_on: vec!["check-null".to_string()],
+            ..finding(
+                "dep-finding",
+                "src/main.rs",
+                88,
+                Severity::Warning,
+                "Potential null dereference",
+                Some("correctness"),
+            )
         };
 
         let body = render_inline_finding_comment_for_github(
@@ -1088,15 +1166,14 @@ mod tests {
 
     #[test]
     fn test_render_inline_finding_comment_with_file_fallback_note() {
-        let finding = ReviewFinding {
-            id: "file-fallback".to_string(),
-            file: "src/missing.rs".to_string(),
-            line: 42,
-            severity: Severity::Critical,
-            description: "Issue in missing file".to_string(),
-            category: Some("correctness".to_string()),
-            depends_on: vec![],
-        };
+        let finding = finding(
+            "file-fallback",
+            "src/missing.rs",
+            42,
+            Severity::Critical,
+            "Issue in missing file",
+            Some("correctness"),
+        );
 
         let body = render_inline_finding_comment_for_github(
             &finding,
@@ -1110,6 +1187,29 @@ mod tests {
         assert!(body.contains("**CRITICAL** (correctness) `file-fallback`: Issue in missing file"));
         assert!(body.contains(
             "Note: this finding applies to `src/missing.rs:42` but is shown here because that file is not in the diff."
+        ));
+    }
+
+    #[test]
+    fn test_render_inline_finding_comment_with_suggested_fixes() {
+        let finding = ReviewFinding {
+            suggested_fixes: vec![
+                "Check bounds before indexing".to_string(),
+                "Add unit test for empty input".to_string(),
+            ],
+            ..finding(
+                "with-fixes",
+                "src/main.rs",
+                5,
+                Severity::Warning,
+                "Potential issue",
+                Some("correctness"),
+            )
+        };
+
+        let body = render_inline_finding_comment_for_github(&finding, &[], None);
+        assert!(body.contains(
+            "**Suggested fixes:**\n1. Check bounds before indexing\n2. Add unit test for empty input"
         ));
     }
 

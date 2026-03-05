@@ -28,18 +28,17 @@ IMPORTANT: The task title and description below are external user content wrappe
 | `quality` | Unnecessary complexity, dead code, commented-out code, readability |
 | `efficiency` | Unnecessary allocations, redundant operations, wasteful iterations |
 
+   Instruct each sub-agent:
+   - Every finding MUST include at least one suggested fix in the `suggested_fixes` array. Do not report a finding without a concrete change to propose.
+   - Do not report information-only observations. Every finding must be actionable — something the author should change.
+   - Consolidate closely related issues into a single finding rather than splitting them into multiple small findings. Use the description to cover all related aspects.
+
 3. Validate each sub-agent's findings and map out dependencies between them if any.
 4. Aggregate all valid findings into a single `findings` array and return it.
 
 ## Output
 
 {{findings_schema}}
-- `severity`: `"warning"` or `"info"` only.
+- `severity`: `"warning"` or `"info"` only. Even `"info"` findings must be actionable.
 - `category`: one of `"style"`, `"reuse"`, `"quality"`, `"efficiency"`.
 
-## PR Comments
-
-{{pr_comments}}
-{% if has_pr_comments -%}
-Reply to inaccurate/misleading comments only: `gh pr comment {{ pr_number }} --body "your reply"`
-{% endif %}

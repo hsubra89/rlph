@@ -1919,6 +1919,7 @@ impl CorrectionRunner for MockCorrectionRunner {
         _correction_prompt: &str,
         _working_dir: &Path,
         _timeout: Option<Duration>,
+        _stream_prefix: Option<&str>,
     ) -> Result<RunResult> {
         self.responses
             .lock()

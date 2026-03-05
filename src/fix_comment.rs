@@ -302,17 +302,13 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
 mod tests {
     use super::*;
     use crate::review_schema::{Severity, render_inline_finding_comment_for_github};
-    use crate::test_helpers::{make_reactions, make_review_comment};
+    use crate::test_helpers::{make_finding, make_reactions, make_review_comment};
 
-    fn make_finding(id: &str, severity: Severity, category: &str) -> ReviewFinding {
+    fn finding(id: &str, severity: Severity, category: &str) -> ReviewFinding {
         ReviewFinding {
-            id: id.to_string(),
-            file: "src/main.rs".to_string(),
-            line: 42,
             severity,
-            description: format!("{id} description"),
             category: Some(category.to_string()),
-            depends_on: vec![],
+            ..make_finding(id)
         }
     }
 
@@ -396,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_build_items_from_comments_with_finding() {
-        let finding = make_finding("bug-1", Severity::Critical, "correctness");
+        let finding = finding("bug-1", Severity::Critical, "correctness");
         let comment = make_review_comment(100, &finding);
         let reactions = vec![(CommentId::new(100), make_reactions(&[("rocket", 1)]))];
 
@@ -421,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_build_items_skips_reply_comments() {
-        let finding = make_finding("bug-1", Severity::Critical, "correctness");
+        let finding = finding("bug-1", Severity::Critical, "correctness");
         let body = render_inline_finding_comment_for_github(&finding, &[], None);
         let comment = PrReviewComment {
             id: CommentId::new(100),
@@ -436,9 +432,9 @@ mod tests {
 
     #[test]
     fn test_build_items_mixed_states() {
-        let f1 = make_finding("a", Severity::Critical, "correctness");
-        let f2 = make_finding("b", Severity::Warning, "correctness");
-        let f3 = make_finding("c", Severity::Info, "style");
+        let f1 = finding("a", Severity::Critical, "correctness");
+        let f2 = finding("b", Severity::Warning, "correctness");
+        let f3 = finding("c", Severity::Info, "style");
         let c1 = make_review_comment(100, &f1);
         let c2 = make_review_comment(200, &f2);
         let c3 = make_review_comment(300, &f3);
@@ -462,7 +458,7 @@ mod tests {
 
     #[test]
     fn test_build_items_no_reactions_for_comment() {
-        let finding = make_finding("bug-1", Severity::Critical, "correctness");
+        let finding = finding("bug-1", Severity::Critical, "correctness");
         let comment = make_review_comment(100, &finding);
 
         // No reactions for comment 100
@@ -486,13 +482,11 @@ mod tests {
     #[test]
     fn test_build_items_with_depends_on() {
         let f = ReviewFinding {
-            id: "deref".to_string(),
-            file: "src/main.rs".to_string(),
             line: 15,
             severity: Severity::Critical,
             description: "Null deref".to_string(),
-            category: Some("correctness".to_string()),
             depends_on: vec!["null-check".to_string()],
+            ..make_finding("deref")
         };
         let comment = make_review_comment(100, &f);
         let reactions = vec![(CommentId::new(100), make_reactions(&[("rocket", 1)]))];
@@ -514,13 +508,13 @@ mod tests {
     fn test_display_groups_by_category() {
         let items = vec![
             FixItem {
-                finding: make_finding("s1", Severity::Info, "style"),
+                finding: finding("s1", Severity::Info, "style"),
                 state: FindingState::Pending,
                 comment_id: CommentId::new(1),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
-                finding: make_finding("c1", Severity::Critical, "correctness"),
+                finding: finding("c1", Severity::Critical, "correctness"),
                 state: FindingState::Queued,
                 comment_id: CommentId::new(2),
                 rocket_reaction_ids: vec![],
@@ -537,25 +531,25 @@ mod tests {
     fn test_display_shows_state_icons_and_eligible() {
         let items = vec![
             FixItem {
-                finding: make_finding("a", Severity::Critical, "test"),
+                finding: finding("a", Severity::Critical, "test"),
                 state: FindingState::Pending,
                 comment_id: CommentId::new(1),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
-                finding: make_finding("b", Severity::Warning, "test"),
+                finding: finding("b", Severity::Warning, "test"),
                 state: FindingState::Queued,
                 comment_id: CommentId::new(2),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
-                finding: make_finding("c", Severity::Info, "test"),
+                finding: finding("c", Severity::Info, "test"),
                 state: FindingState::Fixed,
                 comment_id: CommentId::new(3),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
-                finding: make_finding("d", Severity::Info, "test"),
+                finding: finding("d", Severity::Info, "test"),
                 state: FindingState::WontFix,
                 comment_id: CommentId::new(4),
                 rocket_reaction_ids: vec![],
@@ -573,9 +567,9 @@ mod tests {
 
     #[test]
     fn test_display_blocked_by_deps() {
-        let mut dep_finding = make_finding("a", Severity::Critical, "correctness");
+        let mut dep_finding = finding("a", Severity::Critical, "correctness");
         dep_finding.depends_on = vec![];
-        let mut blocked_finding = make_finding("b", Severity::Warning, "correctness");
+        let mut blocked_finding = finding("b", Severity::Warning, "correctness");
         blocked_finding.depends_on = vec!["a".to_string()];
 
         let items = vec![
@@ -601,9 +595,9 @@ mod tests {
 
     #[test]
     fn test_display_cycle_annotation() {
-        let mut f1 = make_finding("x", Severity::Critical, "correctness");
+        let mut f1 = finding("x", Severity::Critical, "correctness");
         f1.depends_on = vec!["y".to_string()];
-        let mut f2 = make_finding("y", Severity::Critical, "correctness");
+        let mut f2 = finding("y", Severity::Critical, "correctness");
         f2.depends_on = vec!["x".to_string()];
 
         let items = vec![
@@ -629,19 +623,19 @@ mod tests {
     fn test_display_summary_line() {
         let items = vec![
             FixItem {
-                finding: make_finding("a", Severity::Critical, "test"),
+                finding: finding("a", Severity::Critical, "test"),
                 state: FindingState::Queued,
                 comment_id: CommentId::new(1),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
-                finding: make_finding("b", Severity::Warning, "test"),
+                finding: finding("b", Severity::Warning, "test"),
                 state: FindingState::Fixed,
                 comment_id: CommentId::new(2),
                 rocket_reaction_ids: vec![],
             },
             FixItem {
-                finding: make_finding("c", Severity::Info, "test"),
+                finding: finding("c", Severity::Info, "test"),
                 state: FindingState::Pending,
                 comment_id: CommentId::new(3),
                 rocket_reaction_ids: vec![],

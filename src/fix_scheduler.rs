@@ -92,18 +92,18 @@ mod tests {
     use crate::fix_deps::FindingDeps;
     use crate::ids::CommentId;
     use crate::review_schema::{ReviewFinding, Severity};
+    use crate::test_helpers::make_finding;
 
     // --- helpers ---
 
     fn finding(id: &str, severity: Severity, deps: &[&str]) -> ReviewFinding {
         ReviewFinding {
-            id: id.to_string(),
-            file: "src/main.rs".to_string(),
             line: 1,
             severity,
             description: format!("{id} desc"),
             category: Some("test".to_string()),
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
+            ..make_finding(id)
         }
     }
 

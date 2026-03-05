@@ -28,7 +28,6 @@ use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
 use crate::submission::{
     InlineReviewComment, PullRequestReviewEvent, REVIEW_MARKER, SubmissionBackend,
-    format_pr_comments_for_prompt,
 };
 use crate::worktree::{WorktreeInfo, WorktreeManager};
 
@@ -133,6 +132,7 @@ pub trait CorrectionRunner: Send + Sync {
         correction_prompt: &str,
         working_dir: &Path,
         timeout: Option<Duration>,
+        stream_prefix: Option<&str>,
     ) -> impl std::future::Future<Output = Result<RunResult>> + Send;
 }
 
@@ -151,6 +151,7 @@ impl CorrectionRunner for DefaultCorrectionRunner {
         correction_prompt: &str,
         working_dir: &Path,
         timeout: Option<Duration>,
+        stream_prefix: Option<&str>,
     ) -> Result<RunResult> {
         resume_with_correction(
             runner_type,
@@ -162,6 +163,7 @@ impl CorrectionRunner for DefaultCorrectionRunner {
             correction_prompt,
             working_dir,
             timeout,
+            stream_prefix,
         )
         .await
     }
@@ -660,22 +662,6 @@ impl<
 
         info!("running review");
 
-        // Fetch current PR comments
-        let (pr_comments_text, has_pr_comments) = if let Some(pr_num) = pr_number {
-            match self.submission.fetch_pr_comments(pr_num) {
-                Ok(comments) => {
-                    let has = !comments.is_empty();
-                    (format_pr_comments_for_prompt(&comments, pr_num), has)
-                }
-                Err(e) => {
-                    warn!(error = %e, "failed to fetch PR comments");
-                    ("Failed to fetch PR comments.".to_string(), false)
-                }
-            }
-        } else {
-            ("No PR associated with this review.".to_string(), false)
-        };
-
         let pr_number_str = pr_number.map(|n| n.to_string()).unwrap_or_default();
 
         let mut join_set = tokio::task::JoinSet::new();
@@ -686,17 +672,7 @@ impl<
 
             let mut phase_vars = vars.clone();
             phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());
-            phase_vars.insert("pr_comments".to_string(), pr_comments_text.clone());
             phase_vars.insert("pr_number".to_string(), pr_number_str.clone());
-            // upon templates treat empty strings as falsy in {% if has_pr_comments %}
-            phase_vars.insert(
-                "has_pr_comments".to_string(),
-                if has_pr_comments {
-                    "true".to_string()
-                } else {
-                    String::new()
-                },
-            );
 
             let prompt = self
                 .prompt_engine
@@ -774,7 +750,6 @@ impl<
 
         let mut agg_vars = vars.clone();
         agg_vars.insert("review_outputs".to_string(), review_outputs_text);
-        agg_vars.insert("pr_comments".to_string(), pr_comments_text);
         agg_vars.insert("pr_number".to_string(), pr_number_str);
 
         let agg_prompt = self
@@ -971,6 +946,7 @@ pub async fn retry_with_correction<T>(
                 &prompt,
                 working_dir,
                 agent_timeout,
+                None,
             )
             .await
         {
@@ -1096,6 +1072,7 @@ mod tests {
     use crate::ids::{CommentId, PrNumber, ReactionId};
     use crate::review_schema::{ReviewFinding, Severity};
     use crate::submission::PrComment;
+    use crate::test_helpers::make_finding;
 
     struct InlineReviewTestSubmission {
         diff: String,
@@ -1237,22 +1214,17 @@ mod tests {
                     .to_string(),
         };
         let dep = ReviewFinding {
-            id: "base-check".to_string(),
-            file: "src/main.rs".to_string(),
             line: 1,
             severity: Severity::Warning,
             description: "Base check missing".to_string(),
-            category: Some("correctness".to_string()),
-            depends_on: vec![],
+            ..make_finding("base-check")
         };
         let finding = ReviewFinding {
-            id: "follow-up".to_string(),
-            file: "src/main.rs".to_string(),
             line: 2,
             severity: Severity::Critical,
             description: "Use after free".to_string(),
-            category: Some("correctness".to_string()),
             depends_on: vec!["base-check".to_string()],
+            ..make_finding("follow-up")
         };
 
         let comments = build_inline_review_comments(
@@ -1278,13 +1250,10 @@ mod tests {
                 .to_string(),
         };
         let finding = ReviewFinding {
-            id: "outside-hunk".to_string(),
             file: "src/lib.rs".to_string(),
             line: 100,
-            severity: Severity::Warning,
             description: "Reported far from changed lines".to_string(),
-            category: Some("correctness".to_string()),
-            depends_on: vec![],
+            ..make_finding("outside-hunk")
         };
 
         let comments =
@@ -1303,13 +1272,10 @@ mod tests {
                 .to_string(),
         };
         let finding = ReviewFinding {
-            id: "other-file".to_string(),
             file: "src/missing.rs".to_string(),
             line: 50,
-            severity: Severity::Warning,
             description: "Issue in file not in diff".to_string(),
-            category: Some("correctness".to_string()),
-            depends_on: vec![],
+            ..make_finding("other-file")
         };
 
         let comments =

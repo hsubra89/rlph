@@ -869,6 +869,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                     sid,
                     &prompt,
                     &worktree_path,
+                    Some("fix"),
                 )
                 .await
             };
@@ -1024,6 +1025,7 @@ async fn resume_agent(
     session_id: &str,
     prompt: &str,
     working_dir: &Path,
+    stream_prefix: Option<&str>,
 ) -> Result<RunResult> {
     correction_runner
         .resume(
@@ -1036,6 +1038,7 @@ async fn resume_agent(
             prompt,
             working_dir,
             fix_config.agent_timeout,
+            stream_prefix,
         )
         .await
 }
@@ -1073,6 +1076,7 @@ async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
                 session_id,
                 prompt,
                 worktree_path,
+                None,
             )
             .await
             .inspect_err(|_| abort_rebase(worktree_path))?;
