@@ -878,20 +878,14 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                     break 'batch Some((finding_id, err));
                 };
                 info!(%finding_id, session_id = %sid, "resuming batch session");
-                shared
-                    .correction_runner
-                    .resume(
-                        shared.fix_config.runner,
-                        &shared.fix_config.agent_binary,
-                        shared.fix_config.agent_model.as_deref(),
-                        shared.fix_config.agent_effort.as_deref(),
-                        shared.fix_config.agent_variant.as_deref(),
-                        sid,
-                        &prompt,
-                        &worktree_path,
-                        shared.fix_config.agent_timeout.map(Duration::from_secs),
-                    )
-                    .await
+                resume_agent(
+                    &*shared.correction_runner,
+                    &shared.fix_config,
+                    sid,
+                    &prompt,
+                    &worktree_path,
+                )
+                .await
             };
 
             let run_result = match run_result {
@@ -1038,6 +1032,29 @@ async fn apply_fix_output<C: CorrectionRunner + ?Sized>(
     }
 }
 
+/// Resume an agent session using config fields from [`ReviewStepConfig`].
+async fn resume_agent(
+    correction_runner: &(impl CorrectionRunner + ?Sized),
+    fix_config: &ReviewStepConfig,
+    session_id: &str,
+    prompt: &str,
+    working_dir: &Path,
+) -> Result<RunResult> {
+    correction_runner
+        .resume(
+            fix_config.runner,
+            &fix_config.agent_binary,
+            fix_config.agent_model.as_deref(),
+            fix_config.agent_effort.as_deref(),
+            fix_config.agent_variant.as_deref(),
+            session_id,
+            prompt,
+            working_dir,
+            fix_config.agent_timeout.map(Duration::from_secs),
+        )
+        .await
+}
+
 /// Attempt to resolve rebase conflicts by resuming the agent session.
 ///
 /// Starts a rebase (leaving conflicts in the worktree), then resumes the agent
@@ -1065,20 +1082,15 @@ async fn resolve_conflict_and_push<C: CorrectionRunner + ?Sized>(
                 3. `git rebase --continue`\n\
                 Do not abort the rebase.";
 
-            correction_runner
-                .resume(
-                    fix_config.runner,
-                    &fix_config.agent_binary,
-                    fix_config.agent_model.as_deref(),
-                    fix_config.agent_effort.as_deref(),
-                    fix_config.agent_variant.as_deref(),
-                    session_id,
-                    prompt,
-                    worktree_path,
-                    fix_config.agent_timeout.map(Duration::from_secs),
-                )
-                .await
-                .inspect_err(|_| abort_rebase(worktree_path))?;
+            resume_agent(
+                correction_runner,
+                fix_config,
+                session_id,
+                prompt,
+                worktree_path,
+            )
+            .await
+            .inspect_err(|_| abort_rebase(worktree_path))?;
         }
         Err(e) => return Err(e),
     }
