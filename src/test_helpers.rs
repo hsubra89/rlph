@@ -12,6 +12,7 @@ pub fn make_finding(id: &str) -> ReviewFinding {
         line: 42,
         severity: Severity::Warning,
         description: format!("{id} description"),
+        suggested_fixes: vec![],
         category: Some("correctness".to_string()),
         depends_on: vec![],
     }

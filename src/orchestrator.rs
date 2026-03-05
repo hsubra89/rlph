@@ -1242,6 +1242,7 @@ mod tests {
             line: 1,
             severity: Severity::Warning,
             description: "Base check missing".to_string(),
+            suggested_fixes: vec![],
             category: Some("correctness".to_string()),
             depends_on: vec![],
         };
@@ -1251,6 +1252,7 @@ mod tests {
             line: 2,
             severity: Severity::Critical,
             description: "Use after free".to_string(),
+            suggested_fixes: vec![],
             category: Some("correctness".to_string()),
             depends_on: vec!["base-check".to_string()],
         };
@@ -1283,6 +1285,7 @@ mod tests {
             line: 100,
             severity: Severity::Warning,
             description: "Reported far from changed lines".to_string(),
+            suggested_fixes: vec![],
             category: Some("correctness".to_string()),
             depends_on: vec![],
         };
@@ -1308,6 +1311,7 @@ mod tests {
             line: 50,
             severity: Severity::Warning,
             description: "Issue in file not in diff".to_string(),
+            suggested_fixes: vec![],
             category: Some("correctness".to_string()),
             depends_on: vec![],
         };

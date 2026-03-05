@@ -102,6 +102,7 @@ mod tests {
             line: 1,
             severity,
             description: format!("{id} desc"),
+            suggested_fixes: vec![],
             category: Some("test".to_string()),
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
         }

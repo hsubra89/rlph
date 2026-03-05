@@ -128,6 +128,9 @@ Add category to ReviewFinding, rewrite style review as sub-agent coordinator
 3. Verify error handling covers failure paths without silently swallowing errors.
 4. Check that tests exist for changed code and cover important branches.
 5. Verify the implementation satisfies the task requirements.
+6. Every finding MUST include at least one suggested fix in the `suggested_fixes` array. Do not report a finding if you cannot propose a concrete change.
+7. Do not report information-only observations. Every finding must be actionable — something the author should change.
+8. Consolidate closely related issues into a single finding rather than splitting them into multiple small findings. Use the description to cover all related aspects.
 
 ## Output
 
@@ -142,6 +145,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
       \"line\": <number>,
       \"severity\": \"critical\" | \"warning\" | \"info\",
       \"description\": \"<description>\",
+      \"suggested_fixes\": [\"<fix-1>\", \"<fix-2>\"],
       \"category\": \"<category>\",
       \"depends_on\": [\"<other-finding-id>\"] | null
     }
@@ -150,7 +154,10 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 ```
 
 - `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
+- `suggested_fixes`: at least one concrete, actionable fix the author can apply. Each entry is a short description of a distinct fix option.
 - `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
+- Every finding must be actionable — do not report information-only observations. If you cannot propose a concrete fix, do not report it.
+- Consolidate closely related issues into a single finding instead of splitting them into multiple small findings. Use the description to cover all related aspects.
 - Return an empty `findings` array when there are no issues.
 
 ## PR Comments
@@ -238,6 +245,9 @@ Add category to ReviewFinding, rewrite style review as sub-agent coordinator
 5. Verify input validation and sanitization at trust boundaries.
 6. Check for path traversal, SSRF, and insecure deserialization.
 7. Verify sensitive data is not logged or exposed in error messages.
+8. Every finding MUST include at least one suggested fix in the `suggested_fixes` array. Do not report a finding if you cannot propose a concrete change.
+9. Do not report information-only observations. Every finding must be actionable — something the author should change.
+10. Consolidate closely related issues into a single finding rather than splitting them into multiple small findings. Use the description to cover all related aspects.
 
 ## Output
 
@@ -252,6 +262,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
       \"line\": <number>,
       \"severity\": \"critical\" | \"warning\" | \"info\",
       \"description\": \"<description>\",
+      \"suggested_fixes\": [\"<fix-1>\", \"<fix-2>\"],
       \"category\": \"<category>\",
       \"depends_on\": [\"<other-finding-id>\"] | null
     }
@@ -260,7 +271,10 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 ```
 
 - `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
+- `suggested_fixes`: at least one concrete, actionable fix the author can apply. Each entry is a short description of a distinct fix option.
 - `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
+- Every finding must be actionable — do not report information-only observations. If you cannot propose a concrete fix, do not report it.
+- Consolidate closely related issues into a single finding instead of splitting them into multiple small findings. Use the description to cover all related aspects.
 - Return an empty `findings` array when there are no issues.
 
 ## PR Comments
@@ -351,6 +365,11 @@ Add category to ReviewFinding, rewrite style review as sub-agent coordinator
 | `quality` | Unnecessary complexity, dead code, commented-out code, readability |
 | `efficiency` | Unnecessary allocations, redundant operations, wasteful iterations |
 
+   Instruct each sub-agent:
+   - Every finding MUST include at least one suggested fix in the `suggested_fixes` array. Do not report a finding without a concrete change to propose.
+   - Do not report information-only observations. Every finding must be actionable — something the author should change.
+   - Consolidate closely related issues into a single finding rather than splitting them into multiple small findings. Use the description to cover all related aspects.
+
 3. Validate each sub-agent's findings and map out dependencies between them if any.
 4. Aggregate all valid findings into a single `findings` array and return it.
 
@@ -367,6 +386,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
       \"line\": <number>,
       \"severity\": \"critical\" | \"warning\" | \"info\",
       \"description\": \"<description>\",
+      \"suggested_fixes\": [\"<fix-1>\", \"<fix-2>\"],
       \"category\": \"<category>\",
       \"depends_on\": [\"<other-finding-id>\"] | null
     }
@@ -375,10 +395,13 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 ```
 
 - `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
+- `suggested_fixes`: at least one concrete, actionable fix the author can apply. Each entry is a short description of a distinct fix option.
 - `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
+- Every finding must be actionable — do not report information-only observations. If you cannot propose a concrete fix, do not report it.
+- Consolidate closely related issues into a single finding instead of splitting them into multiple small findings. Use the description to cover all related aspects.
 - Return an empty `findings` array when there are no issues.
 
-- `severity`: `\"warning\"` or `\"info\"` only.
+- `severity`: `\"warning\"` or `\"info\"` only. Even `\"info\"` findings must be actionable.
 - `category`: one of `\"style\"`, `\"reuse\"`, `\"quality\"`, `\"efficiency\"`.
 
 ## PR Comments
@@ -470,10 +493,11 @@ No issues found.
 ## Instructions
 
 1. Read all review outputs above.
-2. De-duplicate findings across reviews.
+2. De-duplicate findings across reviews. Consolidate closely related findings into a single finding instead of keeping them separate — use the description to cover all related aspects.
 3. Prioritize by severity: critical > warning > info.
-4. Compose a clear, actionable PR comment summarizing findings.
-5. Decide whether critical/warning findings require code changes.
+4. Ensure every finding is actionable and includes at least one suggested fix. Drop any information-only observations that have no concrete fix.
+5. Compose a clear, actionable PR comment summarizing findings.
+6. Decide whether critical/warning findings require code changes.
 
 ## Output
 
@@ -488,6 +512,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
       \"line\": <number>,
       \"severity\": \"critical\" | \"warning\" | \"info\",
       \"description\": \"<description>\",
+      \"suggested_fixes\": [\"<fix-1>\", \"<fix-2>\"],
       \"category\": \"<category>\",
       \"depends_on\": [\"<other-finding-id>\"] | null
     }
@@ -498,6 +523,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 ```
 
 - `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
+- `suggested_fixes`: at least one concrete, actionable fix the author can apply.
 - `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
 - Return an empty `findings` array when there are no issues.";
 

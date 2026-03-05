@@ -88,6 +88,8 @@ pub struct ReviewFinding {
     pub line: u32,
     pub severity: Severity,
     pub description: String,
+    #[serde(default)]
+    pub suggested_fixes: Vec<String>,
     pub category: Option<String>,
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub depends_on: Vec<String>,
@@ -148,6 +150,9 @@ pub fn render_findings_for_prompt(
         if !f.depends_on.is_empty() {
             write!(result, " (depends on: {})", f.depends_on.join(", ")).unwrap();
         }
+        for (j, fix) in f.suggested_fixes.iter().enumerate() {
+            write!(result, "\n  {}. {}", j + 1, fix).unwrap();
+        }
     }
     result
 }
@@ -198,8 +203,11 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
             if !f.depends_on.is_empty() {
                 write!(body, " *(depends on: {})*", f.depends_on.join(", ")).unwrap();
             }
+            for (j, fix) in f.suggested_fixes.iter().enumerate() {
+                write!(body, "\n  {}. {}", j + 1, fix).unwrap();
+            }
             let json = escaped_finding_marker_json(f);
-            write!(body, " {FINDING_MARKER}{json} -->").unwrap();
+            write!(body, "\n  {FINDING_MARKER}{json} -->").unwrap();
         }
     }
 
@@ -280,6 +288,13 @@ pub fn render_inline_finding_comment_for_github(
         finding.description
     );
 
+    if !finding.suggested_fixes.is_empty() {
+        body.push_str("\n\n**Suggested fixes:**");
+        for (i, fix) in finding.suggested_fixes.iter().enumerate() {
+            write!(body, "\n{}. {}", i + 1, fix).unwrap();
+        }
+    }
+
     if !dependency_descriptions.is_empty() {
         write!(
             body,
@@ -358,10 +373,10 @@ impl SchemaName {
     pub fn example_json(&self) -> &'static str {
         match self {
             SchemaName::Phase => {
-                r#"{"findings": [{"id": "example-issue", "file": "src/main.rs", "line": 42, "severity": "critical", "description": "issue description", "category": "style", "depends_on": []}]}"#
+                r#"{"findings": [{"id": "example-issue", "file": "src/main.rs", "line": 42, "severity": "critical", "description": "issue description", "suggested_fixes": ["use X instead"], "category": "style", "depends_on": []}]}"#
             }
             SchemaName::Aggregator => {
-                r#"{"verdict": "approved", "comment": "summary", "findings": [{"id": "example-issue", "file": "src/main.rs", "line": 1, "severity": "warning", "description": "issue", "category": "style", "depends_on": []}]}"#
+                r#"{"verdict": "approved", "comment": "summary", "findings": [{"id": "example-issue", "file": "src/main.rs", "line": 1, "severity": "warning", "description": "issue", "suggested_fixes": ["use X instead"], "category": "style", "depends_on": []}]}"#
             }
             SchemaName::StandaloneFix => {
                 r#"{"status": "fixed", "commit_message": "finding-id: description of fix"}"#
@@ -623,6 +638,7 @@ mod tests {
             line: 42,
             severity: Severity::Critical,
             description: "SQL injection vulnerability".to_string(),
+            suggested_fixes: vec![],
             category: None,
             depends_on: vec![],
         }];
@@ -642,6 +658,7 @@ mod tests {
                 line: 42,
                 severity: Severity::Critical,
                 description: "Bug".to_string(),
+                suggested_fixes: vec![],
                 category: Some("correctness".to_string()),
                 depends_on: vec![],
             },
@@ -651,6 +668,7 @@ mod tests {
                 line: 10,
                 severity: Severity::Warning,
                 description: "Unused import".to_string(),
+                suggested_fixes: vec![],
                 category: None,
                 depends_on: vec![],
             },
@@ -660,6 +678,7 @@ mod tests {
                 line: 5,
                 severity: Severity::Info,
                 description: "Nit".to_string(),
+                suggested_fixes: vec![],
                 category: None,
                 depends_on: vec![],
             },
@@ -680,6 +699,7 @@ mod tests {
             line: 1,
             severity: Severity::Info,
             description: "nit".to_string(),
+            suggested_fixes: vec![],
             category: None,
             depends_on: vec![],
         }];
@@ -746,6 +766,7 @@ mod tests {
             line: 99,
             severity: Severity::Warning,
             description: "Redundant clone inside loop".to_string(),
+            suggested_fixes: vec![],
             category: Some("efficiency".to_string()),
             depends_on: vec![],
         }];
@@ -764,6 +785,7 @@ mod tests {
             line: 15,
             severity: Severity::Critical,
             description: "Null pointer dereference".to_string(),
+            suggested_fixes: vec![],
             category: Some("correctness".to_string()),
             depends_on: vec!["null-check-missing".to_string()],
         }];
@@ -830,6 +852,7 @@ mod tests {
             line: 42,
             severity: Severity::Critical,
             description: "SQL injection".to_string(),
+            suggested_fixes: vec![],
             category: Some("correctness".to_string()),
             depends_on: vec![],
         }];
@@ -838,7 +861,7 @@ mod tests {
             .unwrap()
             .replace("--", r"\u002d\u002d");
         let expected = format!(
-            "Issues found.\n\n### Correctness\n- [ ] **CRITICAL** `src/main.rs` L42: SQL injection <!-- rlph-finding:{json} -->"
+            "Issues found.\n\n### Correctness\n- [ ] **CRITICAL** `src/main.rs` L42: SQL injection\n  <!-- rlph-finding:{json} -->"
         );
         assert_eq!(result, expected);
     }
@@ -852,6 +875,7 @@ mod tests {
                 line: 1,
                 severity: Severity::Warning,
                 description: "Style issue".to_string(),
+                suggested_fixes: vec![],
                 category: Some("style".to_string()),
                 depends_on: vec![],
             },
@@ -861,6 +885,7 @@ mod tests {
                 line: 2,
                 severity: Severity::Critical,
                 description: "Bug".to_string(),
+                suggested_fixes: vec![],
                 category: Some("correctness".to_string()),
                 depends_on: vec![],
             },
@@ -879,6 +904,7 @@ mod tests {
                 line: 1,
                 severity: Severity::Info,
                 description: "Nit".to_string(),
+                suggested_fixes: vec![],
                 category: Some("correctness".to_string()),
                 depends_on: vec![],
             },
@@ -888,6 +914,7 @@ mod tests {
                 line: 2,
                 severity: Severity::Critical,
                 description: "Bug".to_string(),
+                suggested_fixes: vec![],
                 category: Some("correctness".to_string()),
                 depends_on: vec![],
             },
@@ -906,6 +933,7 @@ mod tests {
             line: 15,
             severity: Severity::Critical,
             description: "Null deref".to_string(),
+            suggested_fixes: vec![],
             category: Some("correctness".to_string()),
             depends_on: vec!["null-check".to_string(), "init-val".to_string()],
         }];
@@ -921,6 +949,7 @@ mod tests {
             line: 5,
             severity: Severity::Info,
             description: "Unused import".to_string(),
+            suggested_fixes: vec![],
             category: None,
             depends_on: vec![],
         }];
@@ -941,6 +970,7 @@ mod tests {
             line: 99,
             severity: Severity::Warning,
             description: "Connection leak".to_string(),
+            suggested_fixes: vec![],
             category: Some("correctness".to_string()),
             depends_on: vec!["pool-init".to_string()],
         }];
@@ -959,6 +989,7 @@ mod tests {
             line: 7,
             severity: Severity::Critical,
             description: "Use after free".to_string(),
+            suggested_fixes: vec![],
             category: Some("security".to_string()),
             depends_on: vec!["alloc".to_string(), "dealloc".to_string()],
         };
@@ -984,6 +1015,7 @@ mod tests {
             line: 1,
             severity: Severity::Info,
             description: "Nit".to_string(),
+            suggested_fixes: vec![],
             category: None,
             depends_on: vec![],
         }];
@@ -1002,6 +1034,7 @@ mod tests {
             line: 10,
             severity: Severity::Warning,
             description: "Outputs --> and --!> unescaped -- dangerous".to_string(),
+            suggested_fixes: vec![],
             category: Some("security".to_string()),
             depends_on: vec!["html--parse".to_string()],
         }];
@@ -1032,6 +1065,7 @@ mod tests {
                 line: 1,
                 severity: Severity::Critical,
                 description: "critical bug".to_string(),
+                suggested_fixes: vec![],
                 category: Some("correctness".to_string()),
                 depends_on: vec![],
             },
@@ -1041,6 +1075,7 @@ mod tests {
                 line: 2,
                 severity: Severity::Warning,
                 description: "warning bug".to_string(),
+                suggested_fixes: vec![],
                 category: Some("style".to_string()),
                 depends_on: vec![],
             },
@@ -1064,6 +1099,7 @@ mod tests {
             line: 88,
             severity: Severity::Warning,
             description: "Potential null dereference".to_string(),
+            suggested_fixes: vec![],
             category: Some("correctness".to_string()),
             depends_on: vec!["check-null".to_string()],
         };
@@ -1094,6 +1130,7 @@ mod tests {
             line: 42,
             severity: Severity::Critical,
             description: "Issue in missing file".to_string(),
+            suggested_fixes: vec![],
             category: Some("correctness".to_string()),
             depends_on: vec![],
         };

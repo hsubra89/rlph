@@ -311,6 +311,7 @@ mod tests {
             line: 42,
             severity,
             description: format!("{id} description"),
+            suggested_fixes: vec![],
             category: Some(category.to_string()),
             depends_on: vec![],
         }
@@ -491,6 +492,7 @@ mod tests {
             line: 15,
             severity: Severity::Critical,
             description: "Null deref".to_string(),
+            suggested_fixes: vec![],
             category: Some("correctness".to_string()),
             depends_on: vec!["null-check".to_string()],
         };
