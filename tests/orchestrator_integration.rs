@@ -125,6 +125,23 @@ impl MockRunner {
     }
 }
 
+fn should_emit_nothing_left_for_plan_choose(prompt: &str, working_dir: &Path) -> bool {
+    if !prompt.contains("## Plan Files") {
+        return false;
+    }
+
+    let marker = working_dir.join(".rlph").join("plan-choose-once.marker");
+    if marker.exists() {
+        return true;
+    }
+
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&marker, "1").unwrap();
+    false
+}
+
 struct SubmitBeforeImplementRunner {
     task_id: String,
     submissions: Arc<Mutex<SubmissionTracker>>,
@@ -160,7 +177,7 @@ impl WorkingDirCaptureRunner {
 }
 
 impl AgentRunner for WorkingDirCaptureRunner {
-    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
         match phase {
             Phase::Choose => {
                 let normalized_dir = working_dir
@@ -171,6 +188,15 @@ impl AgentRunner for WorkingDirCaptureRunner {
                     .unwrap()
                     .choose_dirs
                     .push(normalized_dir);
+
+                if should_emit_nothing_left_for_plan_choose(prompt, working_dir) {
+                    return Ok(RunResult {
+                        exit_code: 0,
+                        stdout: "NOTHING_LEFT".into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    });
+                }
 
                 let ralph_dir = working_dir.join(".rlph");
                 std::fs::create_dir_all(&ralph_dir)
@@ -228,9 +254,18 @@ impl AgentRunner for WorkingDirCaptureRunner {
 }
 
 impl AgentRunner for MockRunner {
-    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
         match phase {
             Phase::Choose => {
+                if should_emit_nothing_left_for_plan_choose(prompt, working_dir) {
+                    return Ok(RunResult {
+                        exit_code: 0,
+                        stdout: "NOTHING_LEFT".into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    });
+                }
+
                 let ralph_dir = working_dir.join(".rlph");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
@@ -275,9 +310,18 @@ impl AgentRunner for MockRunner {
 }
 
 impl AgentRunner for SubmitBeforeImplementRunner {
-    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
         match phase {
             Phase::Choose => {
+                if should_emit_nothing_left_for_plan_choose(prompt, working_dir) {
+                    return Ok(RunResult {
+                        exit_code: 0,
+                        stdout: "NOTHING_LEFT".into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    });
+                }
+
                 let ralph_dir = working_dir.join(".rlph");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
@@ -454,10 +498,19 @@ impl CountingRunner {
 }
 
 impl AgentRunner for CountingRunner {
-    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
         match phase {
             Phase::Choose => {
                 self.counts.choose.fetch_add(1, Ordering::SeqCst);
+                if should_emit_nothing_left_for_plan_choose(prompt, working_dir) {
+                    return Ok(RunResult {
+                        exit_code: 0,
+                        stdout: "NOTHING_LEFT".into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    });
+                }
+
                 let ralph_dir = working_dir.join(".rlph");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
@@ -517,12 +570,21 @@ struct FailAtPhaseRunner {
 }
 
 impl AgentRunner for FailAtPhaseRunner {
-    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
         if phase == self.fail_at {
             return Err(Error::AgentRunner(format!("mock failure at {phase}")));
         }
         match phase {
             Phase::Choose => {
+                if should_emit_nothing_left_for_plan_choose(prompt, working_dir) {
+                    return Ok(RunResult {
+                        exit_code: 0,
+                        stdout: "NOTHING_LEFT".into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    });
+                }
+
                 let ralph_dir = working_dir.join(".rlph");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
@@ -1240,7 +1302,7 @@ async fn test_local_plan_mode_skips_task_source_fetch() {
 
     orchestrator.run_once().await.unwrap();
 
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 2);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
 }
 
@@ -1276,13 +1338,15 @@ async fn test_choose_and_implement_run_from_worktree_roots() {
     orchestrator.run_once().await.unwrap();
 
     let capture = capture.lock().unwrap();
-    assert_eq!(capture.choose_dirs.len(), 1);
+    assert_eq!(capture.choose_dirs.len(), 3);
     assert_eq!(capture.implement_dirs.len(), 1);
 
     let canonical_repo = repo_dir.path().canonicalize().unwrap();
     let canonical_wt_base = wt_dir.path().canonicalize().unwrap();
 
     assert_eq!(capture.choose_dirs[0], canonical_repo);
+    assert!(capture.choose_dirs[1].starts_with(&canonical_wt_base));
+    assert!(capture.choose_dirs[2].starts_with(&canonical_wt_base));
     assert!(capture.implement_dirs[0].starts_with(&canonical_wt_base));
     assert_ne!(capture.implement_dirs[0], canonical_repo);
 }
@@ -1701,8 +1765,8 @@ async fn test_continuous_mode_polls_with_empty_results() {
 
     orchestrator.run_loop(None).await.unwrap();
 
-    // Single task → choose phase skipped (auto-selected)
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
+    // Top-level choose is skipped, but inner plan choose runs per cycle.
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 2);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
 }
 
@@ -1737,8 +1801,8 @@ async fn test_max_iterations_stops_at_limit() {
 
     orchestrator.run_loop(None).await.unwrap();
 
-    // Single task → choose phase skipped (auto-selected)
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
+    // Top-level choose is skipped, but inner plan choose runs per cycle.
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 6);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 3);
 }
 
@@ -1777,8 +1841,8 @@ async fn test_continuous_shutdown_exits_between_iterations() {
 
     // Shutdown signal fires during implement, but the current iteration
     // completes fully. Shutdown is only checked between iterations.
-    // Single task → choose phase skipped (auto-selected)
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
+    // Top-level choose is skipped, but inner plan choose runs per cycle.
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 2);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
 }
 

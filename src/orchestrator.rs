@@ -51,6 +51,9 @@ pub enum IterationOutcome {
     NoEligibleTasks,
 }
 
+const NOTHING_LEFT_SIGNAL: &str = "NOTHING_LEFT";
+const MAX_SUBTASK_ITERATIONS: u32 = 64;
+
 pub struct ReviewInvocation {
     pub task_id_for_state: String,
     pub mark_in_review_task_id: Option<String>,
@@ -524,7 +527,7 @@ impl<
             );
 
             // Parse task selection from .rlph/task.toml
-            self.parse_task_selection()?
+            self.parse_task_selection_from(&self.repo_root)?
         };
         let issue_number = parse_issue_number(&task_id)?;
         info!(task_id, issue_number = %issue_number, "selected task");
@@ -710,18 +713,59 @@ impl<
             vars.insert("pr_url".to_string(), url.to_string());
         }
 
-        // 7. Implement phase
-        self.reporter.implement_started();
-        info!("running implement phase");
-        let impl_prompt = self.prompt_engine.render_phase("implement", &vars)?;
-        self.runner
-            .run(Phase::Implement, &impl_prompt, &worktree_info.path)
-            .await?;
+        let mut implemented_cycles = 0u32;
 
-        // 8. Push branch
-        if !self.config.dry_run {
-            info!("pushing branch");
-            self.push_branch(worktree_info)?;
+        if plan_dir.is_some() {
+            for cycle in 1..=MAX_SUBTASK_ITERATIONS {
+                let choose_prompt = self.prompt_engine.render_phase("choose", &vars)?;
+                let choose_result = self
+                    .runner
+                    .run(Phase::Choose, &choose_prompt, &worktree_info.path)
+                    .await?;
+
+                if choose_result.stdout.trim() == NOTHING_LEFT_SIGNAL {
+                    info!(
+                        cycles = implemented_cycles,
+                        "no remaining plan work reported by choose"
+                    );
+                    break;
+                }
+
+                let selected_task_id = self.parse_task_selection_from(&worktree_info.path)?;
+                vars.insert("selected_task_id".to_string(), selected_task_id);
+
+                self.reporter.implement_started();
+                info!(cycle, "running implement phase");
+                let impl_prompt = self.prompt_engine.render_phase("implement", &vars)?;
+                self.runner
+                    .run(Phase::Implement, &impl_prompt, &worktree_info.path)
+                    .await?;
+
+                implemented_cycles += 1;
+
+                if !self.config.dry_run {
+                    info!(cycle, "pushing branch");
+                    self.push_branch(worktree_info)?;
+                }
+            }
+
+            if implemented_cycles == MAX_SUBTASK_ITERATIONS {
+                return Err(Error::Orchestrator(format!(
+                    "inner loop reached safety limit of {MAX_SUBTASK_ITERATIONS} iterations without {NOTHING_LEFT_SIGNAL}"
+                )));
+            }
+        } else {
+            self.reporter.implement_started();
+            info!("running implement phase");
+            let impl_prompt = self.prompt_engine.render_phase("implement", &vars)?;
+            self.runner
+                .run(Phase::Implement, &impl_prompt, &worktree_info.path)
+                .await?;
+
+            if !self.config.dry_run {
+                info!("pushing branch");
+                self.push_branch(worktree_info)?;
+            }
         }
 
         // 9. Mark in-review
@@ -998,9 +1042,9 @@ impl<
         Ok(())
     }
 
-    /// Parse the task selection from `.rlph/task.toml` written by the choose agent.
-    fn parse_task_selection(&self) -> Result<String> {
-        let path = self.repo_root.join(".rlph").join("task.toml");
+    /// Parse the task selection from `<root>/.rlph/task.toml` written by the choose agent.
+    fn parse_task_selection_from(&self, root: &Path) -> Result<String> {
+        let path = root.join(".rlph").join("task.toml");
         let content = std::fs::read_to_string(&path).map_err(|e| {
             Error::Orchestrator(format!(
                 "failed to read task selection {}: {e}",

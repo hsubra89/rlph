@@ -107,3 +107,10 @@
 - Added integration guard `ReadyBeforeReviewFactory` and migrated test to `test_pr_marked_ready_before_review_pipeline`, which fails if any review phase runs before `mark_ready`.
 - Updated plan status: marked complete for Phase 5 acceptance criterion "Review pipeline runs after PR is marked ready".
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_pr_marked_ready_before_review_pipeline) or test(test_full_loop_with_push) or test(test_draft_pr_created_before_implement_phase)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 inner-loop task: choose-driven sub-task loop with explicit `NOTHING_LEFT` exit.
+- Updated `Orchestrator::run_implement_review` to run choose from the worktree root on plan-backed iterations, execute implement/push per selected sub-task, and stop when choose stdout is exactly `NOTHING_LEFT`.
+- Added loop safety guard (`MAX_SUBTASK_ITERATIONS`) and moved choose-task parsing to `parse_task_selection_from(root)` so top-level selection still reads repo-root `.rlph/task.toml` while inner-loop selection reads worktree-local `.rlph/task.toml`.
+- Updated integration test runners to emit `NOTHING_LEFT` on second plan choose call, and updated assertions in loop/cwd/count tests to reflect choose→implement iterative behavior.
+- Updated plan status: marked complete for Phase 5 acceptance criteria "Inner loop runs choose → implement → commit cycles" and "Inner loop exits when choose agent outputs `NOTHING_LEFT`".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_local_plan_mode_skips_task_source_fetch) or test(test_choose_and_implement_run_from_worktree_roots) or test(test_continuous_mode_polls_with_empty_results) or test(test_max_iterations_stops_at_limit) or test(test_continuous_shutdown_exits_between_iterations)'` (all pass; nextest reports one test as leaky).

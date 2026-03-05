@@ -164,8 +164,8 @@ The `SubmissionBackend` trait needs a way to submit draft PRs and mark them read
 - [x] Draft PR is opened immediately after the plan commit
 - [ ] Remote-sourced draft PRs include `Resolves #<issue_number>` in body
 - [x] Local-plan draft PRs reference the plan folder in body
-- [ ] Inner loop runs choose → implement → commit cycles
-- [ ] Inner loop exits when choose agent outputs `NOTHING_LEFT`
+- [x] Inner loop runs choose → implement → commit cycles
+- [x] Inner loop exits when choose agent outputs `NOTHING_LEFT`
 - [ ] Each cycle produces a separate commit
 - [x] PR is marked ready after inner loop completes
 - [x] Review pipeline runs after PR is marked ready
