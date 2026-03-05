@@ -150,11 +150,15 @@ pub fn render_findings_for_prompt(
         if !f.depends_on.is_empty() {
             write!(result, " (depends on: {})", f.depends_on.join(", ")).unwrap();
         }
-        for (j, fix) in f.suggested_fixes.iter().enumerate() {
-            write!(result, "\n  {}. {}", j + 1, fix).unwrap();
-        }
+        append_suggested_fixes(&mut result, &f.suggested_fixes, "  ");
     }
     result
+}
+
+fn append_suggested_fixes(buf: &mut String, fixes: &[String], indent: &str) {
+    for (i, fix) in fixes.iter().enumerate() {
+        write!(buf, "\n{indent}{}. {}", i + 1, fix).unwrap();
+    }
 }
 
 pub fn capitalize_first(s: &str) -> String {
@@ -203,9 +207,7 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
             if !f.depends_on.is_empty() {
                 write!(body, " *(depends on: {})*", f.depends_on.join(", ")).unwrap();
             }
-            for (j, fix) in f.suggested_fixes.iter().enumerate() {
-                write!(body, "\n  {}. {}", j + 1, fix).unwrap();
-            }
+            append_suggested_fixes(&mut body, &f.suggested_fixes, "  ");
             let json = escaped_finding_marker_json(f);
             write!(body, "\n  {FINDING_MARKER}{json} -->").unwrap();
         }
@@ -290,9 +292,7 @@ pub fn render_inline_finding_comment_for_github(
 
     if !finding.suggested_fixes.is_empty() {
         body.push_str("\n\n**Suggested fixes:**");
-        for (i, fix) in finding.suggested_fixes.iter().enumerate() {
-            write!(body, "\n{}. {}", i + 1, fix).unwrap();
-        }
+        append_suggested_fixes(&mut body, &finding.suggested_fixes, "");
     }
 
     if !dependency_descriptions.is_empty() {
