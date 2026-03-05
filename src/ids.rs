@@ -32,12 +32,6 @@ macro_rules! define_id {
                 s.parse::<u64>().map(Self)
             }
         }
-
-        impl From<$name> for u64 {
-            fn from(id: $name) -> u64 {
-                id.0
-            }
-        }
     };
 }
 
@@ -77,13 +71,6 @@ mod tests {
     fn test_from_str() {
         assert_eq!("42".parse::<IssueNumber>().unwrap(), IssueNumber::new(42));
         assert!("abc".parse::<PrNumber>().is_err());
-    }
-
-    #[test]
-    fn test_into_u64() {
-        let id = CommentId::new(99);
-        let raw: u64 = id.into();
-        assert_eq!(raw, 99);
     }
 
     #[test]
