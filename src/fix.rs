@@ -474,31 +474,13 @@ pub fn fetch_and_parse_items(
 
     // Fetch reactions in batches to avoid exhausting file descriptors
     // (each `gh api` call opens multiple fds).
-    use crate::GH_BATCH_SIZE;
-    let mut reactions_by_comment: Vec<Result<(u64, Vec<Reaction>)>> = Vec::new();
-    for chunk in finding_comments.chunks(GH_BATCH_SIZE) {
-        let batch: Vec<_> = std::thread::scope(|s| {
-            let handles: Vec<_> = chunk
-                .iter()
-                .map(|comment| {
-                    let id = comment.id;
-                    s.spawn(move || {
-                        submission
-                            .list_review_comment_reactions(id)
-                            .map(|reactions| (id, reactions))
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| {
-                    h.join()
-                        .map_err(|_| Error::Submission("reaction-fetch thread panicked".into()))?
-                })
-                .collect()
+    let reactions_by_comment: Vec<Result<(u64, Vec<Reaction>)>> =
+        crate::run_batched(&finding_comments, |comment| {
+            let id = comment.id;
+            submission
+                .list_review_comment_reactions(id)
+                .map(|reactions| (id, reactions))
         });
-        reactions_by_comment.extend(batch);
-    }
 
     let collected: Vec<_> = reactions_by_comment.into_iter().collect::<Result<_>>()?;
 

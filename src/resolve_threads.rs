@@ -216,23 +216,15 @@ pub(crate) fn resolve_completed_threads(owner: &str, repo: &str, pr_number: u32)
         "resolving completed rlph review threads"
     );
 
-    use crate::GH_BATCH_SIZE;
+    let results = crate::run_batched(&thread_ids, |&thread_id| {
+        (thread_id, resolve_thread(thread_id))
+    });
     let mut resolved = 0u32;
-    for chunk in thread_ids.chunks(GH_BATCH_SIZE) {
-        std::thread::scope(|s| {
-            let handles: Vec<_> = chunk
-                .iter()
-                .map(|&thread_id| s.spawn(move || (thread_id, resolve_thread(thread_id))))
-                .collect();
-
-            for handle in handles {
-                let (thread_id, result) = handle.join().expect("resolve thread panicked");
-                match result {
-                    Ok(()) => resolved += 1,
-                    Err(e) => warn!(thread_id, error = %e, "failed to resolve review thread"),
-                }
-            }
-        });
+    for (thread_id, result) in results {
+        match result {
+            Ok(()) => resolved += 1,
+            Err(e) => warn!(thread_id, error = %e, "failed to resolve review thread"),
+        }
     }
 
     info!(pr_number, resolved, "resolved rlph review threads");
