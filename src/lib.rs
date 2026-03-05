@@ -20,5 +20,8 @@ pub mod state;
 pub mod submission;
 pub mod worktree;
 
+/// Max parallel `gh api` calls per batch to avoid exhausting file descriptors.
+pub(crate) const GH_BATCH_SIZE: usize = 10;
+
 #[doc(hidden)]
 pub mod test_helpers;

@@ -474,7 +474,7 @@ pub fn fetch_and_parse_items(
 
     // Fetch reactions in batches to avoid exhausting file descriptors
     // (each `gh api` call opens multiple fds).
-    const GH_BATCH_SIZE: usize = 10;
+    use crate::GH_BATCH_SIZE;
     let mut reactions_by_comment: Vec<Result<(u64, Vec<Reaction>)>> = Vec::new();
     for chunk in finding_comments.chunks(GH_BATCH_SIZE) {
         let batch: Vec<_> = std::thread::scope(|s| {

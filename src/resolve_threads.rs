@@ -216,7 +216,7 @@ pub(crate) fn resolve_completed_threads(owner: &str, repo: &str, pr_number: u32)
         "resolving completed rlph review threads"
     );
 
-    const GH_BATCH_SIZE: usize = 10;
+    use crate::GH_BATCH_SIZE;
     let mut resolved = 0u32;
     for chunk in thread_ids.chunks(GH_BATCH_SIZE) {
         std::thread::scope(|s| {
