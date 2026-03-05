@@ -10,6 +10,9 @@ static ISSUE_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("issue URL regex compiles")
 });
 
+static LINEAR_NUMERIC_SUFFIX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z]+-([0-9]+)$").expect("linear suffix regex compiles"));
+
 /// Rewrite GitHub/Linear issue URLs to local markdown links when the issue exists locally.
 pub fn rewrite_issue_urls(markdown: &str, local_ids: &HashSet<String>) -> String {
     let mut out = String::with_capacity(markdown.len());
@@ -55,8 +58,8 @@ fn rewrite_line(line: &str, local_ids: &HashSet<String>) -> String {
             .map(|m| m.as_str())
             .expect("captured issue id");
 
-        if local_ids.contains(issue_id) {
-            out.push_str(&format!("[#{issue_id}](./{issue_id}.md)"));
+        if let Some(local_file_id) = local_file_id(issue_id, local_ids) {
+            out.push_str(&format!("[#{issue_id}](./{local_file_id}.md)"));
         } else {
             out.push_str(full_match.as_str());
         }
@@ -65,6 +68,18 @@ fn rewrite_line(line: &str, local_ids: &HashSet<String>) -> String {
 
     out.push_str(&line[last..]);
     out
+}
+
+fn local_file_id<'a>(issue_id: &'a str, local_ids: &'a HashSet<String>) -> Option<&'a str> {
+    if local_ids.contains(issue_id) {
+        return Some(issue_id);
+    }
+
+    let numeric = LINEAR_NUMERIC_SUFFIX_RE
+        .captures(issue_id)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str())?;
+    local_ids.contains(numeric).then_some(numeric)
 }
 
 fn is_markdown_link_destination(line: &str, url_start: usize) -> bool {
@@ -113,6 +128,13 @@ mod tests {
         let input = "See https://linear.app/acme/issue/ENG-42";
         let rewritten = rewrite_issue_urls(input, &ids(&["ENG-42"]));
         assert_eq!(rewritten, "See [#ENG-42](./ENG-42.md)");
+    }
+
+    #[test]
+    fn rewrites_linear_issue_url_when_local_numeric_file_exists() {
+        let input = "See https://linear.app/acme/issue/ENG-42";
+        let rewritten = rewrite_issue_urls(input, &ids(&["42"]));
+        assert_eq!(rewritten, "See [#ENG-42](./42.md)");
     }
 
     #[test]

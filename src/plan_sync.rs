@@ -61,7 +61,7 @@ pub fn sync_to_local<S: TaskSource>(
             continue;
         }
 
-        let refs = extract_referenced_task_ids(&task.body);
+        let refs = extract_referenced_task_ids(&task.body, issue_tracker_from_url(&task.url));
         for ref_id in refs {
             if tasks_by_id.contains_key(&ref_id) {
                 continue;
@@ -119,6 +119,23 @@ fn issue_filename(task_id: &str) -> String {
     format!("{}.md", task_id)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IssueTracker {
+    GitHub,
+    Linear,
+    Unknown,
+}
+
+fn issue_tracker_from_url(url: &str) -> IssueTracker {
+    if url.contains("github.com/") {
+        IssueTracker::GitHub
+    } else if url.contains("linear.app/") {
+        IssueTracker::Linear
+    } else {
+        IssueTracker::Unknown
+    }
+}
+
 fn plan_slug(main_task: &Task) -> String {
     let slug = WorktreeManager::slugify(&main_task.title);
     if !slug.is_empty() {
@@ -142,26 +159,26 @@ fn plan_slug(main_task: &Task) -> String {
     }
 }
 
-fn extract_referenced_task_ids(markdown: &str) -> HashSet<String> {
+fn extract_referenced_task_ids(markdown: &str, issue_tracker: IssueTracker) -> HashSet<String> {
     let mut ids = HashSet::new();
 
     for captures in ISSUE_URL_RE.captures_iter(markdown) {
-        if let Some(github_id) = captures.get(1) {
-            ids.insert(github_id.as_str().to_string());
-            continue;
-        }
-
-        let Some(linear_id) = captures.get(2).map(|m| m.as_str()) else {
-            continue;
-        };
-
-        if let Some(num) = LINEAR_NUMERIC_SUFFIX_RE
-            .captures(linear_id)
-            .and_then(|caps| caps.get(1))
-        {
-            ids.insert(num.as_str().to_string());
-        } else {
-            ids.insert(linear_id.to_string());
+        match issue_tracker {
+            IssueTracker::GitHub => {
+                if let Some(github_id) = captures.get(1) {
+                    ids.insert(github_id.as_str().to_string());
+                }
+            }
+            IssueTracker::Linear => {
+                if let Some(linear_id) = captures.get(2).map(|m| m.as_str())
+                    && let Some(num) = LINEAR_NUMERIC_SUFFIX_RE
+                        .captures(linear_id)
+                        .and_then(|caps| caps.get(1))
+                {
+                    ids.insert(num.as_str().to_string());
+                }
+            }
+            IssueTracker::Unknown => {}
         }
     }
 
@@ -230,12 +247,21 @@ mod tests {
     }
 
     fn task(id: &str, title: &str, body: &str) -> Task {
+        task_with_url(
+            id,
+            title,
+            body,
+            &format!("https://github.com/org/repo/issues/{id}"),
+        )
+    }
+
+    fn task_with_url(id: &str, title: &str, body: &str, url: &str) -> Task {
         Task {
             id: id.to_string(),
             title: title.to_string(),
             body: body.to_string(),
             labels: vec![],
-            url: format!("https://example.test/tasks/{id}"),
+            url: url.to_string(),
             priority: None,
         }
     }
@@ -370,5 +396,59 @@ mod tests {
         let plan = sync_to_local(&source, "42", tmp.path()).unwrap();
 
         assert!(plan.path.ends_with("gh-42"));
+    }
+
+    #[test]
+    fn sync_ignores_cross_source_linear_links_for_github_tasks() {
+        let tmp = TempDir::new().unwrap();
+
+        let mut tasks = HashMap::new();
+        tasks.insert(
+            "42".to_string(),
+            task(
+                "42",
+                "GitHub Task",
+                "Context: https://linear.app/acme/issue/ENG-50",
+            ),
+        );
+
+        let source = MockTaskSource::new(tasks, HashMap::new());
+        let plan = sync_to_local(&source, "42", tmp.path()).unwrap();
+
+        assert_eq!(
+            file_names(&plan.files),
+            BTreeSet::from(["42.md".to_string()])
+        );
+    }
+
+    #[test]
+    fn sync_rewrites_linear_urls_when_local_linear_issue_exists() {
+        let tmp = TempDir::new().unwrap();
+
+        let mut tasks = HashMap::new();
+        tasks.insert(
+            "42".to_string(),
+            task_with_url(
+                "42",
+                "Linear Main",
+                "Depends on https://linear.app/acme/issue/ENG-50",
+                "https://linear.app/acme/issue/ENG-42",
+            ),
+        );
+        tasks.insert(
+            "50".to_string(),
+            task_with_url(
+                "50",
+                "Linear Dep",
+                "Details",
+                "https://linear.app/acme/issue/ENG-50",
+            ),
+        );
+
+        let source = MockTaskSource::new(tasks, HashMap::new());
+        let plan = sync_to_local(&source, "42", tmp.path()).unwrap();
+
+        let main_file = fs::read_to_string(plan.path.join("42.md")).unwrap();
+        assert!(main_file.contains("[#ENG-50](./50.md)"));
     }
 }
