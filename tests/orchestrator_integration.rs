@@ -44,6 +44,7 @@ struct SubmissionTracker {
     submissions: Vec<(String, String, String, String)>,
     comments: Vec<(PrNumber, String)>,
     reviews: Vec<PostedReview>,
+    ready_marked: Vec<PrNumber>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -629,6 +630,11 @@ impl SubmissionBackend for MockSubmission {
                 .to_string(),
         )
     }
+
+    fn mark_ready(&self, pr_number: PrNumber) -> Result<()> {
+        self.tracker.lock().unwrap().ready_marked.push(pr_number);
+        Ok(())
+    }
 }
 
 struct FailSubmission;
@@ -1078,6 +1084,44 @@ async fn test_draft_pr_created_before_implement_phase() {
 
     let subs = sub_tracker.lock().unwrap();
     assert_eq!(subs.submissions.len(), 1);
+}
+
+#[tokio::test]
+async fn test_pr_marked_ready_after_review_pipeline() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let task = make_task(42, "Fix the bug");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
+    let runner = MockRunner::new("gh-42");
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_mgr = StateManager::new(&state_dir);
+    let prompt_engine = PromptEngine::new(None);
+
+    let orchestrator = Orchestrator::new(
+        source,
+        runner,
+        submission,
+        worktree_mgr,
+        state_mgr,
+        prompt_engine,
+        make_config(false),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    let subs = sub_tracker.lock().unwrap();
+    assert_eq!(subs.ready_marked, vec![PrNumber::new(1)]);
 }
 
 #[tokio::test]

@@ -167,7 +167,7 @@ The `SubmissionBackend` trait needs a way to submit draft PRs and mark them read
 - [ ] Inner loop runs choose → implement → commit cycles
 - [ ] Inner loop exits when choose agent outputs `NOTHING_LEFT`
 - [ ] Each cycle produces a separate commit
-- [ ] PR is marked ready after inner loop completes
+- [x] PR is marked ready after inner loop completes
 - [ ] Review pipeline runs after PR is marked ready
 - [ ] Plan directory persists after completion (not cleaned up)
 - [x] `SubmissionBackend` supports draft PR creation and ready marking

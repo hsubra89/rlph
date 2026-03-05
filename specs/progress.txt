@@ -95,3 +95,9 @@
 - Confirmed existing `Orchestrator::pr_body` behavior satisfies local-plan plan-folder reference requirement without changing runtime logic.
 - Updated plan status: marked complete for Phase 5 acceptance criterion "Local-plan draft PRs reference the plan folder in body".
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_local_plan_draft_pr_body_references_plan_folder) or test(test_local_plan_branch_name_derived_from_directory_name) or test(test_full_loop_with_push)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 lifecycle task: mark PR ready after pipeline completion.
+- Updated `Orchestrator::run_implement_review` to call `SubmissionBackend::mark_ready(pr_number)` after successful review pipeline completion (non-dry-run), matching draft-first lifecycle semantics.
+- Added integration test `test_pr_marked_ready_after_review_pipeline` and extended test submission tracker/mocks to assert ready-transition calls.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "PR is marked ready after inner loop completes".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_pr_marked_ready_after_review_pipeline) or test(test_full_loop_with_push) or test(test_draft_pr_created_before_implement_phase)'` (all pass).
