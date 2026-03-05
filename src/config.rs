@@ -1,4 +1,7 @@
+//! Configuration merging: CLI flags → config file → defaults.
+
 use std::path::Path;
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -50,7 +53,7 @@ pub struct ReviewPhaseConfig {
     pub agent_model: Option<String>,
     pub agent_effort: Option<String>,
     pub agent_variant: Option<String>,
-    pub agent_timeout: Option<u64>,
+    pub agent_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
@@ -73,7 +76,7 @@ pub struct ReviewStepConfig {
     pub agent_model: Option<String>,
     pub agent_effort: Option<String>,
     pub agent_variant: Option<String>,
-    pub agent_timeout: Option<u64>,
+    pub agent_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
@@ -109,7 +112,7 @@ pub struct Config {
     pub runner: RunnerKind,
     pub submission: String,
     pub label: String,
-    pub poll_seconds: u64,
+    pub poll_seconds: Duration,
     pub worktree_dir: String,
     pub base_branch: String,
     pub max_iterations: Option<u32>,
@@ -118,8 +121,8 @@ pub struct Config {
     pub continuous: bool,
     pub agent_binary: String,
     pub agent_model: Option<String>,
-    pub agent_timeout: Option<u64>,
-    pub implement_timeout: Option<u64>,
+    pub agent_timeout: Option<Duration>,
+    pub implement_timeout: Option<Duration>,
     pub agent_effort: Option<String>,
     pub agent_variant: Option<String>,
     pub agent_timeout_retries: u32,
@@ -329,11 +332,13 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
     let global_timeout = build
         .and_then(|b| b.agent_timeout)
         .or(file.agent_timeout)
-        .or(Some(600));
+        .or(Some(600))
+        .map(Duration::from_secs);
     let implement_timeout = build
         .and_then(|b| b.implement_timeout)
         .or(file.implement_timeout)
-        .or(Some(1800));
+        .or(Some(1800))
+        .map(Duration::from_secs);
 
     let review_phases: Vec<ReviewPhaseConfig> = file
         .review_phases
@@ -377,7 +382,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
                     .or_else(|| global_effort_override.clone())
                     .or_else(|| runner_effort.map(str::to_string)),
                 agent_variant: p.agent_variant.or_else(|| global_variant_override.clone()),
-                agent_timeout: p.agent_timeout.or(global_timeout),
+                agent_timeout: p.agent_timeout.map(Duration::from_secs).or(global_timeout),
                 runner: effective_runner,
             })
         })
@@ -408,7 +413,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
                     .or_else(|| global_effort_override.clone())
                     .or_else(|| runner_effort.map(str::to_string)),
                 agent_variant: s.agent_variant.or_else(|| global_variant_override.clone()),
-                agent_timeout: s.agent_timeout.or(global_timeout),
+                agent_timeout: s.agent_timeout.map(Duration::from_secs).or(global_timeout),
                 runner: effective_runner,
             })
         };
@@ -432,10 +437,12 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
             .clone()
             .or(file.label)
             .unwrap_or_else(|| "rlph".to_string()),
-        poll_seconds: build
-            .and_then(|b| b.poll_seconds)
-            .or(file.poll_seconds)
-            .unwrap_or(30),
+        poll_seconds: Duration::from_secs(
+            build
+                .and_then(|b| b.poll_seconds)
+                .or(file.poll_seconds)
+                .unwrap_or(30),
+        ),
         worktree_dir: build
             .and_then(|b| b.worktree_dir.clone())
             .or(file.worktree_dir)
@@ -530,7 +537,7 @@ fn validate(config: &Config) -> Result<()> {
         &config.fix.agent_effort,
         &config.fix.agent_variant,
     )?;
-    if config.poll_seconds == 0 {
+    if config.poll_seconds.is_zero() {
         return Err(Error::ConfigValidation(
             "poll_seconds must be > 0".to_string(),
         ));
@@ -582,6 +589,8 @@ fn validate(config: &Config) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::cli::Cli;
     use crate::runner::RunnerKind;
@@ -691,7 +700,7 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.source, "linear"); // CLI wins
         assert_eq!(config.label, "cli-label"); // CLI wins
         assert_eq!(config.runner, RunnerKind::Claude); // file value kept
-        assert_eq!(config.poll_seconds, 120); // file value kept
+        assert_eq!(config.poll_seconds, Duration::from_secs(120)); // file value kept
         assert!(config.once);
     }
 
@@ -704,12 +713,12 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.runner, RunnerKind::Claude);
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
-        assert_eq!(config.poll_seconds, 30);
+        assert_eq!(config.poll_seconds, Duration::from_secs(30));
         assert_eq!(config.agent_binary, "claude");
         assert_eq!(config.agent_model.as_deref(), Some("claude-opus-4-6"));
         assert_eq!(config.agent_effort.as_deref(), Some("high"));
-        assert_eq!(config.agent_timeout, Some(600));
-        assert_eq!(config.implement_timeout, Some(1800));
+        assert_eq!(config.agent_timeout, Some(Duration::from_secs(600)));
+        assert_eq!(config.implement_timeout, Some(Duration::from_secs(1800)));
         assert_eq!(config.agent_timeout_retries, 2);
     }
 
@@ -721,7 +730,7 @@ worktree_dir = "/tmp/wt"
         };
         let cli = Cli::parse_from(["rlph", "build", "--once", "--agent-timeout", "45"]);
         let config = merge(file, &cli, cli.build_args()).unwrap();
-        assert_eq!(config.agent_timeout, Some(45));
+        assert_eq!(config.agent_timeout, Some(Duration::from_secs(45)));
     }
 
     #[test]
@@ -735,7 +744,7 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.runner, RunnerKind::Claude);
         assert_eq!(config.submission, "github");
         assert_eq!(config.label, "rlph");
-        assert_eq!(config.poll_seconds, 30);
+        assert_eq!(config.poll_seconds, Duration::from_secs(30));
         assert_eq!(config.agent_binary, "claude");
         assert_eq!(config.agent_model.as_deref(), Some("claude-opus-4-6"));
         assert_eq!(config.agent_effort.as_deref(), Some("high"));

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use rlph::config::{Config, ReviewStepConfig};
 use rlph::error::{Error, Result};
 use rlph::fix::{run_fix, run_fix_loop};
+use rlph::ids::{CommentId, PrNumber};
 use rlph::orchestrator::CorrectionRunner;
 use rlph::review_schema::ReviewFinding;
 use rlph::runner::{RunResult, RunnerKind};
@@ -46,27 +47,27 @@ fn make_review_comments(findings: &[ReviewFinding]) -> Vec<PrReviewComment> {
 }
 
 /// Build reactions for a comment: rocket reactions for "queued" items.
-fn rocket_reactions(comment_id: u64) -> (u64, Vec<Reaction>) {
+fn rocket_reactions(comment_id: CommentId) -> (CommentId, Vec<Reaction>) {
     (
         comment_id,
         vec![Reaction {
-            id: comment_id * 1000 + 1,
+            id: CommentId::new(comment_id.get() * 1000 + 1),
             content: "rocket".to_string(),
         }],
     )
 }
 
-fn fixed_reactions(comment_id: u64) -> (u64, Vec<Reaction>) {
+fn fixed_reactions(comment_id: CommentId) -> (CommentId, Vec<Reaction>) {
     (
         comment_id,
         vec![Reaction {
-            id: comment_id * 1000 + 2,
+            id: CommentId::new(comment_id.get() * 1000 + 2),
             content: "+1".to_string(),
         }],
     )
 }
 
-fn no_reactions(comment_id: u64) -> (u64, Vec<Reaction>) {
+fn no_reactions(comment_id: CommentId) -> (CommentId, Vec<Reaction>) {
     (comment_id, vec![])
 }
 
@@ -78,7 +79,7 @@ fn make_fix_step_config(agent_binary: String) -> ReviewStepConfig {
         agent_model: None,
         agent_effort: None,
         agent_variant: None,
-        agent_timeout: Some(30),
+        agent_timeout: Some(std::time::Duration::from_secs(30)),
     }
 }
 
@@ -95,15 +96,15 @@ fn make_config() -> Config {
 /// and reply posts.
 struct MockFixSubmission {
     review_comments: Mutex<Vec<PrReviewComment>>,
-    reactions: Mutex<Vec<(u64, Vec<Reaction>)>>,
-    added_reactions: Mutex<Vec<(u64, String)>>,
-    deleted_reactions: Mutex<Vec<(u64, u64)>>,
-    replies: Mutex<Vec<(u64, u64, String)>>,
+    reactions: Mutex<Vec<(CommentId, Vec<Reaction>)>>,
+    added_reactions: Mutex<Vec<(CommentId, String)>>,
+    deleted_reactions: Mutex<Vec<(CommentId, CommentId)>>,
+    replies: Mutex<Vec<(PrNumber, CommentId, String)>>,
     next_reaction_id: AtomicU64,
 }
 
 impl MockFixSubmission {
-    fn new(comments: Vec<PrReviewComment>, reactions: Vec<(u64, Vec<Reaction>)>) -> Self {
+    fn new(comments: Vec<PrReviewComment>, reactions: Vec<(CommentId, Vec<Reaction>)>) -> Self {
         Self {
             review_comments: Mutex::new(comments),
             reactions: Mutex::new(reactions),
@@ -126,7 +127,7 @@ impl MockFixSubmission {
         self.replies.lock().unwrap().len()
     }
 
-    fn added_reactions(&self) -> Vec<(u64, String)> {
+    fn added_reactions(&self) -> Vec<(CommentId, String)> {
         self.added_reactions.lock().unwrap().clone()
     }
 }
@@ -136,11 +137,11 @@ impl SubmissionBackend for MockFixSubmission {
         unimplemented!("submit not needed for fix tests")
     }
 
-    fn fetch_pr_review_comments(&self, _pr_number: u64) -> Result<Vec<PrReviewComment>> {
+    fn fetch_pr_review_comments(&self, _pr_number: PrNumber) -> Result<Vec<PrReviewComment>> {
         Ok(self.review_comments.lock().unwrap().clone())
     }
 
-    fn list_review_comment_reactions(&self, comment_id: u64) -> Result<Vec<Reaction>> {
+    fn list_review_comment_reactions(&self, comment_id: CommentId) -> Result<Vec<Reaction>> {
         let reactions = self.reactions.lock().unwrap();
         Ok(reactions
             .iter()
@@ -149,8 +150,8 @@ impl SubmissionBackend for MockFixSubmission {
             .unwrap_or_default())
     }
 
-    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<()> {
-        let new_id = self.next_reaction_id.fetch_add(1, Ordering::SeqCst);
+    fn add_review_comment_reaction(&self, comment_id: CommentId, reaction: &str) -> Result<()> {
+        let new_id = CommentId::new(self.next_reaction_id.fetch_add(1, Ordering::SeqCst));
         self.added_reactions
             .lock()
             .unwrap()
@@ -176,7 +177,11 @@ impl SubmissionBackend for MockFixSubmission {
         Ok(())
     }
 
-    fn delete_review_comment_reaction(&self, comment_id: u64, reaction_id: u64) -> Result<()> {
+    fn delete_review_comment_reaction(
+        &self,
+        comment_id: CommentId,
+        reaction_id: CommentId,
+    ) -> Result<()> {
         self.deleted_reactions
             .lock()
             .unwrap()
@@ -190,7 +195,12 @@ impl SubmissionBackend for MockFixSubmission {
         Ok(())
     }
 
-    fn reply_to_review_comment(&self, pr_number: u64, comment_id: u64, body: &str) -> Result<()> {
+    fn reply_to_review_comment(
+        &self,
+        pr_number: PrNumber,
+        comment_id: CommentId,
+        body: &str,
+    ) -> Result<()> {
         self.replies
             .lock()
             .unwrap()
@@ -198,7 +208,7 @@ impl SubmissionBackend for MockFixSubmission {
         Ok(())
     }
 
-    fn fetch_review_comment_by_id(&self, comment_id: u64) -> Result<PrReviewComment> {
+    fn fetch_review_comment_by_id(&self, comment_id: CommentId) -> Result<PrReviewComment> {
         let comments = self.review_comments.lock().unwrap();
         comments
             .iter()
@@ -328,9 +338,9 @@ async fn test_parallel_fix_multiple_queued_items() {
     ];
     let comments = make_review_comments(&findings);
     let reactions = vec![
-        rocket_reactions(100), // bug-alpha queued
-        rocket_reactions(101), // bug-beta queued
-        rocket_reactions(102), // bug-gamma queued
+        rocket_reactions(CommentId::new(100)), // bug-alpha queued
+        rocket_reactions(CommentId::new(101)), // bug-beta queued
+        rocket_reactions(CommentId::new(102)), // bug-gamma queued
     ];
 
     let submission = Arc::new(MockFixSubmission::new(comments, reactions));
@@ -342,7 +352,7 @@ async fn test_parallel_fix_multiple_queued_items() {
     config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
 
     let result = run_fix(
-        42,
+        PrNumber::new(42),
         pr_branch,
         &config,
         Arc::clone(&submission),
@@ -382,7 +392,10 @@ async fn test_fix_no_queued_items() {
     let findings = vec![make_finding("a"), make_finding("b")];
     let comments = make_review_comments(&findings);
     // No reactions at all
-    let reactions = vec![no_reactions(100), no_reactions(101)];
+    let reactions = vec![
+        no_reactions(CommentId::new(100)),
+        no_reactions(CommentId::new(101)),
+    ];
 
     let submission = Arc::new(MockFixSubmission::new(comments, reactions));
     let correction_runner = Arc::new(MockCorrectionRunner::noop());
@@ -390,7 +403,7 @@ async fn test_fix_no_queued_items() {
     let config = make_config();
 
     let result = run_fix(
-        42,
+        PrNumber::new(42),
         "main",
         &config,
         submission,
@@ -416,7 +429,10 @@ async fn test_parallel_fix_worktrees_cleaned_up() {
 
     let findings = vec![make_finding("clean-a"), make_finding("clean-b")];
     let comments = make_review_comments(&findings);
-    let reactions = vec![rocket_reactions(100), rocket_reactions(101)];
+    let reactions = vec![
+        rocket_reactions(CommentId::new(100)),
+        rocket_reactions(CommentId::new(101)),
+    ];
 
     let submission = Arc::new(MockFixSubmission::new(comments, reactions));
     let correction_runner = Arc::new(MockCorrectionRunner::noop());
@@ -427,7 +443,7 @@ async fn test_parallel_fix_worktrees_cleaned_up() {
     config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
 
     let result = run_fix(
-        42,
+        PrNumber::new(42),
         pr_branch,
         &config,
         submission,
@@ -466,7 +482,10 @@ async fn test_fix_skips_already_fixed_items() {
     let findings = vec![make_finding("a"), make_finding("b")];
     let comments = make_review_comments(&findings);
     // a is already fixed (has 👍), b has no reactions
-    let reactions = vec![fixed_reactions(100), no_reactions(101)];
+    let reactions = vec![
+        fixed_reactions(CommentId::new(100)),
+        no_reactions(CommentId::new(101)),
+    ];
 
     let submission = Arc::new(MockFixSubmission::new(comments, reactions));
     let correction_runner = Arc::new(MockCorrectionRunner::noop());
@@ -474,7 +493,7 @@ async fn test_fix_skips_already_fixed_items() {
     let config = make_config();
 
     let result = run_fix(
-        42,
+        PrNumber::new(42),
         "main",
         &config,
         Arc::clone(&submission),
@@ -497,14 +516,14 @@ struct PollingMockSubmission {
     base: MockFixSubmission,
     fetch_count: AtomicUsize,
     /// Finding comment ID to dynamically add 🚀 reaction after the first fix completes.
-    deferred_rocket_comment_id: Option<u64>,
+    deferred_rocket_comment_id: Option<CommentId>,
 }
 
 impl PollingMockSubmission {
     fn new(
         comments: Vec<PrReviewComment>,
-        reactions: Vec<(u64, Vec<Reaction>)>,
-        deferred_rocket_comment_id: Option<u64>,
+        reactions: Vec<(CommentId, Vec<Reaction>)>,
+        deferred_rocket_comment_id: Option<CommentId>,
     ) -> Self {
         Self {
             base: MockFixSubmission::new(comments, reactions),
@@ -523,7 +542,7 @@ impl SubmissionBackend for PollingMockSubmission {
         unimplemented!("submit not needed for fix tests")
     }
 
-    fn fetch_pr_review_comments(&self, pr_number: u64) -> Result<Vec<PrReviewComment>> {
+    fn fetch_pr_review_comments(&self, pr_number: PrNumber) -> Result<Vec<PrReviewComment>> {
         self.fetch_count.fetch_add(1, Ordering::SeqCst);
 
         // After the first fix completes (reply posted), add 🚀 to deferred comment
@@ -547,25 +566,34 @@ impl SubmissionBackend for PollingMockSubmission {
         self.base.fetch_pr_review_comments(pr_number)
     }
 
-    fn list_review_comment_reactions(&self, comment_id: u64) -> Result<Vec<Reaction>> {
+    fn list_review_comment_reactions(&self, comment_id: CommentId) -> Result<Vec<Reaction>> {
         self.base.list_review_comment_reactions(comment_id)
     }
 
-    fn add_review_comment_reaction(&self, comment_id: u64, reaction: &str) -> Result<()> {
+    fn add_review_comment_reaction(&self, comment_id: CommentId, reaction: &str) -> Result<()> {
         self.base.add_review_comment_reaction(comment_id, reaction)
     }
 
-    fn delete_review_comment_reaction(&self, comment_id: u64, reaction_id: u64) -> Result<()> {
+    fn delete_review_comment_reaction(
+        &self,
+        comment_id: CommentId,
+        reaction_id: CommentId,
+    ) -> Result<()> {
         self.base
             .delete_review_comment_reaction(comment_id, reaction_id)
     }
 
-    fn reply_to_review_comment(&self, pr_number: u64, comment_id: u64, body: &str) -> Result<()> {
+    fn reply_to_review_comment(
+        &self,
+        pr_number: PrNumber,
+        comment_id: CommentId,
+        body: &str,
+    ) -> Result<()> {
         self.base
             .reply_to_review_comment(pr_number, comment_id, body)
     }
 
-    fn fetch_review_comment_by_id(&self, comment_id: u64) -> Result<PrReviewComment> {
+    fn fetch_review_comment_by_id(&self, comment_id: CommentId) -> Result<PrReviewComment> {
         self.base.fetch_review_comment_by_id(comment_id)
     }
 }
@@ -608,8 +636,8 @@ struct FixLoopFixture {
 impl FixLoopFixture {
     fn new(
         findings: &[ReviewFinding],
-        queued_comment_ids: &[u64],
-        deferred_rocket_comment_id: Option<u64>,
+        queued_comment_ids: &[CommentId],
+        deferred_rocket_comment_id: Option<CommentId>,
     ) -> Self {
         let (_bare_dir, repo_dir) = setup_git_repo();
         let repo_root = repo_dir.path();
@@ -642,7 +670,7 @@ impl FixLoopFixture {
         let mut config = make_config();
         config.fix = make_fix_step_config(agent_script);
         config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
-        config.poll_seconds = 1;
+        config.poll_seconds = std::time::Duration::from_secs(1);
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -670,7 +698,7 @@ impl FixLoopFixture {
     async fn run(&mut self) -> Result<()> {
         let shutdown_rx = self.shutdown_rx.take().expect("shutdown_rx already taken");
         run_fix_loop(
-            42,
+            PrNumber::new(42),
             &self.pr_branch,
             &self.config,
             Arc::clone(&self.submission),
@@ -692,8 +720,8 @@ async fn test_fix_loop_picks_up_newly_queued_items() {
             make_finding_critical("alpha"),
             make_finding_critical("beta"),
         ],
-        &[100],    // alpha (comment 100) starts queued
-        Some(101), // beta (comment 101) gets 🚀 after first fix
+        &[CommentId::new(100)],    // alpha (comment 100) starts queued
+        Some(CommentId::new(101)), // beta (comment 101) gets 🚀 after first fix
     );
 
     let shutdown_handle =
@@ -724,7 +752,7 @@ async fn test_fix_loop_picks_up_newly_queued_items() {
 async fn test_fix_loop_skips_completed_items() {
     let mut f = FixLoopFixture::new(
         &[make_finding_critical("only-one")],
-        &[100], // only-one starts queued
+        &[CommentId::new(100)], // only-one starts queued
         None,
     );
 
@@ -749,7 +777,7 @@ async fn test_fix_loop_skips_completed_items() {
 async fn test_fix_loop_graceful_shutdown() {
     let mut f = FixLoopFixture::new(
         &[make_finding_critical("slow-item")],
-        &[100], // slow-item starts queued
+        &[CommentId::new(100)], // slow-item starts queued
         None,
     );
 
@@ -767,7 +795,7 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit
     #[cfg(unix)]
     make_executable(&script_path);
     f.config.fix = make_fix_step_config(script_path.to_str().unwrap().to_string());
-    f.config.poll_seconds = 5;
+    f.config.poll_seconds = std::time::Duration::from_secs(5);
 
     let shutdown_tx = f.take_shutdown_tx();
     let shutdown_handle = tokio::spawn(async move {
@@ -796,7 +824,7 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit
 async fn test_fix_loop_handles_warning_findings_via_batch() {
     let mut f = FixLoopFixture::new(
         &[make_finding("warn-a"), make_finding("warn-b")],
-        &[100, 101], // both queued
+        &[CommentId::new(100), CommentId::new(101)], // both queued
         None,
     );
 
@@ -828,7 +856,11 @@ async fn test_fix_loop_processes_criticals_then_batches_lower_severity() {
             make_finding("warn-item"),
             make_finding_info("info-item"),
         ],
-        &[100, 101, 102], // all queued
+        &[
+            CommentId::new(100),
+            CommentId::new(101),
+            CommentId::new(102),
+        ], // all queued
         None,
     );
 
@@ -869,9 +901,9 @@ async fn test_fix_loop_batch_full_session_reuse() {
     ];
     let comments = make_review_comments(&findings);
     let reactions = vec![
-        rocket_reactions(100),
-        rocket_reactions(101),
-        rocket_reactions(102),
+        rocket_reactions(CommentId::new(100)),
+        rocket_reactions(CommentId::new(101)),
+        rocket_reactions(CommentId::new(102)),
     ];
 
     let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
@@ -895,14 +927,14 @@ async fn test_fix_loop_batch_full_session_reuse() {
     let mut config = make_config();
     config.fix = make_fix_step_config(agent_script);
     config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
-    config.poll_seconds = 1;
+    config.poll_seconds = std::time::Duration::from_secs(1);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 3, None);
 
     let result = run_fix_loop(
-        42,
+        PrNumber::new(42),
         pr_branch,
         &config,
         Arc::clone(&submission),
@@ -950,7 +982,11 @@ async fn test_fix_loop_batch_abort_remaining_picked_up_next_poll() {
             make_finding("warn-b"),
             make_finding("warn-c"),
         ],
-        &[100, 101, 102], // all queued
+        &[
+            CommentId::new(100),
+            CommentId::new(101),
+            CommentId::new(102),
+        ], // all queued
         None,
     );
 
@@ -990,7 +1026,10 @@ async fn test_fix_loop_batch_wontfix_continues() {
 
     let findings = vec![make_finding("warn-wontfix"), make_finding("warn-fixable")];
     let comments = make_review_comments(&findings);
-    let reactions = vec![rocket_reactions(100), rocket_reactions(101)];
+    let reactions = vec![
+        rocket_reactions(CommentId::new(100)),
+        rocket_reactions(CommentId::new(101)),
+    ];
 
     let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
     let correction_runner = Arc::new(MockCorrectionRunner::with_handler(|working_dir, n| {
@@ -1013,14 +1052,14 @@ async fn test_fix_loop_batch_wontfix_continues() {
     let mut config = make_config();
     config.fix = make_fix_step_config(agent_script);
     config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
-    config.poll_seconds = 1;
+    config.poll_seconds = std::time::Duration::from_secs(1);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 2, None);
 
     let result = run_fix_loop(
-        42,
+        PrNumber::new(42),
         pr_branch,
         &config,
         Arc::clone(&submission),
@@ -1080,7 +1119,10 @@ async fn test_fix_loop_batch_abort_when_no_session_id() {
 
     let findings = vec![make_finding("warn-a"), make_finding("warn-b")];
     let comments = make_review_comments(&findings);
-    let reactions = vec![rocket_reactions(100), rocket_reactions(101)];
+    let reactions = vec![
+        rocket_reactions(CommentId::new(100)),
+        rocket_reactions(CommentId::new(101)),
+    ];
 
     let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
     let correction_runner = Arc::new(MockCorrectionRunner::noop());
@@ -1089,14 +1131,14 @@ async fn test_fix_loop_batch_abort_when_no_session_id() {
     let mut config = make_config();
     config.fix = make_fix_step_config(agent_script);
     config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
-    config.poll_seconds = 1;
+    config.poll_seconds = std::time::Duration::from_secs(1);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 1, Some(2));
 
     let result = run_fix_loop(
-        42,
+        PrNumber::new(42),
         pr_branch,
         &config,
         Arc::clone(&submission),
@@ -1181,7 +1223,7 @@ echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"comm
 
     let findings = vec![make_finding("conflict-finding")];
     let comments = make_review_comments(&findings);
-    let reactions = vec![rocket_reactions(100)];
+    let reactions = vec![rocket_reactions(CommentId::new(100))];
 
     let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
 
@@ -1217,14 +1259,14 @@ echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"comm
     let mut config = make_config();
     config.fix = make_fix_step_config(agent_script);
     config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
-    config.poll_seconds = 1;
+    config.poll_seconds = std::time::Duration::from_secs(1);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 1, None);
 
     let result = run_fix_loop(
-        42,
+        PrNumber::new(42),
         pr_branch,
         &config,
         Arc::clone(&submission),

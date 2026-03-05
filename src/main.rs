@@ -1,6 +1,7 @@
+//! CLI entry point: parses arguments, loads config, dispatches to build/fix/init subcommands.
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use clap::Parser;
 use tokio::sync::watch;
@@ -11,6 +12,7 @@ use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
 use rlph::fix;
 use rlph::fix_comment::format_fix_items_for_display;
+use rlph::ids::PrNumber;
 use rlph::orchestrator::{
     DefaultCorrectionRunner, Orchestrator, ReviewInvocation, build_task_vars,
 };
@@ -26,19 +28,15 @@ use rlph::submission::{GitHubSubmission, PrContext};
 use rlph::worktree::{WorktreeManager, resolve_setup_script};
 
 /// Parse a PR reference that is either a plain number or a GitHub PR URL.
-fn parse_pr_ref(s: &str) -> Result<u64, String> {
-    s.parse().or_else(|_| {
-        s.trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .unwrap()
-            .parse()
-            .map_err(|_| format!("invalid PR reference '{s}' — expected a number or GitHub PR URL"))
-    })
+fn parse_pr_ref(s: &str) -> Result<PrNumber, String> {
+    s.parse::<u64>()
+        .or_else(|_| s.trim_end_matches('/').rsplit('/').next().unwrap().parse())
+        .map(PrNumber::new)
+        .map_err(|_| format!("invalid PR reference '{s}' — expected a number or GitHub PR URL"))
 }
 
 /// Parse a PR ref or print an error and exit.
-fn parse_pr_ref_or_exit(s: &str) -> u64 {
+fn parse_pr_ref_or_exit(s: &str) -> PrNumber {
     parse_pr_ref(s).unwrap_or_else(|msg| {
         eprintln!("error: {msg}");
         std::process::exit(1);
@@ -207,7 +205,7 @@ async fn main() {
 
             let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
             let prompt_engine = PromptEngine::new(None);
-            let timeout = config.implement_timeout.map(Duration::from_secs);
+            let timeout = config.implement_timeout;
             let factory = rlph::orchestrator::DefaultReviewRunnerFactory { stream: true };
             let orchestrator = Orchestrator::new(
                 source,
@@ -356,7 +354,7 @@ async fn main() {
                 },
                 _ => AnySource::GitHub(GitHubSource::new(&config)),
             };
-            let timeout = config.implement_timeout.map(Duration::from_secs);
+            let timeout = config.implement_timeout;
             let runner = build_runner(
                 config.runner,
                 &config.agent_binary,
@@ -411,14 +409,14 @@ mod tests {
 
     #[test]
     fn parse_pr_ref_plain_number() {
-        assert_eq!(parse_pr_ref("42").unwrap(), 42);
+        assert_eq!(parse_pr_ref("42").unwrap(), PrNumber::new(42));
     }
 
     #[test]
     fn parse_pr_ref_github_url() {
         assert_eq!(
             parse_pr_ref("https://github.com/owner/repo/pull/123").unwrap(),
-            123
+            PrNumber::new(123)
         );
     }
 
@@ -426,7 +424,7 @@ mod tests {
     fn parse_pr_ref_trailing_slash() {
         assert_eq!(
             parse_pr_ref("https://github.com/owner/repo/pull/456/").unwrap(),
-            456
+            PrNumber::new(456)
         );
     }
 

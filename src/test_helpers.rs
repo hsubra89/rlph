@@ -1,3 +1,6 @@
+//! Shared test utilities for constructing mock review comments and reactions.
+
+use crate::ids::CommentId;
 use crate::review_schema::{ReviewFinding, Severity, render_inline_finding_comment_for_github};
 use crate::submission::{PrReviewComment, Reaction};
 
@@ -41,7 +44,7 @@ pub fn make_finding_with_deps(id: &str, deps: &[&str]) -> ReviewFinding {
 /// Create a `PrReviewComment` from a `ReviewFinding` for tests.
 pub fn make_review_comment(id: u64, finding: &ReviewFinding) -> PrReviewComment {
     PrReviewComment {
-        id,
+        id: CommentId::new(id),
         body: render_inline_finding_comment_for_github(finding, &[], None),
         in_reply_to_id: None,
     }
@@ -52,7 +55,7 @@ pub fn make_reactions(specs: &[(&str, u64)]) -> Vec<Reaction> {
     specs
         .iter()
         .map(|(content, id)| Reaction {
-            id: *id,
+            id: CommentId::new(*id),
             content: content.to_string(),
         })
         .collect()

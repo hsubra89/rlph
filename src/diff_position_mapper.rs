@@ -1,3 +1,5 @@
+//! Maps file line numbers to GitHub diff positions for inline review comments.
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;

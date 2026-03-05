@@ -1,3 +1,5 @@
+//! Child process spawning with signal forwarding and heartbeat monitoring.
+
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};

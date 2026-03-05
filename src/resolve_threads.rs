@@ -1,9 +1,12 @@
+//! GraphQL-based resolution of completed review threads on GitHub PRs.
+
 use std::process::Command;
 
 use serde::Deserialize;
 use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
+use crate::ids::PrNumber;
 use crate::review_schema::FINDING_MARKER;
 
 /// GraphQL reaction content values indicating a completed finding (Fixed or WontFix).
@@ -201,17 +204,21 @@ fn run_gh_graphql<T: serde::de::DeserializeOwned>(args: &[&str]) -> Result<Graph
 /// Resolve all completed rlph-finding review threads on a PR.
 ///
 /// Returns the number of threads resolved.
-pub(crate) fn resolve_completed_threads(owner: &str, repo: &str, pr_number: u32) -> Result<u32> {
+pub(crate) fn resolve_completed_threads(
+    owner: &str,
+    repo: &str,
+    pr_number: PrNumber,
+) -> Result<u32> {
     let threads = fetch_review_threads(owner, repo, pr_number)?;
     let thread_ids = find_completed_rlph_thread_ids(&threads);
 
     if thread_ids.is_empty() {
-        debug!(pr_number, "no completed rlph review threads to resolve");
+        debug!(pr_number = %pr_number, "no completed rlph review threads to resolve");
         return Ok(0);
     }
 
     info!(
-        pr_number,
+        pr_number = %pr_number,
         count = thread_ids.len(),
         "resolving completed rlph review threads"
     );
@@ -227,11 +234,15 @@ pub(crate) fn resolve_completed_threads(owner: &str, repo: &str, pr_number: u32)
         }
     }
 
-    info!(pr_number, resolved, "resolved rlph review threads");
+    info!(pr_number = %pr_number, resolved, "resolved rlph review threads");
     Ok(resolved)
 }
 
-fn fetch_review_threads(owner: &str, repo: &str, pr_number: u32) -> Result<Vec<ReviewThreadNode>> {
+fn fetch_review_threads(
+    owner: &str,
+    repo: &str,
+    pr_number: PrNumber,
+) -> Result<Vec<ReviewThreadNode>> {
     let query_arg = format!("query={REVIEW_THREADS_QUERY}");
     let owner_arg = format!("owner={owner}");
     let name_arg = format!("name={repo}");

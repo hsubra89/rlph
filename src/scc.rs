@@ -1,3 +1,5 @@
+//! Tarjan's algorithm for strongly connected component detection.
+
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 

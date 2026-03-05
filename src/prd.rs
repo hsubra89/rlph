@@ -1,3 +1,5 @@
+//! PRD (product requirements document) generation via agent.
+
 use std::collections::HashMap;
 use std::process::Stdio;
 
@@ -210,7 +212,7 @@ mod tests {
             runner: RunnerKind::Claude,
             submission: "github".to_string(),
             label: "rlph".to_string(),
-            poll_seconds: 30,
+            poll_seconds: std::time::Duration::from_secs(30),
             worktree_dir: "../wt".to_string(),
             base_branch: "main".to_string(),
             max_iterations: None,
@@ -219,8 +221,8 @@ mod tests {
             continuous: false,
             agent_binary: binary.to_string(),
             agent_model: model.map(str::to_string),
-            agent_timeout: Some(600),
-            implement_timeout: Some(1800),
+            agent_timeout: Some(std::time::Duration::from_secs(600)),
+            implement_timeout: Some(std::time::Duration::from_secs(1800)),
             agent_effort: Some("high".to_string()),
             agent_variant: None,
             agent_timeout_retries: 2,

@@ -3,6 +3,7 @@ mod common;
 use std::process::Command;
 
 use common::run_git;
+use rlph::ids::{IssueNumber, PrNumber};
 use rlph::worktree::WorktreeManager;
 use tempfile::TempDir;
 
@@ -62,7 +63,7 @@ fn test_create_worktree() {
         "main".to_string(),
     );
 
-    let info = mgr.create(42, "fix-bug").unwrap();
+    let info = mgr.create(IssueNumber::new(42), "fix-bug").unwrap();
     assert_eq!(info.branch, "rlph-42-fix-bug");
     assert!(info.path.exists());
     assert!(info.path.join("README.md").exists());
@@ -79,7 +80,7 @@ fn test_create_worktree_correct_naming() {
         "main".to_string(),
     );
 
-    let info = mgr.create(7, "add-auth").unwrap();
+    let info = mgr.create(IssueNumber::new(7), "add-auth").unwrap();
     assert!(info.path.ends_with("rlph-7-add-auth"));
 }
 
@@ -95,10 +96,10 @@ fn test_find_existing_worktree() {
     );
 
     // Create worktree
-    let created = mgr.create(10, "feature").unwrap();
+    let created = mgr.create(IssueNumber::new(10), "feature").unwrap();
 
     // Should find it
-    let found = mgr.find_existing(10).unwrap();
+    let found = mgr.find_existing(IssueNumber::new(10)).unwrap();
     assert!(found.is_some());
     let found = found.unwrap();
     assert_eq!(found.path, created.path);
@@ -116,8 +117,8 @@ fn test_reuse_existing_worktree() {
         "main".to_string(),
     );
 
-    let first = mgr.create(10, "feature").unwrap();
-    let second = mgr.create(10, "feature").unwrap();
+    let first = mgr.create(IssueNumber::new(10), "feature").unwrap();
+    let second = mgr.create(IssueNumber::new(10), "feature").unwrap();
 
     // Should return the same path (reuse, not duplicate)
     assert_eq!(first.path, second.path);
@@ -134,7 +135,7 @@ fn test_find_nonexistent_worktree() {
         "main".to_string(),
     );
 
-    let found = mgr.find_existing(999).unwrap();
+    let found = mgr.find_existing(IssueNumber::new(999)).unwrap();
     assert!(found.is_none());
 }
 
@@ -149,7 +150,7 @@ fn test_remove_worktree() {
         "main".to_string(),
     );
 
-    let info = mgr.create(15, "cleanup-test").unwrap();
+    let info = mgr.create(IssueNumber::new(15), "cleanup-test").unwrap();
     assert!(info.path.exists());
 
     mgr.remove(&info.path).unwrap();
@@ -158,7 +159,7 @@ fn test_remove_worktree() {
     assert!(!info.path.exists());
 
     // Should not find it anymore
-    let found = mgr.find_existing(15).unwrap();
+    let found = mgr.find_existing(IssueNumber::new(15)).unwrap();
     assert!(found.is_none());
 }
 
@@ -173,7 +174,7 @@ fn test_remove_worktree_cleans_branch() {
         "main".to_string(),
     );
 
-    let info = mgr.create(20, "branch-cleanup").unwrap();
+    let info = mgr.create(IssueNumber::new(20), "branch-cleanup").unwrap();
     mgr.remove(&info.path).unwrap();
 
     // Branch should be deleted
@@ -200,16 +201,16 @@ fn test_create_multiple_worktrees() {
         "main".to_string(),
     );
 
-    let wt1 = mgr.create(1, "first").unwrap();
-    let wt2 = mgr.create(2, "second").unwrap();
+    let wt1 = mgr.create(IssueNumber::new(1), "first").unwrap();
+    let wt2 = mgr.create(IssueNumber::new(2), "second").unwrap();
 
     assert_ne!(wt1.path, wt2.path);
     assert!(wt1.path.exists());
     assert!(wt2.path.exists());
 
     // Finding each should work independently
-    assert!(mgr.find_existing(1).unwrap().is_some());
-    assert!(mgr.find_existing(2).unwrap().is_some());
+    assert!(mgr.find_existing(IssueNumber::new(1)).unwrap().is_some());
+    assert!(mgr.find_existing(IssueNumber::new(2)).unwrap().is_some());
 }
 
 #[test]
@@ -224,7 +225,9 @@ fn test_create_for_branch() {
         "main".to_string(),
     );
 
-    let info = mgr.create_for_branch(77, "feature/review-pr").unwrap();
+    let info = mgr
+        .create_for_branch(PrNumber::new(77), "feature/review-pr")
+        .unwrap();
     assert_eq!(info.branch, "rlph-pr-77-feature-review-pr");
     assert!(info.path.exists());
     assert!(info.path.ends_with("rlph-pr-77-feature-review-pr"));
@@ -243,8 +246,12 @@ fn test_create_for_branch_reuses_existing() {
         "main".to_string(),
     );
 
-    let first = mgr.create_for_branch(88, "feature/reuse-pr").unwrap();
-    let second = mgr.create_for_branch(88, "feature/reuse-pr").unwrap();
+    let first = mgr
+        .create_for_branch(PrNumber::new(88), "feature/reuse-pr")
+        .unwrap();
+    let second = mgr
+        .create_for_branch(PrNumber::new(88), "feature/reuse-pr")
+        .unwrap();
 
     assert_eq!(first.path, second.path);
     assert_eq!(first.branch, second.branch);

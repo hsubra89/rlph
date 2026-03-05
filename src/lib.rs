@@ -1,3 +1,5 @@
+//! Autonomous AI dev-loop: fetch tasks, spin up worktrees, run coding agents, submit PRs.
+
 pub mod cli;
 pub mod config;
 pub mod deps;
@@ -7,6 +9,7 @@ pub mod fix;
 pub mod fix_comment;
 pub mod fix_deps;
 pub mod fix_scheduler;
+pub mod ids;
 pub mod orchestrator;
 pub mod prd;
 pub mod process;

@@ -1,3 +1,5 @@
+//! Prompt template loading (embedded defaults + overrides) and `{{var}}` substitution.
+
 use std::collections::HashMap;
 use std::path::Path;
 

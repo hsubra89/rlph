@@ -1,3 +1,5 @@
+//! Task source abstraction: fetch eligible tasks from GitHub Issues or Linear.
+
 pub mod github;
 pub mod linear;
 
@@ -9,6 +11,7 @@ use serde::Serialize;
 use tracing::warn;
 
 use crate::error::Result;
+use crate::ids::IssueNumber;
 
 const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 500;
@@ -89,7 +92,7 @@ pub trait TaskSource {
     fn get_task_details(&self, task_id: &str) -> Result<Task>;
 
     /// Fetch IDs of closed/done tasks (used for dependency resolution).
-    fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>>;
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>>;
 }
 
 pub enum AnySource {
@@ -126,7 +129,7 @@ impl TaskSource for AnySource {
         }
     }
 
-    fn fetch_closed_task_ids(&self) -> Result<HashSet<u64>> {
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>> {
         match self {
             AnySource::GitHub(s) => s.fetch_closed_task_ids(),
             AnySource::Linear(s) => s.fetch_closed_task_ids(),

@@ -1,8 +1,11 @@
+//! Dependency graph construction and cycle-aware eligibility filtering.
+
 use std::collections::{HashMap, HashSet};
 
 use regex::Regex;
 use tracing::warn;
 
+use crate::ids::IssueNumber;
 use crate::scc::TarjanScc;
 use crate::sources::Task;
 
@@ -12,14 +15,14 @@ use crate::sources::Task;
 /// - `blocked by #N`
 /// - `depends on #N`
 /// - `blockedBy: [N, M, ...]`
-pub fn parse_dependencies(body: &str) -> Vec<u64> {
+pub fn parse_dependencies(body: &str) -> Vec<IssueNumber> {
     let mut deps = Vec::new();
 
     // "blocked by #N" or "depends on #N"
     let inline_re = Regex::new(r"(?i)(?:blocked\s+by|depends\s+on)\s+#(\d+)").unwrap();
     for cap in inline_re.captures_iter(body) {
         if let Ok(n) = cap[1].parse::<u64>() {
-            deps.push(n);
+            deps.push(IssueNumber::new(n));
         }
     }
 
@@ -28,7 +31,7 @@ pub fn parse_dependencies(body: &str) -> Vec<u64> {
     for cap in list_re.captures_iter(body) {
         for num_str in cap[1].split(',') {
             if let Ok(n) = num_str.trim().parse::<u64>() {
-                deps.push(n);
+                deps.push(IssueNumber::new(n));
             }
         }
     }
@@ -41,7 +44,7 @@ pub fn parse_dependencies(body: &str) -> Vec<u64> {
 /// A dependency graph mapping task IDs to their dependency IDs.
 pub struct DependencyGraph {
     /// task_id -> set of task_ids it depends on
-    edges: HashMap<u64, HashSet<u64>>,
+    edges: HashMap<IssueNumber, HashSet<IssueNumber>>,
 }
 
 impl DependencyGraph {
@@ -49,8 +52,8 @@ impl DependencyGraph {
     pub fn build(tasks: &[Task]) -> Self {
         let mut edges = HashMap::new();
         for task in tasks {
-            let id: u64 = match task.id.parse() {
-                Ok(n) => n,
+            let id: IssueNumber = match task.id.parse::<u64>() {
+                Ok(n) => IssueNumber::new(n),
                 Err(_) => continue,
             };
             let deps = parse_dependencies(&task.body);
@@ -61,15 +64,20 @@ impl DependencyGraph {
         Self { edges }
     }
 
-    fn cycle_peers(&self) -> (HashMap<u64, HashSet<u64>>, Vec<Vec<u64>>) {
+    fn cycle_peers(
+        &self,
+    ) -> (
+        HashMap<IssueNumber, HashSet<IssueNumber>>,
+        Vec<Vec<IssueNumber>>,
+    ) {
         let scc = TarjanScc::compute(&self.edges);
 
-        let mut cycle_peers: HashMap<u64, HashSet<u64>> = HashMap::new();
+        let mut cycle_peers: HashMap<IssueNumber, HashSet<IssueNumber>> = HashMap::new();
         let mut cycles_for_log = Vec::new();
 
         for component in scc.cycle_components() {
-            let component_set: HashSet<u64> = component.iter().copied().collect();
-            let mut component_sorted: Vec<u64> = component_set.iter().copied().collect();
+            let component_set: HashSet<IssueNumber> = component.iter().copied().collect();
+            let mut component_sorted: Vec<IssueNumber> = component_set.iter().copied().collect();
             component_sorted.sort_unstable();
             cycles_for_log.push(component_sorted);
             for &node in &component_set {
@@ -88,7 +96,7 @@ impl DependencyGraph {
     /// Filter tasks, returning only those whose dependencies are all in `done_ids`.
     /// Cycle-internal blockers are ignored (with a warning logged), but external blockers
     /// on cycle tasks are still enforced.
-    pub fn filter_eligible(&self, tasks: Vec<Task>, done_ids: &HashSet<u64>) -> Vec<Task> {
+    pub fn filter_eligible(&self, tasks: Vec<Task>, done_ids: &HashSet<IssueNumber>) -> Vec<Task> {
         let (cycle_peers, cycles_for_log) = self.cycle_peers();
 
         if !cycles_for_log.is_empty() {
@@ -101,8 +109,8 @@ impl DependencyGraph {
         tasks
             .into_iter()
             .filter(|task| {
-                let id: u64 = match task.id.parse() {
-                    Ok(n) => n,
+                let id: IssueNumber = match task.id.parse::<u64>() {
+                    Ok(n) => IssueNumber::new(n),
                     Err(_) => return true,
                 };
                 match self.edges.get(&id) {
@@ -126,6 +134,7 @@ impl DependencyGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::IssueNumber;
 
     fn make_task(id: u64, body: &str) -> Task {
         Task {
@@ -142,32 +151,68 @@ mod tests {
 
     #[test]
     fn test_parse_blocked_by() {
-        assert_eq!(parse_dependencies("Blocked by #5"), vec![5]);
-        assert_eq!(parse_dependencies("blocked by #12"), vec![12]);
+        assert_eq!(
+            parse_dependencies("Blocked by #5"),
+            vec![IssueNumber::new(5)]
+        );
+        assert_eq!(
+            parse_dependencies("blocked by #12"),
+            vec![IssueNumber::new(12)]
+        );
     }
 
     #[test]
     fn test_parse_depends_on() {
-        assert_eq!(parse_dependencies("Depends on #3"), vec![3]);
-        assert_eq!(parse_dependencies("depends on #7"), vec![7]);
+        assert_eq!(
+            parse_dependencies("Depends on #3"),
+            vec![IssueNumber::new(3)]
+        );
+        assert_eq!(
+            parse_dependencies("depends on #7"),
+            vec![IssueNumber::new(7)]
+        );
     }
 
     #[test]
     fn test_parse_blocked_by_list() {
-        assert_eq!(parse_dependencies("blockedBy: [1, 2, 3]"), vec![1, 2, 3]);
+        assert_eq!(
+            parse_dependencies("blockedBy: [1, 2, 3]"),
+            vec![
+                IssueNumber::new(1),
+                IssueNumber::new(2),
+                IssueNumber::new(3)
+            ]
+        );
     }
 
     #[test]
     fn test_parse_case_insensitive() {
-        assert_eq!(parse_dependencies("BLOCKED BY #99"), vec![99]);
-        assert_eq!(parse_dependencies("DEPENDS ON #42"), vec![42]);
-        assert_eq!(parse_dependencies("BLOCKEDBY: [10, 20]"), vec![10, 20]);
+        assert_eq!(
+            parse_dependencies("BLOCKED BY #99"),
+            vec![IssueNumber::new(99)]
+        );
+        assert_eq!(
+            parse_dependencies("DEPENDS ON #42"),
+            vec![IssueNumber::new(42)]
+        );
+        assert_eq!(
+            parse_dependencies("BLOCKEDBY: [10, 20]"),
+            vec![IssueNumber::new(10), IssueNumber::new(20)]
+        );
     }
 
     #[test]
     fn test_parse_multiple_patterns() {
         let body = "Blocked by #1\nDepends on #2\nblockedBy: [3, 4]";
-        assert_eq!(parse_dependencies(body), vec![1, 2, 3, 4]);
+        assert_eq!(
+            parse_dependencies(body),
+            vec![
+                IssueNumber::new(1),
+                IssueNumber::new(2),
+                IssueNumber::new(3),
+                IssueNumber::new(4)
+            ]
+        );
     }
 
     #[test]
@@ -179,7 +224,7 @@ mod tests {
     #[test]
     fn test_parse_deduplication() {
         let body = "Blocked by #5\nDepends on #5";
-        assert_eq!(parse_dependencies(body), vec![5]);
+        assert_eq!(parse_dependencies(body), vec![IssueNumber::new(5)]);
     }
 
     // --- DependencyGraph tests ---
@@ -211,7 +256,7 @@ mod tests {
     fn test_graph_unblocks_when_done() {
         let tasks = vec![make_task(1, "No deps"), make_task(2, "Blocked by #1")];
         let graph = DependencyGraph::build(&tasks);
-        let done: HashSet<u64> = [1].into_iter().collect();
+        let done: HashSet<IssueNumber> = [IssueNumber::new(1)].into_iter().collect();
         let eligible = graph.filter_eligible(tasks, &done);
         assert_eq!(eligible.len(), 2);
     }
@@ -220,7 +265,7 @@ mod tests {
     fn test_graph_partial_unblock() {
         let tasks = vec![make_task(1, "No deps"), make_task(2, "blockedBy: [1, 99]")];
         let graph = DependencyGraph::build(&tasks);
-        let done: HashSet<u64> = [1].into_iter().collect();
+        let done: HashSet<IssueNumber> = [IssueNumber::new(1)].into_iter().collect();
         let eligible = graph.filter_eligible(tasks, &done);
         // Task 2 still blocked by #99
         assert_eq!(eligible.len(), 1);
@@ -298,7 +343,7 @@ mod tests {
             make_task(2, "Blocked by #1"),
         ];
         let graph = DependencyGraph::build(&tasks);
-        let done: HashSet<u64> = [99].into_iter().collect();
+        let done: HashSet<IssueNumber> = [IssueNumber::new(99)].into_iter().collect();
         let eligible = graph.filter_eligible(tasks, &done);
         // Both eligible: cycle deps ignored, external #99 is done
         assert_eq!(eligible.len(), 2);
@@ -321,7 +366,7 @@ mod tests {
         assert_eq!(eligible[0].id, "2");
 
         // #50 done: 1 unblocked, 3 still blocked by #60
-        let done: HashSet<u64> = [50].into_iter().collect();
+        let done: HashSet<IssueNumber> = [IssueNumber::new(50)].into_iter().collect();
         let eligible = graph.filter_eligible(tasks.clone(), &done);
         assert_eq!(eligible.len(), 2);
         let ids: Vec<&str> = eligible.iter().map(|t| t.id.as_str()).collect();
@@ -329,7 +374,9 @@ mod tests {
         assert!(ids.contains(&"2"));
 
         // Both #50 and #60 done: all unblocked
-        let done: HashSet<u64> = [50, 60].into_iter().collect();
+        let done: HashSet<IssueNumber> = [IssueNumber::new(50), IssueNumber::new(60)]
+            .into_iter()
+            .collect();
         let eligible = graph.filter_eligible(tasks, &done);
         assert_eq!(eligible.len(), 3);
     }
@@ -369,7 +416,7 @@ mod tests {
         assert!(ids.contains(&"4"));
 
         // Mark task 3 as done: task 1's cross-cycle dep resolved
-        let done: HashSet<u64> = [3].into_iter().collect();
+        let done: HashSet<IssueNumber> = [IssueNumber::new(3)].into_iter().collect();
         let eligible = graph.filter_eligible(tasks, &done);
         assert_eq!(eligible.len(), 4);
     }
@@ -389,7 +436,7 @@ mod tests {
         assert_eq!(eligible.len(), 1);
         assert_eq!(eligible[0].id, "20");
 
-        let done: HashSet<u64> = [20].into_iter().collect();
+        let done: HashSet<IssueNumber> = [IssueNumber::new(20)].into_iter().collect();
         let eligible = graph.filter_eligible(tasks, &done);
         assert_eq!(eligible.len(), 2);
         let ids: Vec<&str> = eligible.iter().map(|t| t.id.as_str()).collect();

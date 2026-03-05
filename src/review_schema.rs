@@ -1,3 +1,5 @@
+//! Review finding JSON schema, parsing, severity classification, and rendering.
+
 use std::collections::BTreeMap;
 use std::fmt::Write;
 

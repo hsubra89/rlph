@@ -1,3 +1,5 @@
+//! Scheduling logic for batching and ordering finding fixes.
+
 use std::collections::HashSet;
 
 use crate::fix_comment::FixItem;
@@ -88,6 +90,7 @@ mod tests {
     use super::*;
     use crate::fix_comment::{FindingState, FixItem};
     use crate::fix_deps::FindingDeps;
+    use crate::ids::CommentId;
     use crate::review_schema::{ReviewFinding, Severity};
 
     // --- helpers ---
@@ -108,7 +111,7 @@ mod tests {
         FixItem {
             finding: finding(id, severity, deps),
             state: FindingState::Queued,
-            comment_id: 0,
+            comment_id: CommentId::new(0),
             rocket_reaction_ids: vec![],
         }
     }

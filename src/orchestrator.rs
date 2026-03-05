@@ -1,3 +1,5 @@
+//! Core orchestration loop: choose task → implement → review → submit.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,6 +14,7 @@ use crate::deps::DependencyGraph;
 use crate::diff_position_mapper::DiffPositionMapper;
 use crate::diff_position_mapper::FallbackKind;
 use crate::error::{Error, Result};
+use crate::ids::{IssueNumber, PrNumber};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
     FallbackContext, ReviewFinding, SchemaName, Verdict, correction_prompt,
@@ -52,7 +55,7 @@ pub struct ReviewInvocation {
     pub mark_in_review_task_id: Option<String>,
     pub worktree_info: WorktreeInfo,
     pub vars: HashMap<String, String>,
-    pub comment_pr_number: Option<u64>,
+    pub comment_pr_number: Option<PrNumber>,
 }
 
 /// Factory for creating review-phase runners. Defaults to `build_runner`.
@@ -82,7 +85,7 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
             phase.agent_model.as_deref(),
             phase.agent_effort.as_deref(),
             phase.agent_variant.as_deref(),
-            phase.agent_timeout.map(Duration::from_secs),
+            phase.agent_timeout,
             timeout_retries,
         );
         if self.stream {
@@ -104,7 +107,7 @@ impl ReviewRunnerFactory for DefaultReviewRunnerFactory {
             step.agent_model.as_deref(),
             step.agent_effort.as_deref(),
             step.agent_variant.as_deref(),
-            step.agent_timeout.map(Duration::from_secs),
+            step.agent_timeout,
             timeout_retries,
         );
         if self.stream {
@@ -169,12 +172,12 @@ pub trait ProgressReporter: Send + Sync {
     // Iteration-level
     fn fetching_tasks(&self);
     fn tasks_found(&self, count: usize);
-    fn task_selected(&self, issue_number: u64, title: &str);
+    fn task_selected(&self, issue_number: IssueNumber, title: &str);
     fn implement_started(&self);
     /// Fires after a new PR is submitted (inside `run_implement_review`).
     /// Skipped in dry-run mode and when an existing PR is reused.
     fn pr_created(&self, url: &str);
-    fn iteration_complete(&self, issue_number: u64, title: &str);
+    fn iteration_complete(&self, issue_number: IssueNumber, title: &str);
 
     // Review (existing, unchanged)
     fn phases_started(&self, names: &[String]);
@@ -197,7 +200,7 @@ impl ProgressReporter for StderrReporter {
         eprintln!("[rlph] Found {count} eligible task(s)");
     }
 
-    fn task_selected(&self, issue_number: u64, title: &str) {
+    fn task_selected(&self, issue_number: IssueNumber, title: &str) {
         eprintln!("[rlph] Selected #{issue_number}: {title}");
     }
 
@@ -209,7 +212,7 @@ impl ProgressReporter for StderrReporter {
         eprintln!("[rlph] PR created: {url}");
     }
 
-    fn iteration_complete(&self, issue_number: u64, title: &str) {
+    fn iteration_complete(&self, issue_number: IssueNumber, title: &str) {
         eprintln!("[rlph] Done with #{issue_number}: {title}");
     }
 
@@ -383,12 +386,9 @@ impl<
                 break;
             }
 
-            info!(poll_seconds = self.config.poll_seconds, "polling again");
-            let stop = Self::wait_for_poll_or_shutdown(
-                Duration::from_secs(self.config.poll_seconds),
-                &mut shutdown,
-            )
-            .await;
+            info!(poll_seconds = ?self.config.poll_seconds, "polling again");
+            let stop =
+                Self::wait_for_poll_or_shutdown(self.config.poll_seconds, &mut shutdown).await;
             if stop {
                 info!("shutdown requested, exiting loop");
                 break;
@@ -495,16 +495,16 @@ impl<
             self.parse_task_selection()?
         };
         let issue_number = parse_issue_number(&task_id)?;
-        info!(task_id, issue_number, "selected task");
+        info!(task_id, issue_number = %issue_number, "selected task");
         let existing_pr_number = if self.config.dry_run {
             info!("dry run — skipping existing PR lookup");
             None
         } else {
             let pr_number = self.submission.find_existing_pr_for_issue(issue_number)?;
             if let Some(pr) = pr_number {
-                info!(pr, issue_number, "existing PR found");
+                info!(pr = %pr, issue_number = %issue_number, "existing PR found");
             } else {
-                info!(issue_number, "no existing PR found");
+                info!(issue_number = %issue_number, "no existing PR found");
             }
             pr_number
         };
@@ -590,9 +590,9 @@ impl<
     async fn run_implement_review(
         &self,
         task: &Task,
-        issue_number: u64,
+        issue_number: IssueNumber,
         worktree_info: &WorktreeInfo,
-        existing_pr_number: Option<u64>,
+        existing_pr_number: Option<PrNumber>,
     ) -> Result<()> {
         let mut vars = self.initial_task_vars(task, worktree_info);
 
@@ -612,7 +612,7 @@ impl<
 
         // 9. Submit PR (skip if choose agent reported an existing PR)
         let pr_number = if let Some(pr) = existing_pr_number {
-            info!(pr, "skipping PR submission — existing PR");
+            info!(pr = %pr, "skipping PR submission — existing PR");
             Some(pr)
         } else if !self.config.dry_run {
             info!("submitting PR");
@@ -645,7 +645,7 @@ impl<
         &self,
         vars: &HashMap<String, String>,
         worktree_info: &WorktreeInfo,
-        pr_number: Option<u64>,
+        pr_number: Option<PrNumber>,
     ) -> Result<()> {
         self.state_mgr.update_phase("review")?;
 
@@ -940,7 +940,7 @@ pub async fn retry_with_correction<T>(
     agent_model: Option<&str>,
     agent_effort: Option<&str>,
     agent_variant: Option<&str>,
-    agent_timeout: Option<u64>,
+    agent_timeout: Option<Duration>,
     schema: SchemaName,
     initial_error: &str,
     working_dir: &Path,
@@ -970,7 +970,7 @@ pub async fn retry_with_correction<T>(
                 session_id,
                 &prompt,
                 working_dir,
-                agent_timeout.map(Duration::from_secs),
+                agent_timeout,
             )
             .await
         {
@@ -1019,7 +1019,7 @@ pub fn build_task_vars(
 
 fn build_inline_review_comments(
     submission: &(impl SubmissionBackend + ?Sized),
-    pr_number: u64,
+    pr_number: PrNumber,
     findings: &[ReviewFinding],
 ) -> Result<Vec<InlineReviewComment>> {
     let diff = submission.fetch_pr_diff(pr_number)?;
@@ -1081,10 +1081,11 @@ fn build_inline_review_comments(
 }
 
 /// Extract the issue number from a task ID like "gh-42".
-pub fn parse_issue_number(task_id: &str) -> Result<u64> {
+pub fn parse_issue_number(task_id: &str) -> Result<IssueNumber> {
     task_id
         .strip_prefix("gh-")
         .and_then(|n| n.parse::<u64>().ok())
+        .map(IssueNumber::new)
         .ok_or_else(|| {
             Error::Orchestrator(format!("invalid task id: {task_id}, expected gh-<number>"))
         })
@@ -1093,6 +1094,7 @@ pub fn parse_issue_number(task_id: &str) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{CommentId, PrNumber};
     use crate::review_schema::{ReviewFinding, Severity};
     use crate::submission::PrComment;
 
@@ -1111,32 +1113,35 @@ mod tests {
             unreachable!("not used in inline review mapping tests")
         }
 
-        fn find_existing_pr_for_issue(&self, _issue_number: u64) -> Result<Option<u64>> {
+        fn find_existing_pr_for_issue(
+            &self,
+            _issue_number: IssueNumber,
+        ) -> Result<Option<PrNumber>> {
             Ok(None)
         }
 
-        fn upsert_review_comment(&self, _pr_number: u64, _body: &str) -> Result<()> {
+        fn upsert_review_comment(&self, _pr_number: PrNumber, _body: &str) -> Result<()> {
             Ok(())
         }
 
         fn submit_inline_pr_review(
             &self,
-            _pr_number: u64,
+            _pr_number: PrNumber,
             _event: PullRequestReviewEvent,
             _comments: &[InlineReviewComment],
         ) -> Result<()> {
             Ok(())
         }
 
-        fn fetch_pr_diff(&self, _pr_number: u64) -> Result<String> {
+        fn fetch_pr_diff(&self, _pr_number: PrNumber) -> Result<String> {
             Ok(self.diff.clone())
         }
 
-        fn fetch_pr_comments(&self, _pr_number: u64) -> Result<Vec<PrComment>> {
+        fn fetch_pr_comments(&self, _pr_number: PrNumber) -> Result<Vec<PrComment>> {
             Ok(vec![])
         }
 
-        fn fetch_comment_by_id(&self, _comment_id: u64) -> Result<PrComment> {
+        fn fetch_comment_by_id(&self, _comment_id: CommentId) -> Result<PrComment> {
             Err(Error::Submission(
                 "not used in inline review mapping tests".to_string(),
             ))
@@ -1144,34 +1149,38 @@ mod tests {
 
         fn fetch_pr_review_comments(
             &self,
-            _pr_number: u64,
+            _pr_number: PrNumber,
         ) -> Result<Vec<crate::submission::PrReviewComment>> {
             Ok(vec![])
         }
 
         fn list_review_comment_reactions(
             &self,
-            _comment_id: u64,
+            _comment_id: CommentId,
         ) -> Result<Vec<crate::submission::Reaction>> {
             Ok(vec![])
         }
 
-        fn add_review_comment_reaction(&self, _comment_id: u64, _reaction: &str) -> Result<()> {
+        fn add_review_comment_reaction(
+            &self,
+            _comment_id: CommentId,
+            _reaction: &str,
+        ) -> Result<()> {
             Ok(())
         }
 
         fn delete_review_comment_reaction(
             &self,
-            _comment_id: u64,
-            _reaction_id: u64,
+            _comment_id: CommentId,
+            _reaction_id: CommentId,
         ) -> Result<()> {
             Ok(())
         }
 
         fn reply_to_review_comment(
             &self,
-            _pr_number: u64,
-            _comment_id: u64,
+            _pr_number: PrNumber,
+            _comment_id: CommentId,
             _body: &str,
         ) -> Result<()> {
             Ok(())
@@ -1180,9 +1189,9 @@ mod tests {
 
     #[test]
     fn test_parse_issue_number_valid() {
-        assert_eq!(parse_issue_number("gh-1").unwrap(), 1);
-        assert_eq!(parse_issue_number("gh-42").unwrap(), 42);
-        assert_eq!(parse_issue_number("gh-999").unwrap(), 999);
+        assert_eq!(parse_issue_number("gh-1").unwrap(), IssueNumber::new(1));
+        assert_eq!(parse_issue_number("gh-42").unwrap(), IssueNumber::new(42));
+        assert_eq!(parse_issue_number("gh-999").unwrap(), IssueNumber::new(999));
     }
 
     #[test]
@@ -1247,8 +1256,12 @@ mod tests {
             depends_on: vec!["base-check".to_string()],
         };
 
-        let comments =
-            build_inline_review_comments(&submission, 7, &[dep.clone(), finding.clone()]).unwrap();
+        let comments = build_inline_review_comments(
+            &submission,
+            PrNumber::new(7),
+            &[dep.clone(), finding.clone()],
+        )
+        .unwrap();
         let body = comments
             .iter()
             .find(|c| c.body.contains("Use after free"))
@@ -1275,7 +1288,8 @@ mod tests {
             depends_on: vec![],
         };
 
-        let comments = build_inline_review_comments(&submission, 8, &[finding]).unwrap();
+        let comments =
+            build_inline_review_comments(&submission, PrNumber::new(8), &[finding]).unwrap();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].line, 11);
         assert!(comments[0].body.contains(
@@ -1299,7 +1313,8 @@ mod tests {
             depends_on: vec![],
         };
 
-        let comments = build_inline_review_comments(&submission, 9, &[finding]).unwrap();
+        let comments =
+            build_inline_review_comments(&submission, PrNumber::new(9), &[finding]).unwrap();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].path, "src/lib.rs");
         assert_eq!(comments[0].line, 1);
