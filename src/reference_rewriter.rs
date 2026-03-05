@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-static ISSUE_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+pub(crate) static ISSUE_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:issues|pull)/([0-9]+)|https://linear\.app/[A-Za-z0-9_-]+/issue/([A-Za-z0-9-]+)",
     )

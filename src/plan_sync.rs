@@ -6,18 +6,11 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::error::Result;
-use crate::reference_rewriter::rewrite_issue_urls;
+use crate::reference_rewriter::{ISSUE_URL_RE, rewrite_issue_urls};
 use crate::sources::{Task, TaskSource};
 use crate::worktree::WorktreeManager;
 
 const MAX_REFERENCE_DEPTH: usize = 4;
-
-static ISSUE_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:issues|pull)/([0-9]+)|https://linear\.app/[A-Za-z0-9_-]+/issue/([A-Za-z0-9-]+)",
-    )
-    .expect("issue URL regex compiles")
-});
 
 static LINEAR_NUMERIC_SUFFIX_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z]+-([0-9]+)$").expect("linear suffix regex compiles"));
