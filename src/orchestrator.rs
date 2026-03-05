@@ -15,6 +15,7 @@ use crate::diff_position_mapper::DiffPositionMapper;
 use crate::diff_position_mapper::FallbackKind;
 use crate::error::{Error, Result};
 use crate::ids::{IssueNumber, PrNumber};
+use crate::plan_sync::list_plan_files;
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
     FallbackContext, ReviewFinding, SchemaName, Verdict, correction_prompt,
@@ -681,7 +682,7 @@ impl<
         worktree_info: &WorktreeInfo,
         existing_pr_number: Option<PrNumber>,
     ) -> Result<()> {
-        let mut vars = self.initial_task_vars(task, worktree_info);
+        let mut vars = self.initial_task_vars(task, worktree_info)?;
 
         // 7. Implement phase
         self.reporter.implement_started();
@@ -963,7 +964,11 @@ impl<
         Ok(selection.id)
     }
 
-    fn initial_task_vars(&self, task: &Task, worktree: &WorktreeInfo) -> HashMap<String, String> {
+    fn initial_task_vars(
+        &self,
+        task: &Task,
+        worktree: &WorktreeInfo,
+    ) -> Result<HashMap<String, String>> {
         let mut vars = build_task_vars(
             task,
             &self.repo_root,
@@ -971,9 +976,14 @@ impl<
             &worktree.path,
             &self.config.base_branch,
         );
+
+        if let Some(plan_path) = self.config.plan_path.as_deref() {
+            add_plan_prompt_vars(&mut vars, &self.repo_root, plan_path)?;
+        }
+
         vars.insert("pr_number".to_string(), String::new());
         vars.insert("pr_branch".to_string(), String::new());
-        vars
+        Ok(vars)
     }
 
     fn push_branch(&self, worktree: &WorktreeInfo) -> Result<()> {
@@ -991,6 +1001,27 @@ impl<
         info!(branch = worktree.branch, "pushed branch");
         Ok(())
     }
+}
+
+fn add_plan_prompt_vars(
+    vars: &mut HashMap<String, String>,
+    repo_root: &Path,
+    plan_path: &str,
+) -> Result<()> {
+    let plan_dir = repo_root.join(plan_path);
+    let plan_files = list_plan_files(&plan_dir)?;
+    let plan_refs = plan_files
+        .iter()
+        .map(|path| {
+            let rel = path.strip_prefix(repo_root).unwrap_or(path);
+            format!("@{}", rel.display())
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    vars.insert("plan_dir".to_string(), plan_path.to_string());
+    vars.insert("plan_files".to_string(), plan_refs);
+    Ok(())
 }
 
 /// Attempt to resume a session with a correction prompt when JSON parsing fails.
@@ -1166,6 +1197,7 @@ mod tests {
     use crate::review_schema::{ReviewFinding, Severity};
     use crate::submission::PrComment;
     use crate::test_helpers::make_finding;
+    use tempfile::TempDir;
 
     struct InlineReviewTestSubmission {
         diff: String,
@@ -1379,5 +1411,26 @@ mod tests {
         assert!(comments[0].body.contains(
             "applies to `src/missing.rs:50` but is shown here because that file is not in the diff"
         ));
+    }
+
+    #[test]
+    fn test_add_plan_prompt_vars_populates_plan_dir_and_files() {
+        let temp = TempDir::new().unwrap();
+        let plan_dir = temp.path().join("plans/my-feature");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(plan_dir.join("02-task.md"), "task").unwrap();
+        std::fs::write(plan_dir.join("01-context.md"), "context").unwrap();
+
+        let mut vars = HashMap::new();
+        add_plan_prompt_vars(&mut vars, temp.path(), "plans/my-feature").unwrap();
+
+        assert_eq!(
+            vars.get("plan_dir").map(String::as_str),
+            Some("plans/my-feature")
+        );
+        assert_eq!(
+            vars.get("plan_files").map(String::as_str),
+            Some("@plans/my-feature/01-context.md, @plans/my-feature/02-task.md")
+        );
     }
 }

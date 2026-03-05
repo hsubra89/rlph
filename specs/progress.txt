@@ -31,3 +31,9 @@
 - Updated PR body generation for local plans to reference the plan path instead of adding `Resolves #...`.
 - Added integration coverage `test_local_plan_mode_skips_task_source_fetch` using a fail-fast `TaskSource` implementation.
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_local_plan_mode_skips_task_source_fetch)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 3 plumbing task: pass local plan file list through orchestrator prompt vars.
+- Updated `Orchestrator::initial_task_vars` to resolve configured `plan_path` files and inject `plan_dir` + `plan_files` template variables.
+- Added helper `add_plan_prompt_vars` to format deterministic `@plans/...` references for prompt templates.
+- Added unit test `test_add_plan_prompt_vars_populates_plan_dir_and_files` and adjusted local-plan integration fixture to include a real plan file.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_add_plan_prompt_vars_populates_plan_dir_and_files) or test(test_local_plan_mode_skips_task_source_fetch)'` (all pass).

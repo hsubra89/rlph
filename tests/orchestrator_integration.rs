@@ -917,6 +917,10 @@ async fn test_local_plan_mode_skips_task_source_fetch() {
     let counts = Arc::new(RunnerCounts::default());
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
+    let plan_dir = repo_dir.path().join("plans/my-feature");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    std::fs::write(plan_dir.join("task.md"), "- implement this").unwrap();
+
     let mut config = make_config(true);
     config.plan_path = Some("plans/my-feature".to_string());
 

@@ -100,7 +100,7 @@ For local plans: the plan directory must already exist and contain at least one 
 - [x] Local mode skips `TaskSource` fetch entirely
 - [x] Error if the provided plan path doesn't exist or is empty
 - [ ] Task identity (for branch name, state) is derived from the directory name
-- [ ] The plan file list is correctly resolved and passed through the orchestrator
+- [x] The plan file list is correctly resolved and passed through the orchestrator
 
 ---
 
