@@ -1,6 +1,7 @@
 //! Core orchestration loop: choose task → implement → review → submit.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -15,7 +16,7 @@ use crate::diff_position_mapper::DiffPositionMapper;
 use crate::diff_position_mapper::FallbackKind;
 use crate::error::{Error, Result};
 use crate::ids::{IssueNumber, PrNumber};
-use crate::plan_sync::list_plan_files;
+use crate::plan_sync::{list_plan_files, sync_to_local};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
     FallbackContext, ReviewFinding, SchemaName, Verdict, correction_prompt,
@@ -561,6 +562,8 @@ impl<
             "worktree created"
         );
 
+        let plan_dir = self.sync_remote_plan_to_worktree(issue_number, &worktree_info)?;
+
         // Update state
         self.state_mgr.set_current_task(
             &task_id,
@@ -576,6 +579,7 @@ impl<
                 Some(task.id.as_str()),
                 &worktree_info,
                 existing_pr_number,
+                Some(&plan_dir),
             )
             .await;
 
@@ -623,6 +627,7 @@ impl<
 
         info!("creating worktree for local plan");
         let worktree_info = self.worktree_mgr.create_for_local_plan(&slug)?;
+        let plan_dir = self.copy_local_plan_to_worktree(&worktree_info)?;
 
         self.state_mgr.set_current_task(
             &task_id,
@@ -631,7 +636,7 @@ impl<
         )?;
 
         let result = self
-            .run_implement_review(&task, None, None, &worktree_info, None)
+            .run_implement_review(&task, None, None, &worktree_info, None, Some(&plan_dir))
             .await;
 
         self.cleanup_worktree(&worktree_info.path);
@@ -681,8 +686,9 @@ impl<
         mark_in_review_task_id: Option<&str>,
         worktree_info: &WorktreeInfo,
         existing_pr_number: Option<PrNumber>,
+        plan_dir: Option<&str>,
     ) -> Result<()> {
-        let mut vars = self.initial_task_vars(task, worktree_info)?;
+        let mut vars = self.initial_task_vars(task, worktree_info, plan_dir)?;
 
         // 7. Implement phase
         self.reporter.implement_started();
@@ -968,6 +974,7 @@ impl<
         &self,
         task: &Task,
         worktree: &WorktreeInfo,
+        plan_dir: Option<&str>,
     ) -> Result<HashMap<String, String>> {
         let mut vars = build_task_vars(
             task,
@@ -977,13 +984,43 @@ impl<
             &self.config.base_branch,
         );
 
-        if let Some(plan_path) = self.config.plan_path.as_deref() {
-            add_plan_prompt_vars(&mut vars, &self.repo_root, plan_path)?;
+        if let Some(plan_path) = plan_dir {
+            add_plan_prompt_vars(&mut vars, &worktree.path, plan_path)?;
         }
 
         vars.insert("pr_number".to_string(), String::new());
         vars.insert("pr_branch".to_string(), String::new());
         Ok(vars)
+    }
+
+    fn sync_remote_plan_to_worktree(
+        &self,
+        issue_number: IssueNumber,
+        worktree: &WorktreeInfo,
+    ) -> Result<String> {
+        let plans_root = worktree.path.join("plans");
+        let synced = sync_to_local(&self.source, &issue_number.to_string(), &plans_root)?;
+        let rel = synced.path.strip_prefix(&worktree.path).map_err(|e| {
+            Error::Orchestrator(format!(
+                "failed to relativize synced plan dir {} against worktree {}: {e}",
+                synced.path.display(),
+                worktree.path.display()
+            ))
+        })?;
+        let plan_dir = rel.to_string_lossy().to_string();
+        commit_plan_files(&worktree.path, &plan_dir)?;
+        Ok(plan_dir)
+    }
+
+    fn copy_local_plan_to_worktree(&self, worktree: &WorktreeInfo) -> Result<String> {
+        let plan_path = self.config.plan_path.as_deref().ok_or_else(|| {
+            Error::Orchestrator("missing plan_path in local plan mode".to_string())
+        })?;
+        let source = self.repo_root.join(plan_path);
+        let destination = worktree.path.join(plan_path);
+        copy_dir_recursive(&source, &destination)?;
+        commit_plan_files(&worktree.path, plan_path)?;
+        Ok(plan_path.to_string())
     }
 
     fn push_branch(&self, worktree: &WorktreeInfo) -> Result<()> {
@@ -1021,6 +1058,59 @@ fn add_plan_prompt_vars(
 
     vars.insert("plan_dir".to_string(), plan_path.to_string());
     vars.insert("plan_files".to_string(), plan_refs);
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else if path.is_file() {
+            fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn commit_plan_files(worktree_path: &Path, plan_dir: &str) -> Result<()> {
+    let add = Command::new("git")
+        .args(["add", "--", plan_dir])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| Error::Orchestrator(format!("failed to stage plan files: {e}")))?;
+    if !add.status.success() {
+        return Err(Error::Orchestrator(format!(
+            "git add for plan files failed: {}",
+            String::from_utf8_lossy(&add.stderr)
+        )));
+    }
+
+    let staged = Command::new("git")
+        .args(["diff", "--cached", "--quiet", "--", plan_dir])
+        .current_dir(worktree_path)
+        .status()
+        .map_err(|e| Error::Orchestrator(format!("failed to inspect staged plan files: {e}")))?;
+    if staged.success() {
+        return Ok(());
+    }
+
+    let commit = Command::new("git")
+        .args(["commit", "-m", "chore: add plan files"])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| Error::Orchestrator(format!("failed to commit plan files: {e}")))?;
+    if !commit.status.success() {
+        return Err(Error::Orchestrator(format!(
+            "git commit for plan files failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        )));
+    }
+
+    info!(plan_dir, "committed plan files");
     Ok(())
 }
 
@@ -1198,6 +1288,20 @@ mod tests {
     use crate::submission::PrComment;
     use crate::test_helpers::make_finding;
     use tempfile::TempDir;
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     struct InlineReviewTestSubmission {
         diff: String,
@@ -1411,6 +1515,51 @@ mod tests {
         assert!(comments[0].body.contains(
             "applies to `src/missing.rs:50` but is shown here because that file is not in the diff"
         ));
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_copies_nested_files() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("src");
+        let dst = temp.path().join("dst");
+
+        std::fs::create_dir_all(src.join("nested/deeper")).unwrap();
+        std::fs::write(src.join("top.md"), "top").unwrap();
+        std::fs::write(src.join("nested/deeper/task.txt"), "nested").unwrap();
+
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert_eq!(std::fs::read_to_string(dst.join("top.md")).unwrap(), "top");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("nested/deeper/task.txt")).unwrap(),
+            "nested"
+        );
+    }
+
+    #[test]
+    fn test_commit_plan_files_creates_single_plan_commit() {
+        let temp = TempDir::new().unwrap();
+        run_git(temp.path(), &["init"]);
+        run_git(temp.path(), &["config", "user.email", "test@test.com"]);
+        run_git(temp.path(), &["config", "user.name", "Test"]);
+        run_git(temp.path(), &["commit", "--allow-empty", "-m", "init"]);
+
+        let plan_dir = temp.path().join("plans/feature-a");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(plan_dir.join("task.md"), "- do work").unwrap();
+
+        commit_plan_files(temp.path(), "plans/feature-a").unwrap();
+        commit_plan_files(temp.path(), "plans/feature-a").unwrap();
+
+        let log = std::process::Command::new("git")
+            .args(["log", "--pretty=%s"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(log.status.success());
+        let subjects = String::from_utf8_lossy(&log.stdout);
+        assert!(subjects.contains("chore: add plan files"));
+        assert_eq!(subjects.matches("chore: add plan files").count(), 1);
     }
 
     #[test]

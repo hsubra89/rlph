@@ -71,3 +71,13 @@
 - Added idempotent handling for ready transition: treats "already ready" CLI responses as success.
 - Added unit test `test_is_already_ready_error_detects_message` for ready-state error normalization.
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_is_already_ready_error_detects_message)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 task: plan files are now the first commit on worktree branches.
+- Updated orchestrator bootstrap to materialize plan files before implementation in both modes:
+  - Remote mode now runs `plan_sync::sync_to_local(...)` directly into the issue worktree `plans/` directory.
+  - Local mode now copies the configured `plan_path` directory into the local-plan worktree so `@plans/...` references resolve at runtime.
+- Added `commit_plan_files(...)` and wired it immediately after plan materialization to create a dedicated first commit (`chore: add plan files`) before implement/review.
+- Updated prompt var resolution to read `plan_dir`/`plan_files` from the active worktree root (not repo root), so prompts reference the synced/copied plan files.
+- Added unit tests: `test_copy_dir_recursive_copies_nested_files` and `test_commit_plan_files_creates_single_plan_commit`.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Plan files are committed as the first commit on the worktree branch".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_copy_dir_recursive_copies_nested_files) or test(test_commit_plan_files_creates_single_plan_commit) or test(test_local_plan_mode_skips_task_source_fetch) or test(test_choose_and_implement_run_from_worktree_roots)'` (all pass).

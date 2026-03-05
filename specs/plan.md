@@ -160,7 +160,7 @@ The `SubmissionBackend` trait needs a way to submit draft PRs and mark them read
 
 ### Acceptance criteria
 
-- [ ] Plan files are committed as the first commit on the worktree branch
+- [x] Plan files are committed as the first commit on the worktree branch
 - [ ] Draft PR is opened immediately after the plan commit
 - [ ] Remote-sourced draft PRs include `Resolves #<issue_number>` in body
 - [ ] Local-plan draft PRs reference the plan folder in body
