@@ -732,14 +732,22 @@ impl<
                 }
 
                 let selected_task_id = self.parse_task_selection_from(&worktree_info.path)?;
-                vars.insert("selected_task_id".to_string(), selected_task_id);
+                vars.insert("selected_task_id".to_string(), selected_task_id.clone());
 
                 self.reporter.implement_started();
                 info!(cycle, "running implement phase");
+                let head_before_cycle = git_head_oid(&worktree_info.path)?;
                 let impl_prompt = self.prompt_engine.render_phase("implement", &vars)?;
                 self.runner
                     .run(Phase::Implement, &impl_prompt, &worktree_info.path)
                     .await?;
+
+                ensure_cycle_commit(
+                    &worktree_info.path,
+                    &selected_task_id,
+                    cycle,
+                    head_before_cycle.as_deref(),
+                )?;
 
                 implemented_cycles += 1;
 
@@ -1201,6 +1209,76 @@ fn commit_plan_files(worktree_path: &Path, plan_dir: &str) -> Result<()> {
     }
 
     info!(plan_dir, "committed plan files");
+    Ok(())
+}
+
+fn git_head_oid(worktree_path: &Path) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| Error::Orchestrator(format!("failed to resolve HEAD: {e}")))?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let oid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if oid.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(oid))
+    }
+}
+
+fn ensure_cycle_commit(
+    worktree_path: &Path,
+    selected_task_id: &str,
+    cycle: u32,
+    head_before_cycle: Option<&str>,
+) -> Result<()> {
+    let head_after_implement = git_head_oid(worktree_path)?;
+    if head_after_implement.as_deref() != head_before_cycle {
+        info!(cycle, selected_task_id, "implement phase created a commit");
+        return Ok(());
+    }
+
+    let stage = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| Error::Orchestrator(format!("failed to stage implement changes: {e}")))?;
+    if !stage.status.success() {
+        return Err(Error::Orchestrator(format!(
+            "git add for implement changes failed: {}",
+            String::from_utf8_lossy(&stage.stderr)
+        )));
+    }
+
+    let commit_message = format!("chore: complete plan sub-task {selected_task_id}");
+    let commit = Command::new("git")
+        .args(["commit", "--allow-empty", "-m", commit_message.as_str()])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| Error::Orchestrator(format!("failed to commit implement changes: {e}")))?;
+    if !commit.status.success() {
+        return Err(Error::Orchestrator(format!(
+            "git commit for implement changes failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        )));
+    }
+
+    let head_after_commit = git_head_oid(worktree_path)?;
+    if head_after_commit.as_deref() == head_before_cycle {
+        return Err(Error::Orchestrator(
+            "failed to record a new commit for implement cycle".to_string(),
+        ));
+    }
+
+    info!(
+        cycle,
+        selected_task_id, "recorded commit for implement cycle"
+    );
     Ok(())
 }
 
@@ -1671,5 +1749,56 @@ mod tests {
             vars.get("plan_files").map(String::as_str),
             Some("@plans/my-feature/01-context.md, @plans/my-feature/02-task.md")
         );
+    }
+
+    #[test]
+    fn test_ensure_cycle_commit_creates_allow_empty_commit_when_needed() {
+        let temp = TempDir::new().unwrap();
+        run_git(temp.path(), &["init"]);
+        run_git(temp.path(), &["config", "user.email", "test@test.com"]);
+        run_git(temp.path(), &["config", "user.name", "Test"]);
+        run_git(temp.path(), &["commit", "--allow-empty", "-m", "init"]);
+
+        let before = git_head_oid(temp.path()).unwrap();
+        ensure_cycle_commit(temp.path(), "local-my-feature", 1, before.as_deref()).unwrap();
+
+        let log = Command::new("git")
+            .args(["log", "--pretty=%s", "-1"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(log.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout).trim(),
+            "chore: complete plan sub-task local-my-feature"
+        );
+    }
+
+    #[test]
+    fn test_ensure_cycle_commit_skips_when_head_already_advanced() {
+        let temp = TempDir::new().unwrap();
+        run_git(temp.path(), &["init"]);
+        run_git(temp.path(), &["config", "user.email", "test@test.com"]);
+        run_git(temp.path(), &["config", "user.name", "Test"]);
+        run_git(temp.path(), &["commit", "--allow-empty", "-m", "init"]);
+
+        let before = git_head_oid(temp.path()).unwrap();
+        run_git(
+            temp.path(),
+            &["commit", "--allow-empty", "-m", "agent commit"],
+        );
+
+        ensure_cycle_commit(temp.path(), "gh-42", 1, before.as_deref()).unwrap();
+
+        let log = Command::new("git")
+            .args(["log", "--pretty=%s"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(log.status.success());
+        let subjects = String::from_utf8_lossy(&log.stdout);
+        assert_eq!(subjects.lines().count(), 2);
+        assert!(subjects.contains("agent commit"));
+        assert!(!subjects.contains("chore: complete plan sub-task gh-42"));
     }
 }

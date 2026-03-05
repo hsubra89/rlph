@@ -114,3 +114,10 @@
 - Updated integration test runners to emit `NOTHING_LEFT` on second plan choose call, and updated assertions in loop/cwd/count tests to reflect choose→implement iterative behavior.
 - Updated plan status: marked complete for Phase 5 acceptance criteria "Inner loop runs choose → implement → commit cycles" and "Inner loop exits when choose agent outputs `NOTHING_LEFT`".
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_local_plan_mode_skips_task_source_fetch) or test(test_choose_and_implement_run_from_worktree_roots) or test(test_continuous_mode_polls_with_empty_results) or test(test_max_iterations_stops_at_limit) or test(test_continuous_shutdown_exits_between_iterations)'` (all pass; nextest reports one test as leaky).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 commit-discipline task: enforce one commit per choose→implement cycle.
+- Updated `Orchestrator::run_implement_review` to capture `HEAD` before each implement run and enforce commit advancement after implement.
+- Added `git_head_oid(...)` + `ensure_cycle_commit(...)`; if implement did not create a commit, orchestrator now creates a cycle commit (`chore: complete plan sub-task <id>`) with `--allow-empty` fallback so every cycle records a distinct commit.
+- Added unit tests: `test_ensure_cycle_commit_creates_allow_empty_commit_when_needed` and `test_ensure_cycle_commit_skips_when_head_already_advanced`.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Each cycle produces a separate commit".
+- Feedback loops run: `cargo fmt --all`, `cargo check`, `cargo nextest run -E 'test(test_ensure_cycle_commit_creates_allow_empty_commit_when_needed) or test(test_ensure_cycle_commit_skips_when_head_already_advanced)'`, `cargo nextest run -E 'test(test_local_plan_mode_skips_task_source_fetch) or test(test_draft_pr_created_before_implement_phase)'` (all pass).
