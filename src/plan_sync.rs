@@ -135,16 +135,7 @@ fn plan_slug(main_task: &Task) -> String {
         return slug;
     }
 
-    let mut cleaned = String::new();
-    for c in main_task.id.chars() {
-        if c.is_ascii_alphanumeric() {
-            cleaned.push(c.to_ascii_lowercase());
-        } else if !cleaned.ends_with('-') {
-            cleaned.push('-');
-        }
-    }
-
-    let cleaned = cleaned.trim_matches('-').to_string();
+    let cleaned = WorktreeManager::slugify(&main_task.id);
     if cleaned.is_empty() {
         "gh-task".to_string()
     } else {
