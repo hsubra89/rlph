@@ -18,6 +18,12 @@ use tokio::sync::watch;
 
 use common::{default_test_config, run_git, setup_git_repo};
 
+#[cfg(unix)]
+fn make_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 /// Create a remote PR branch with a commit.
 fn create_pr_branch(repo: &Path, branch: &str) {
     run_git(repo, &["checkout", "-b", branch]);
@@ -285,10 +291,7 @@ echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"comm
     );
     std::fs::write(&script_path, &script).unwrap();
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    make_executable(&script_path);
     script_path.to_str().unwrap().to_string()
 }
 
@@ -303,10 +306,7 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"wont_fix\\\",\\\"rea
 "#;
     std::fs::write(&script_path, script).unwrap();
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    make_executable(&script_path);
     script_path.to_str().unwrap().to_string()
 }
 
@@ -762,10 +762,7 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"fixed\\\",\\\"commit
 "#;
     std::fs::write(&script_path, script).unwrap();
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    make_executable(&script_path);
     f.config.fix = make_fix_step_config(script_path.to_str().unwrap().to_string());
     f.config.poll_seconds = 5;
 
@@ -1240,10 +1237,7 @@ echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"comm
     );
     std::fs::write(&script_path, &script).unwrap();
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    make_executable(&script_path);
     let agent_script = script_path.to_str().unwrap().to_string();
 
     let findings = vec![make_finding("conflict-finding")];
