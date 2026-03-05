@@ -18,21 +18,24 @@ pub struct Cli {
     /// Path to config file
     #[arg(long, global = true)]
     pub config: Option<String>,
+
+    #[command(flatten)]
+    pub agent: AgentArgs,
 }
 
-/// Agent identity args shared by Build and Prd subcommands.
+/// Agent identity args available on every subcommand.
 #[derive(Args, Debug, Clone, Default)]
 pub struct AgentArgs {
     /// Agent runner to use (claude, codex, opencode)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub runner: Option<String>,
 
     /// Agent binary to use (default: claude)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub agent_binary: Option<String>,
 
     /// Model for the agent to use (default for claude: claude-opus-4-6)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub agent_model: Option<String>,
 }
 
@@ -53,9 +56,6 @@ pub struct BuildArgs {
     /// Go through the full loop without pushing changes or marking issues
     #[arg(long)]
     pub dry_run: bool,
-
-    #[command(flatten)]
-    pub agent: AgentArgs,
 
     /// Submission backend to use (github, graphite)
     #[arg(long)]
@@ -102,12 +102,8 @@ impl Cli {
         }
     }
 
-    pub fn agent_args(&self) -> Option<&AgentArgs> {
-        match &self.command {
-            CliCommand::Build { args } => Some(&args.agent),
-            CliCommand::Prd { agent, .. } => Some(agent),
-            _ => None,
-        }
+    pub fn agent_args(&self) -> &AgentArgs {
+        &self.agent
     }
 }
 
@@ -142,9 +138,6 @@ pub enum CliCommand {
     Prd {
         /// Seed description for the PRD (optional)
         description: Option<String>,
-
-        #[command(flatten)]
-        agent: AgentArgs,
     },
 }
 
@@ -208,9 +201,9 @@ mod tests {
             "--worktree-dir",
             "/tmp/wt",
         ]);
+        assert_eq!(cli.agent.runner.as_deref(), Some("codex"));
         match cli.command {
             CliCommand::Build { args } => {
-                assert_eq!(args.agent.runner.as_deref(), Some("codex"));
                 assert_eq!(args.submission.as_deref(), Some("graphite"));
                 assert_eq!(args.poll_seconds, Some(30));
                 assert_eq!(args.worktree_dir.as_deref(), Some("/tmp/wt"));
@@ -305,16 +298,36 @@ mod tests {
             "my feature",
         ]);
         match cli.command {
-            CliCommand::Prd {
-                description,
-                ref agent,
-            } => {
+            CliCommand::Prd { description } => {
                 assert_eq!(description.as_deref(), Some("my feature"));
-                assert_eq!(agent.runner.as_deref(), Some("codex"));
             }
             _ => panic!("expected Prd subcommand"),
         }
+        assert_eq!(cli.agent.runner.as_deref(), Some("codex"));
         assert_eq!(cli.source.as_deref(), Some("linear"));
+    }
+
+    #[test]
+    fn test_parse_review_with_runner() {
+        let cli = Cli::parse_from(["rlph", "review", "99", "--runner", "codex"]);
+        match cli.command {
+            CliCommand::Review { pr_ref } => assert_eq!(pr_ref, "99"),
+            _ => panic!("expected Review subcommand"),
+        }
+        assert_eq!(cli.agent.runner.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn test_parse_fix_with_runner() {
+        let cli = Cli::parse_from(["rlph", "fix", "42", "--runner", "opencode"]);
+        match cli.command {
+            CliCommand::Fix { pr_ref, dry_run } => {
+                assert_eq!(pr_ref, "42");
+                assert!(!dry_run);
+            }
+            _ => panic!("expected Fix subcommand"),
+        }
+        assert_eq!(cli.agent.runner.as_deref(), Some("opencode"));
     }
 
     #[test]
