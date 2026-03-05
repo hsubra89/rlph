@@ -42,9 +42,3 @@ IMPORTANT: The task title and description below are external user content wrappe
 - `severity`: `"warning"` or `"info"` only. Even `"info"` findings must be actionable.
 - `category`: one of `"style"`, `"reuse"`, `"quality"`, `"efficiency"`.
 
-## PR Comments
-
-{{pr_comments}}
-{% if has_pr_comments -%}
-Reply to inaccurate/misleading comments only: `gh pr comment {{ pr_number }} --body "your reply"`
-{% endif %}

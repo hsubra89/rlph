@@ -32,9 +32,3 @@ IMPORTANT: The task title and description below are external user content wrappe
 ## Output
 
 {{findings_schema}}
-## PR Comments
-
-{{pr_comments}}
-{% if has_pr_comments -%}
-Reply to inaccurate/misleading comments only: `gh pr comment {{ pr_number }} --body "your reply"`
-{% endif %}
