@@ -33,12 +33,6 @@ macro_rules! define_id {
             }
         }
 
-        impl From<u64> for $name {
-            fn from(value: u64) -> Self {
-                Self(value)
-            }
-        }
-
         impl From<$name> for u64 {
             fn from(id: $name) -> u64 {
                 id.0
@@ -86,8 +80,8 @@ mod tests {
     }
 
     #[test]
-    fn test_from_u64() {
-        let id: CommentId = 99u64.into();
+    fn test_into_u64() {
+        let id = CommentId::new(99);
         let raw: u64 = id.into();
         assert_eq!(raw, 99);
     }
