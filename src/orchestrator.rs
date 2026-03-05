@@ -1135,16 +1135,12 @@ impl<
     }
 
     fn push_branch(&self, worktree: &WorktreeInfo) -> Result<()> {
-        let output = Command::new("git")
-            .args(["push", "-u", "origin", &worktree.branch])
-            .current_dir(&worktree.path)
-            .output()
-            .map_err(|e| Error::Orchestrator(format!("failed to run git push: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Orchestrator(format!("git push failed: {stderr}")));
-        }
+        run_git_checked(
+            &worktree.path,
+            &["push", "-u", "origin", &worktree.branch],
+            "failed to run git push",
+            "git push failed",
+        )?;
 
         info!(branch = worktree.branch, "pushed branch");
         Ok(())
@@ -1191,18 +1187,41 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-fn commit_plan_files(worktree_path: &Path, plan_dir: &str) -> Result<()> {
-    let add = Command::new("git")
-        .args(["add", "--", plan_dir])
+fn run_git_output(
+    worktree_path: &Path,
+    args: &[&str],
+    run_error_prefix: &str,
+) -> Result<std::process::Output> {
+    Command::new("git")
+        .args(args)
         .current_dir(worktree_path)
         .output()
-        .map_err(|e| Error::Orchestrator(format!("failed to stage plan files: {e}")))?;
-    if !add.status.success() {
+        .map_err(|e| Error::Orchestrator(format!("{run_error_prefix}: {e}")))
+}
+
+fn run_git_checked(
+    worktree_path: &Path,
+    args: &[&str],
+    run_error_prefix: &str,
+    status_error_prefix: &str,
+) -> Result<std::process::Output> {
+    let output = run_git_output(worktree_path, args, run_error_prefix)?;
+    if !output.status.success() {
         return Err(Error::Orchestrator(format!(
-            "git add for plan files failed: {}",
-            String::from_utf8_lossy(&add.stderr)
+            "{status_error_prefix}: {}",
+            String::from_utf8_lossy(&output.stderr)
         )));
     }
+    Ok(output)
+}
+
+fn commit_plan_files(worktree_path: &Path, plan_dir: &str) -> Result<()> {
+    run_git_checked(
+        worktree_path,
+        &["add", "--", plan_dir],
+        "failed to stage plan files",
+        "git add for plan files failed",
+    )?;
 
     let staged = Command::new("git")
         .args(["diff", "--cached", "--quiet", "--", plan_dir])
@@ -1213,28 +1232,23 @@ fn commit_plan_files(worktree_path: &Path, plan_dir: &str) -> Result<()> {
         return Ok(());
     }
 
-    let commit = Command::new("git")
-        .args(["commit", "-m", "chore: add plan files"])
-        .current_dir(worktree_path)
-        .output()
-        .map_err(|e| Error::Orchestrator(format!("failed to commit plan files: {e}")))?;
-    if !commit.status.success() {
-        return Err(Error::Orchestrator(format!(
-            "git commit for plan files failed: {}",
-            String::from_utf8_lossy(&commit.stderr)
-        )));
-    }
+    run_git_checked(
+        worktree_path,
+        &["commit", "-m", "chore: add plan files"],
+        "failed to commit plan files",
+        "git commit for plan files failed",
+    )?;
 
     info!(plan_dir, "committed plan files");
     Ok(())
 }
 
 fn git_head_oid(worktree_path: &Path) -> Result<Option<String>> {
-    let output = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(worktree_path)
-        .output()
-        .map_err(|e| Error::Orchestrator(format!("failed to resolve HEAD: {e}")))?;
+    let output = run_git_output(
+        worktree_path,
+        &["rev-parse", "HEAD"],
+        "failed to resolve HEAD",
+    )?;
 
     if !output.status.success() {
         return Ok(None);
@@ -1260,30 +1274,20 @@ fn ensure_cycle_commit(
         return Ok(());
     }
 
-    let stage = Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(worktree_path)
-        .output()
-        .map_err(|e| Error::Orchestrator(format!("failed to stage implement changes: {e}")))?;
-    if !stage.status.success() {
-        return Err(Error::Orchestrator(format!(
-            "git add for implement changes failed: {}",
-            String::from_utf8_lossy(&stage.stderr)
-        )));
-    }
+    run_git_checked(
+        worktree_path,
+        &["add", "-A"],
+        "failed to stage implement changes",
+        "git add for implement changes failed",
+    )?;
 
     let commit_message = format!("chore: complete plan sub-task {selected_task_id}");
-    let commit = Command::new("git")
-        .args(["commit", "--allow-empty", "-m", commit_message.as_str()])
-        .current_dir(worktree_path)
-        .output()
-        .map_err(|e| Error::Orchestrator(format!("failed to commit implement changes: {e}")))?;
-    if !commit.status.success() {
-        return Err(Error::Orchestrator(format!(
-            "git commit for implement changes failed: {}",
-            String::from_utf8_lossy(&commit.stderr)
-        )));
-    }
+    run_git_checked(
+        worktree_path,
+        &["commit", "--allow-empty", "-m", commit_message.as_str()],
+        "failed to commit implement changes",
+        "git commit for implement changes failed",
+    )?;
 
     let head_after_commit = git_head_oid(worktree_path)?;
     if head_after_commit.as_deref() == head_before_cycle {
