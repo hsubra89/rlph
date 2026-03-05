@@ -37,3 +37,10 @@
 - Added helper `add_plan_prompt_vars` to format deterministic `@plans/...` references for prompt templates.
 - Added unit test `test_add_plan_prompt_vars_populates_plan_dir_and_files` and adjusted local-plan integration fixture to include a real plan file.
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_add_plan_prompt_vars_populates_plan_dir_and_files) or test(test_local_plan_mode_skips_task_source_fetch)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 3 task: local plan identity now drives both branch naming and state id.
+- Added `WorktreeManager::local_worktree_name` + `create_for_local_plan` to create/reuse `rlph-local-<plan-slug>` worktrees instead of synthetic issue-number branches.
+- Updated local-plan orchestrator path to call `create_for_local_plan`, keeping local task/state identity as `local-<plan-slug>` from the plan directory name.
+- Added tests: `test_local_worktree_name`, `test_local_plan_branch_name_derived_from_directory_name`, and `test_local_plan_state_id_derived_from_directory_name`.
+- Updated plan status: Phase 3 acceptance criterion "Task identity (for branch name, state) is derived from directory name" marked complete.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_local_plan_mode_skips_task_source_fetch) or test(test_local_plan_branch_name_derived_from_directory_name) or test(test_local_plan_state_id_derived_from_directory_name) or test(test_local_worktree_name)'` (all pass).

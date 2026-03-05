@@ -947,6 +947,81 @@ async fn test_local_plan_mode_skips_task_source_fetch() {
 }
 
 #[tokio::test]
+async fn test_local_plan_branch_name_derived_from_directory_name() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let plan_dir = repo_dir.path().join("plans/My Feature");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    std::fs::write(plan_dir.join("task.md"), "- implement this").unwrap();
+
+    let mut config = make_config(false);
+    config.plan_path = Some("plans/My Feature".to_string());
+
+    let orchestrator = Orchestrator::new(
+        FailIfFetchedSource,
+        CountingRunner::new("gh-42", Arc::new(RunnerCounts::default())),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    let subs = sub_tracker.lock().unwrap();
+    assert_eq!(subs.submissions.len(), 1);
+    assert!(subs.submissions[0].0.contains("rlph-local-my-feature"));
+}
+
+#[tokio::test]
+async fn test_local_plan_state_id_derived_from_directory_name() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let plan_dir = repo_dir.path().join("plans/My Feature");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    std::fs::write(plan_dir.join("task.md"), "- implement this").unwrap();
+
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let mut config = make_config(true);
+    config.plan_path = Some("plans/My Feature".to_string());
+
+    let orchestrator = Orchestrator::new(
+        FailIfFetchedSource,
+        FailAtPhaseRunner {
+            fail_at: Phase::Implement,
+            task_id: "gh-42".to_string(),
+        },
+        MockSubmission::new(Arc::new(Mutex::new(SubmissionTracker::default())), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    );
+
+    let err = orchestrator.run_once().await.unwrap_err();
+    assert!(err.to_string().contains("mock failure at implement"));
+
+    let state_mgr = StateManager::new(&state_dir);
+    let state = state_mgr.load();
+    assert_eq!(
+        state.current_task.as_ref().map(|t| t.id.as_str()),
+        Some("local-my-feature")
+    );
+}
+
+#[tokio::test]
 async fn test_error_at_choose_phase() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     // Need 2+ tasks so choose phase actually runs (single task is auto-selected)

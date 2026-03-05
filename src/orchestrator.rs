@@ -622,7 +622,7 @@ impl<
         self.reporter.task_selected(issue_number, &task.title);
 
         info!("creating worktree for local plan");
-        let worktree_info = self.worktree_mgr.create(issue_number, &slug)?;
+        let worktree_info = self.worktree_mgr.create_for_local_plan(&slug)?;
 
         self.state_mgr.set_current_task(
             &task_id,
