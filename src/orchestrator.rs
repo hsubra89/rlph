@@ -731,17 +731,16 @@ impl<
             self.source.mark_in_review(task_id)?;
         }
 
-        // 10. Run review pipeline.
-        let ready_pr_number = pr_number;
-        self.run_review_pipeline(&vars, worktree_info, pr_number)
-            .await?;
-
+        // 10. Mark draft PR ready, then run review pipeline.
         if !self.config.dry_run
-            && let Some(pr_number) = ready_pr_number
+            && let Some(pr_number) = pr_number
         {
             self.submission.mark_ready(pr_number)?;
             info!(pr = %pr_number, "marked draft PR as ready");
         }
+
+        self.run_review_pipeline(&vars, worktree_info, pr_number)
+            .await?;
 
         Ok(())
     }

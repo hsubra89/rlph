@@ -689,6 +689,64 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
     }
 }
 
+struct ReadyBeforeReviewFactory {
+    tracker: Arc<Mutex<SubmissionTracker>>,
+}
+
+impl ReadyBeforeReviewFactory {
+    fn new(tracker: Arc<Mutex<SubmissionTracker>>) -> Self {
+        Self { tracker }
+    }
+}
+
+impl ReviewRunnerFactory for ReadyBeforeReviewFactory {
+    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
+        let tracker = Arc::clone(&self.tracker);
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(
+            move |_phase, _prompt, _dir| {
+                let tracker = Arc::clone(&tracker);
+                Box::pin(async move {
+                    let ready = tracker.lock().unwrap().ready_marked.clone();
+                    if !ready.contains(&PrNumber::new(1)) {
+                        return Err(Error::AgentRunner(
+                            "review ran before PR was marked ready".to_string(),
+                        ));
+                    }
+
+                    Ok(RunResult {
+                        exit_code: 0,
+                        stdout: r#"{"findings":[]}"#.into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    })
+                })
+            },
+        )))
+    }
+
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
+            Box::pin(async move {
+                let stdout = match phase {
+                    Phase::ReviewAggregate => APPROVED_AGGREGATOR_JSON.to_string(),
+                    _ => String::new(),
+                };
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout,
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            })
+        })))
+    }
+}
+
 /// Review runner factory where aggregation always requests fixes (never approves).
 struct NeverApproveReviewFactory;
 
@@ -1087,7 +1145,7 @@ async fn test_draft_pr_created_before_implement_phase() {
 }
 
 #[tokio::test]
-async fn test_pr_marked_ready_after_review_pipeline() {
+async fn test_pr_marked_ready_before_review_pipeline() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix the bug");
 
@@ -1116,7 +1174,7 @@ async fn test_pr_marked_ready_after_review_pipeline() {
         make_config(false),
         repo_dir.path().to_path_buf(),
     )
-    .with_review_factory(ApprovedReviewFactory);
+    .with_review_factory(ReadyBeforeReviewFactory::new(Arc::clone(&sub_tracker)));
 
     orchestrator.run_once().await.unwrap();
 

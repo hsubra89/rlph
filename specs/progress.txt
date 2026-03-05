@@ -101,3 +101,9 @@
 - Added integration test `test_pr_marked_ready_after_review_pipeline` and extended test submission tracker/mocks to assert ready-transition calls.
 - Updated plan status: marked complete for Phase 5 acceptance criterion "PR is marked ready after inner loop completes".
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_pr_marked_ready_after_review_pipeline) or test(test_full_loop_with_push) or test(test_draft_pr_created_before_implement_phase)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 finalize-order task: run review only after PR is ready.
+- Updated `Orchestrator::run_implement_review` ordering to call `SubmissionBackend::mark_ready(pr_number)` before `run_review_pipeline(...)` in non-dry-run mode.
+- Added integration guard `ReadyBeforeReviewFactory` and migrated test to `test_pr_marked_ready_before_review_pipeline`, which fails if any review phase runs before `mark_ready`.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Review pipeline runs after PR is marked ready".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_pr_marked_ready_before_review_pipeline) or test(test_full_loop_with_push) or test(test_draft_pr_created_before_implement_phase)'` (all pass).
