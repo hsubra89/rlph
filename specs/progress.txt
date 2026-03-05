@@ -64,3 +64,10 @@
 - Added integration test `test_choose_and_implement_run_from_worktree_roots` to verify choose runs at repo worktree root and implement runs at the created issue worktree root.
 - Updated plan status: marked complete for Phase 4 acceptance criterion "Agent cwd is worktree root for both phases".
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_choose_and_implement_run_from_worktree_roots)'` (all pass).
+
+2026-03-05 - Completed highest-priority Phase 5 foundation task: draft/ready lifecycle support in submission backend.
+- Extended `SubmissionBackend` with `submit_draft(...)` and `mark_ready(pr_number)` default methods so orchestrator can adopt draft-first lifecycle incrementally.
+- Implemented `GitHubSubmission::submit_draft` via `gh pr create --draft` (with existing-PR reuse) and `GitHubSubmission::mark_ready` via `gh pr ready`.
+- Added idempotent handling for ready transition: treats "already ready" CLI responses as success.
+- Added unit test `test_is_already_ready_error_detects_message` for ready-state error normalization.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_is_already_ready_error_detects_message)'` (all pass).
