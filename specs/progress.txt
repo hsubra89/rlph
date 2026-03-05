@@ -17,3 +17,10 @@
 - Reused `WorktreeManager::slugify` for plan folder naming with fallback `gh-<issue_id>` when title slug is empty.
 - Added 4 unit tests covering directory structure, sub-issue inclusion, depth limiting, circular deduplication, link rewriting, and slug fallback.
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo nextest run -E 'test(plan_sync)'` (all pass).
+
+2026-03-05 - Completed highest-priority Phase 3 CLI groundwork for local plan source (`plan_path` parsing + validation).
+- Added optional positional `plan_path` to `rlph build` (`BuildArgs`) and plumbed it into `Config` as `plan_path: Option<String>`.
+- Added build-time local plan directory validation in `main`: path must exist, be a directory, and include at least one file.
+- Updated config/test helpers to include new `Config.plan_path` field (`src/prd.rs`, `tests/common/mod.rs`, `tests/prd_integration.rs`) to keep type checks green.
+- Added tests for CLI parsing, config merge, and local plan directory validation success/failure cases.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_parse_build_with_plan_path) or test(test_plan_path_from_build_args) or test(validate_local_plan_dir_accepts_directory_with_files) or test(validate_local_plan_dir_rejects_missing_directory) or test(validate_local_plan_dir_rejects_empty_directory)'` (all pass).

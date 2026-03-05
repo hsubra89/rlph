@@ -43,6 +43,9 @@ pub struct AgentArgs {
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct BuildArgs {
+    /// Optional local plan directory path (enables local plan mode)
+    pub plan_path: Option<String>,
+
     /// Run a single iteration then exit
     #[arg(long)]
     pub once: bool,
@@ -222,6 +225,18 @@ mod tests {
         match cli.command {
             CliCommand::Build { args } => {
                 assert_eq!(args.poll_seconds, Some(45));
+            }
+            _ => panic!("expected Build subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_build_with_plan_path() {
+        let cli = Cli::parse_from(["rlph", "build", "plans/my-feature", "--once"]);
+        match cli.command {
+            CliCommand::Build { args } => {
+                assert_eq!(args.plan_path.as_deref(), Some("plans/my-feature"));
+                assert!(args.once);
             }
             _ => panic!("expected Build subcommand"),
         }

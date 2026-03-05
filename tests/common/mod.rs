@@ -68,5 +68,6 @@ pub fn default_test_config() -> Config {
         fix: default_review_step("fix"),
         worktree_setup_script: None,
         linear: None,
+        plan_path: None,
     }
 }
