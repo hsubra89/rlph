@@ -1176,11 +1176,15 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
         let path = entry.path();
         let target = dst.join(entry.file_name());
-        if path.is_dir() {
+        if file_type.is_dir() {
             copy_dir_recursive(&path, &target)?;
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             fs::copy(&path, &target)?;
         }
     }
@@ -1715,6 +1719,25 @@ mod tests {
             std::fs::read_to_string(dst.join("nested/deeper/task.txt")).unwrap(),
             "nested"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_dir_recursive_skips_symlink_entries() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("src");
+        let dst = temp.path().join("dst");
+        let secret = temp.path().join("secret.txt");
+
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("top.md"), "top").unwrap();
+        std::fs::write(&secret, "sensitive").unwrap();
+        std::os::unix::fs::symlink(&secret, src.join("secret-link.txt")).unwrap();
+
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert_eq!(std::fs::read_to_string(dst.join("top.md")).unwrap(), "top");
+        assert!(!dst.join("secret-link.txt").exists());
     }
 
     #[test]
