@@ -21,8 +21,8 @@ pub fn parse_dependencies(body: &str) -> Vec<IssueNumber> {
     // "blocked by #N" or "depends on #N"
     let inline_re = Regex::new(r"(?i)(?:blocked\s+by|depends\s+on)\s+#(\d+)").unwrap();
     for cap in inline_re.captures_iter(body) {
-        if let Ok(n) = cap[1].parse::<u64>() {
-            deps.push(IssueNumber::new(n));
+        if let Ok(id) = cap[1].parse::<IssueNumber>() {
+            deps.push(id);
         }
     }
 
@@ -30,8 +30,8 @@ pub fn parse_dependencies(body: &str) -> Vec<IssueNumber> {
     let list_re = Regex::new(r"(?i)blockedBy:\s*\[([^\]]+)\]").unwrap();
     for cap in list_re.captures_iter(body) {
         for num_str in cap[1].split(',') {
-            if let Ok(n) = num_str.trim().parse::<u64>() {
-                deps.push(IssueNumber::new(n));
+            if let Ok(id) = num_str.trim().parse::<IssueNumber>() {
+                deps.push(id);
             }
         }
     }
@@ -52,8 +52,8 @@ impl DependencyGraph {
     pub fn build(tasks: &[Task]) -> Self {
         let mut edges = HashMap::new();
         for task in tasks {
-            let id: IssueNumber = match task.id.parse::<u64>() {
-                Ok(n) => IssueNumber::new(n),
+            let id: IssueNumber = match task.id.parse::<IssueNumber>() {
+                Ok(id) => id,
                 Err(_) => continue,
             };
             let deps = parse_dependencies(&task.body);
@@ -109,8 +109,8 @@ impl DependencyGraph {
         tasks
             .into_iter()
             .filter(|task| {
-                let id: IssueNumber = match task.id.parse::<u64>() {
-                    Ok(n) => IssueNumber::new(n),
+                let id: IssueNumber = match task.id.parse::<IssueNumber>() {
+                    Ok(id) => id,
                     Err(_) => return true,
                 };
                 match self.edges.get(&id) {
