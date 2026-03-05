@@ -10,3 +10,10 @@
 - Added `LinearSource::fetch_sub_issues` stub returning empty vec (compile-safe placeholder per plan).
 - Added/updated tests: 2 new GitHub sub-issue unit tests, plus TaskSource test mocks updated for new trait method.
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_fetch_sub_issues_parses_connection_shape) or test(test_fetch_sub_issues_handles_missing_field)'` (all pass).
+
+2026-03-05 - Completed Phase 2 plan-sync module as highest-priority dependency for local/sync-first orchestration.
+- Added `src/plan_sync.rs` with `sync_to_local(source, issue_id, plans_dir) -> PlanDirectory` and `list_plan_files(plan_dir)`.
+- Sync flow now fetches main issue, fetches + hydrates sub-issues, crawls referenced issues up to depth 4 with deduplication, writes `<id>.md` files, then rewrites cross-links via `reference_rewriter`.
+- Reused `WorktreeManager::slugify` for plan folder naming with fallback `gh-<issue_id>` when title slug is empty.
+- Added 4 unit tests covering directory structure, sub-issue inclusion, depth limiting, circular deduplication, link rewriting, and slug fallback.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo nextest run -E 'test(plan_sync)'` (all pass).

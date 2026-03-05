@@ -11,6 +11,7 @@ pub mod fix_deps;
 pub mod fix_scheduler;
 pub mod ids;
 pub mod orchestrator;
+pub mod plan_sync;
 pub mod prd;
 pub mod process;
 pub mod prompts;

@@ -68,12 +68,12 @@ Slug generation reuses the existing `WorktreeManager::slugify` logic (or extract
 
 ### Acceptance criteria
 
-- [ ] Given a mock `TaskSource`, sync produces correct directory structure with one file per issue
-- [ ] Sub-issues are fetched and written as separate files
-- [ ] Referenced issues are fetched up to 4 levels deep
-- [ ] Circular references are deduplicated (no infinite loops)
-- [ ] Cross-references in written files are rewritten to local markdown links
-- [ ] Slug is derived from issue title, falling back to issue number
+- [x] Given a mock `TaskSource`, sync produces correct directory structure with one file per issue
+- [x] Sub-issues are fetched and written as separate files
+- [x] Referenced issues are fetched up to 4 levels deep
+- [x] Circular references are deduplicated (no infinite loops)
+- [x] Cross-references in written files are rewritten to local markdown links
+- [x] Slug is derived from issue title, falling back to issue number
 - [x] `fetch_sub_issues` added to `TaskSource` trait with GitHub implementation
 - [x] `LinearSource` compiles with a stub `fetch_sub_issues`
 
