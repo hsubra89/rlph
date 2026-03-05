@@ -302,18 +302,15 @@ pub fn format_fix_items_for_display(items: &[FixItem]) -> String {
 mod tests {
     use super::*;
     use crate::review_schema::{Severity, render_inline_finding_comment_for_github};
-    use crate::test_helpers::{make_reactions, make_review_comment};
+    use crate::test_helpers::{
+        make_finding as make_shared_finding, make_reactions, make_review_comment,
+    };
 
     fn make_finding(id: &str, severity: Severity, category: &str) -> ReviewFinding {
         ReviewFinding {
-            id: id.to_string(),
-            file: "src/main.rs".to_string(),
-            line: 42,
             severity,
-            description: format!("{id} description"),
-            suggested_fixes: vec![],
             category: Some(category.to_string()),
-            depends_on: vec![],
+            ..make_shared_finding(id)
         }
     }
 
@@ -487,14 +484,11 @@ mod tests {
     #[test]
     fn test_build_items_with_depends_on() {
         let f = ReviewFinding {
-            id: "deref".to_string(),
-            file: "src/main.rs".to_string(),
             line: 15,
             severity: Severity::Critical,
             description: "Null deref".to_string(),
-            suggested_fixes: vec![],
-            category: Some("correctness".to_string()),
             depends_on: vec!["null-check".to_string()],
+            ..make_shared_finding("deref")
         };
         let comment = make_review_comment(100, &f);
         let reactions = vec![(CommentId::new(100), make_reactions(&[("rocket", 1)]))];

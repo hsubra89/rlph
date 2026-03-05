@@ -1096,6 +1096,7 @@ mod tests {
     use crate::ids::{CommentId, PrNumber, ReactionId};
     use crate::review_schema::{ReviewFinding, Severity};
     use crate::submission::PrComment;
+    use crate::test_helpers::make_finding;
 
     struct InlineReviewTestSubmission {
         diff: String,
@@ -1237,24 +1238,17 @@ mod tests {
                     .to_string(),
         };
         let dep = ReviewFinding {
-            id: "base-check".to_string(),
-            file: "src/main.rs".to_string(),
             line: 1,
             severity: Severity::Warning,
             description: "Base check missing".to_string(),
-            suggested_fixes: vec![],
-            category: Some("correctness".to_string()),
-            depends_on: vec![],
+            ..make_finding("base-check")
         };
         let finding = ReviewFinding {
-            id: "follow-up".to_string(),
-            file: "src/main.rs".to_string(),
             line: 2,
             severity: Severity::Critical,
             description: "Use after free".to_string(),
-            suggested_fixes: vec![],
-            category: Some("correctness".to_string()),
             depends_on: vec!["base-check".to_string()],
+            ..make_finding("follow-up")
         };
 
         let comments = build_inline_review_comments(
@@ -1280,14 +1274,10 @@ mod tests {
                 .to_string(),
         };
         let finding = ReviewFinding {
-            id: "outside-hunk".to_string(),
             file: "src/lib.rs".to_string(),
             line: 100,
-            severity: Severity::Warning,
             description: "Reported far from changed lines".to_string(),
-            suggested_fixes: vec![],
-            category: Some("correctness".to_string()),
-            depends_on: vec![],
+            ..make_finding("outside-hunk")
         };
 
         let comments =
@@ -1306,14 +1296,10 @@ mod tests {
                 .to_string(),
         };
         let finding = ReviewFinding {
-            id: "other-file".to_string(),
             file: "src/missing.rs".to_string(),
             line: 50,
-            severity: Severity::Warning,
             description: "Issue in file not in diff".to_string(),
-            suggested_fixes: vec![],
-            category: Some("correctness".to_string()),
-            depends_on: vec![],
+            ..make_finding("other-file")
         };
 
         let comments =
