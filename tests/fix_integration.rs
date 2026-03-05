@@ -263,6 +263,7 @@ impl CorrectionRunner for MockCorrectionRunner {
         _correction_prompt: &str,
         working_dir: &Path,
         _timeout: Option<std::time::Duration>,
+        _stream_prefix: Option<&str>,
     ) -> Result<RunResult> {
         let n = self.call_count.fetch_add(1, Ordering::SeqCst);
         (self.handler)(working_dir, n)

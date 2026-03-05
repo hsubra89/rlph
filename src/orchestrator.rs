@@ -132,6 +132,7 @@ pub trait CorrectionRunner: Send + Sync {
         correction_prompt: &str,
         working_dir: &Path,
         timeout: Option<Duration>,
+        stream_prefix: Option<&str>,
     ) -> impl std::future::Future<Output = Result<RunResult>> + Send;
 }
 
@@ -150,6 +151,7 @@ impl CorrectionRunner for DefaultCorrectionRunner {
         correction_prompt: &str,
         working_dir: &Path,
         timeout: Option<Duration>,
+        stream_prefix: Option<&str>,
     ) -> Result<RunResult> {
         resume_with_correction(
             runner_type,
@@ -161,6 +163,7 @@ impl CorrectionRunner for DefaultCorrectionRunner {
             correction_prompt,
             working_dir,
             timeout,
+            stream_prefix,
         )
         .await
     }
@@ -943,6 +946,7 @@ pub async fn retry_with_correction<T>(
                 &prompt,
                 working_dir,
                 agent_timeout,
+                None,
             )
             .await
         {

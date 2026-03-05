@@ -519,6 +519,7 @@ pub async fn resume_with_correction(
     correction_prompt: &str,
     working_dir: &Path,
     timeout: Option<Duration>,
+    stream_prefix: Option<&str>,
 ) -> Result<RunResult> {
     let (command, args, stdin_data) = match runner_type {
         RunnerKind::Codex => {
@@ -548,6 +549,22 @@ pub async fn resume_with_correction(
         }
     };
 
+    // Set up streaming channel when a stream prefix is provided, matching
+    // the behaviour of the primary `AgentRunner::run` path.
+    let (stdout_tx, stream_handle) = match (stream_prefix, runner_type) {
+        (Some(prefix), RunnerKind::Codex) => {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let handle = spawn_codex_stream_formatter(prefix.to_string(), rx);
+            (Some(tx), Some(handle))
+        }
+        (Some(prefix), RunnerKind::Claude) => {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let handle = spawn_claude_stream_formatter(prefix.to_string(), rx);
+            (Some(tx), Some(handle))
+        }
+        _ => (None, None),
+    };
+
     let config = ProcessConfig {
         command,
         args,
@@ -558,10 +575,19 @@ pub async fn resume_with_correction(
         env: vec![],
         stdin_data,
         quiet: true,
-        stdout_tx: None,
+        stdout_tx: stdout_tx.clone(),
     };
 
-    let output = spawn_and_stream(config).await?;
+    let output = spawn_and_stream(config).await;
+
+    // Drop the sender so the stream formatter sees channel closure,
+    // then await it to ensure all buffered messages are flushed to stderr.
+    drop(stdout_tx);
+    if let Some(handle) = stream_handle {
+        let _ = handle.await;
+    }
+
+    let output = output?;
 
     let (stdout, session_id) = match runner_type {
         RunnerKind::Codex => (
