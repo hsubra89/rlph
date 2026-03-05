@@ -1,6 +1,7 @@
 //! Dependency graph construction and cycle-aware eligibility filtering.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 use regex::Regex;
 use tracing::warn;
@@ -8,6 +9,15 @@ use tracing::warn;
 use crate::ids::IssueNumber;
 use crate::scc::TarjanScc;
 use crate::sources::Task;
+
+static INLINE_DEP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:blocked\s+by|depends\s+on)\s+#(\d+)")
+        .expect("inline dependency regex is valid")
+});
+
+static LIST_DEP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)blockedBy:\s*\[([^\]]+)\]").expect("blockedBy list regex is valid")
+});
 
 /// Parse dependency issue numbers from an issue body.
 ///
@@ -19,16 +29,14 @@ pub fn parse_dependencies(body: &str) -> Vec<IssueNumber> {
     let mut deps = Vec::new();
 
     // "blocked by #N" or "depends on #N"
-    let inline_re = Regex::new(r"(?i)(?:blocked\s+by|depends\s+on)\s+#(\d+)").unwrap();
-    for cap in inline_re.captures_iter(body) {
+    for cap in INLINE_DEP_RE.captures_iter(body) {
         if let Ok(id) = cap[1].parse::<IssueNumber>() {
             deps.push(id);
         }
     }
 
     // "blockedBy: [N, M, ...]"
-    let list_re = Regex::new(r"(?i)blockedBy:\s*\[([^\]]+)\]").unwrap();
-    for cap in list_re.captures_iter(body) {
+    for cap in LIST_DEP_RE.captures_iter(body) {
         for num_str in cap[1].split(',') {
             if let Ok(id) = num_str.trim().parse::<IssueNumber>() {
                 deps.push(id);
