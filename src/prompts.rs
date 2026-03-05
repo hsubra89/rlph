@@ -124,6 +124,8 @@ mod tests {
         let template = engine.load_template("implement").unwrap();
         assert!(template.contains("Task Implementation Agent"));
         assert!(template.contains("{{issue_title}}"));
+        assert!(template.contains("{{plan_dir}}"));
+        assert!(template.contains("{{plan_files}}"));
     }
 
     #[test]
@@ -318,6 +320,45 @@ mod tests {
         assert!(result.contains("/my/repo"));
         assert!(!result.contains("{{repo_path}}"));
         assert!(result.contains("[{\"id\":\"1\"}]"));
+    }
+
+    #[test]
+    fn test_render_implement_with_plan_file_refs() {
+        let engine = PromptEngine::new(None);
+
+        let mut one_file = HashMap::new();
+        one_file.insert("issue_number".to_string(), "local-my-feature".to_string());
+        one_file.insert("issue_url".to_string(), "plans/my-feature".to_string());
+        one_file.insert("repo_path".to_string(), "/repo".to_string());
+        one_file.insert(
+            "branch_name".to_string(),
+            "rlph-local-my-feature".to_string(),
+        );
+        one_file.insert(
+            "worktree_path".to_string(),
+            "/repo/.worktrees/w1".to_string(),
+        );
+        one_file.insert("plan_dir".to_string(), "plans/my-feature".to_string());
+        one_file.insert(
+            "plan_files".to_string(),
+            "@plans/my-feature/01-task.md".to_string(),
+        );
+
+        let one_result = engine.render_phase("implement", &one_file).unwrap();
+        assert!(one_result.contains("Plan Context"));
+        assert!(one_result.contains("@plans/my-feature/01-task.md"));
+        assert!(!one_result.contains("<untrusted-content>"));
+
+        let mut many_files = one_file.clone();
+        many_files.insert(
+            "plan_files".to_string(),
+            "@plans/my-feature/01-task.md, @plans/my-feature/02-context.md".to_string(),
+        );
+
+        let many_result = engine.render_phase("implement", &many_files).unwrap();
+        assert!(
+            many_result.contains("@plans/my-feature/01-task.md, @plans/my-feature/02-context.md")
+        );
     }
 
     #[test]

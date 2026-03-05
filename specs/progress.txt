@@ -44,3 +44,10 @@
 - Added tests: `test_local_worktree_name`, `test_local_plan_branch_name_derived_from_directory_name`, and `test_local_plan_state_id_derived_from_directory_name`.
 - Updated plan status: Phase 3 acceptance criterion "Task identity (for branch name, state) is derived from directory name" marked complete.
 - Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_local_plan_mode_skips_task_source_fetch) or test(test_local_plan_branch_name_derived_from_directory_name) or test(test_local_plan_state_id_derived_from_directory_name) or test(test_local_worktree_name)'` (all pass).
+
+2026-03-05 - Completed highest-priority Phase 4 prompt migration task: implement prompt now consumes plan file references.
+- Updated `src/default_prompts/implement-issue.md` to support local/synced plan context via `{{plan_dir}}` + `{{plan_files}}` and render `@plans/...` references when present.
+- Kept backward compatibility: when `plan_files` is absent, template still falls back to existing issue-title/body `<untrusted-content>` mode.
+- Added prompt tests: `test_load_default_implement` now checks plan vars, and new `test_render_implement_with_plan_file_refs` verifies rendering with one and many file references.
+- Updated plan status: Phase 4 acceptance criterion "Implement prompt template renders with `@` file references" marked complete.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_load_default_implement) or test(test_render_implement_with_plan_file_refs)'` (all pass).

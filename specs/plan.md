@@ -127,7 +127,7 @@ Template variable changes:
 
 - [ ] Choose prompt template renders with plan file list instead of JSON
 - [ ] Choose prompt includes `NOTHING_LEFT` signal instruction
-- [ ] Implement prompt template renders with `@` file references
+- [x] Implement prompt template renders with `@` file references
 - [ ] Agent cwd is worktree root for both phases
 - [ ] Template renders correctly with varying numbers of plan files (1 file, many files)
 - [ ] Prompt engine tests pass with new template variables
