@@ -397,14 +397,14 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                         *attempts += 1;
                         if *attempts >= MAX_TOTAL_ATTEMPTS {
                             eprintln!("[rlph] Critical fix failed after retry: {failed_id}: {e}");
-                            warn!(%failed_id, error = %e, "critical fix failed after retry");
+                            warn!(finding_id = %failed_id, error = %e, "critical fix failed after retry");
                             failed.insert(failed_id);
                         } else {
                             eprintln!(
                                 "[rlph] Critical fix failed (attempt {}, will retry): {failed_id}: {e}",
                                 *attempts
                             );
-                            warn!(%failed_id, error = %e, attempt = *attempts, "critical fix failed, will retry");
+                            warn!(finding_id = %failed_id, error = %e, attempt = *attempts, "critical fix failed, will retry");
                         }
                     } else {
                         eprintln!("[rlph] Fix failed: {failed_id}: {e}");
