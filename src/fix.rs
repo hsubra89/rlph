@@ -763,7 +763,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     // Capture the first finding ID before we move prepared_items, so we can
     // attribute worktree-creation failures to a specific finding.
     let first_finding_id = prepared_items[0].item.finding.id.clone();
-    let first_finding_severity = prepared_items[0].item.finding.severity.clone();
+    let first_finding_severity = prepared_items[0].item.finding.severity;
 
     // Use the first item's fix_branch as the worktree branch for the whole batch
     let batch_branch = prepared_items[0].fix_branch.clone();
@@ -804,7 +804,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             } = prepared;
 
             let finding_id = item.finding.id.clone();
-            let finding_severity = item.finding.severity.clone();
+            let finding_severity = item.finding.severity;
             let position = idx + 1;
 
             info!(
