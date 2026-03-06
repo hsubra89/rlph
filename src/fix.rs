@@ -742,7 +742,9 @@ async fn run_prepared_fix<S: SubmissionBackend, C: CorrectionRunner>(
     run_single_fix(ctx, &wm, &*shared.submission, &*shared.correction_runner).await
 }
 
-/// Run a batch of WARNING/INFO findings in a single shared agent session.
+/// Run a batch of findings in a single shared agent session.
+///
+/// CRITICAL findings run as a batch of 1; WARNING/INFO findings batch up to 3.
 ///
 /// Creates one worktree and one agent session. The first finding starts the
 /// session normally; subsequent findings are fed via `resume_agent`
