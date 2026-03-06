@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_build_prd_command_codex_same_behavior() {
-        let config = test_config_codex("codex", "github", Some("gpt-5.3-codex"));
+        let config = test_config_codex("codex", "github", Some("gpt-5.4"));
         let (cmd, args) = build_prd_command(&config, "rendered prompt", Some("add auth"));
         assert_eq!(cmd, "codex");
         let positional = args.last().unwrap();
@@ -201,7 +201,7 @@ mod tests {
         assert!(positional.contains("## Desired Objective"));
         assert!(positional.contains("add auth"));
         assert!(args.contains(&"--model".to_string()));
-        assert!(args.contains(&"gpt-5.3-codex".to_string()));
+        assert!(args.contains(&"gpt-5.4".to_string()));
     }
 
     fn test_config(binary: &str, source: &str, model: Option<&str>) -> Config {
