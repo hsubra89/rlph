@@ -354,12 +354,8 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
         match fix_scheduler::next_action(queued_items, deps, &sched_completed, &sched_failed) {
             ScheduleAction::RunBatch(finding_ids) => {
                 let batch_size = finding_ids.len();
-                eprintln!("[rlph] Batch: scheduling {batch_size} findings: {finding_ids:?}");
-                info!(
-                    batch_size,
-                    ?finding_ids,
-                    "batch processing mode: scheduling session"
-                );
+                eprintln!("[rlph] Scheduling {batch_size} finding(s): {finding_ids:?}");
+                info!(batch_size, ?finding_ids, "scheduling fix session");
 
                 // Prepare all items, skipping any that fail validation
                 let mut prepared_items = Vec::with_capacity(batch_size);
