@@ -327,12 +327,6 @@ pub(crate) async fn wait_or_shutdown(
     }
 }
 
-/// Bundled context for reaction/reply updates after a fix completes.
-struct FixContext {
-    item: FixItem,
-    pr_number: PrNumber,
-}
-
 /// Shared state cloned into each spawned fix task.
 ///
 /// Groups the Arc-wrapped values that `run_fix_loop` needs, replacing
@@ -700,8 +694,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 }
             };
 
-            let ctx = FixContext { item, pr_number };
-            update_reactions_and_reply(&ctx, &*shared.submission, &fix_result);
+            update_reactions_and_reply(&item, pr_number, &*shared.submission, &fix_result);
 
             completed_ids.insert(finding_id);
         }
@@ -904,12 +897,13 @@ fn cleanup_stale_rockets(items: &[FixItem], submission: &(impl SubmissionBackend
 /// The outcome emoji and reply are added before removing 🚀 so that observers
 /// always see the result before the queuing signal disappears.
 fn update_reactions_and_reply(
-    ctx: &FixContext,
+    item: &FixItem,
+    pr_number: PrNumber,
     submission: &(impl SubmissionBackend + ?Sized),
     fix_result: &FixResultKind,
 ) {
-    let comment_id = ctx.item.comment_id;
-    let finding_id = &ctx.item.finding.id;
+    let comment_id = item.comment_id;
+    let finding_id = &item.finding.id;
 
     // Add result reaction (best-effort)
     let (reaction, reply_body) = match fix_result {
@@ -929,12 +923,12 @@ fn update_reactions_and_reply(
 
     // Post reply (best-effort)
     info!(
-        pr_number = %ctx.pr_number,
+        pr_number = %pr_number,
         %finding_id,
         comment_id = %comment_id,
         "posting fix reply to review comment"
     );
-    if let Err(e) = submission.reply_to_review_comment(ctx.pr_number, comment_id, &reply_body) {
+    if let Err(e) = submission.reply_to_review_comment(pr_number, comment_id, &reply_body) {
         warn!(
             %finding_id, comment_id = %comment_id,
             error = %e,
@@ -947,7 +941,7 @@ fn update_reactions_and_reply(
     remove_rocket_reactions(
         finding_id,
         comment_id,
-        &ctx.item.rocket_reaction_ids,
+        &item.rocket_reaction_ids,
         submission,
     );
 }
