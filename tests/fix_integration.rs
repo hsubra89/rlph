@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use rlph::config::{Config, ReviewStepConfig};
 use rlph::error::{Error, Result};
-use rlph::fix::{run_fix, run_fix_loop};
+use rlph::fix::run_fix_loop;
 use rlph::ids::{CommentId, PrNumber, ReactionId};
 use rlph::orchestrator::CorrectionRunner;
 use rlph::review_schema::ReviewFinding;
@@ -129,6 +129,17 @@ impl MockFixSubmission {
 
     fn added_reactions(&self) -> Vec<(CommentId, String)> {
         self.added_reactions.lock().unwrap().clone()
+    }
+
+    fn set_reactions(&self, comment_id: CommentId, new_reactions: Vec<Reaction>) {
+        let mut reactions = self.reactions.lock().unwrap();
+        if let Some((_, existing_reactions)) =
+            reactions.iter_mut().find(|(id, _)| *id == comment_id)
+        {
+            *existing_reactions = new_reactions;
+        } else {
+            reactions.push((comment_id, new_reactions));
+        }
     }
 }
 
@@ -321,143 +332,86 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"wont_fix\\\",\\\"rea
     script_path.to_str().unwrap().to_string()
 }
 
-/// Test that `run_fix` processes multiple 🚀-reacted items.
+/// Test that `run_fix_loop` processes multiple 🚀-reacted items.
 #[tokio::test]
-async fn test_parallel_fix_multiple_queued_items() {
-    let (_bare_dir, repo_dir) = setup_git_repo();
-    let repo_root = repo_dir.path();
-
-    let pr_branch = "feature/test-pr";
-    create_pr_branch(repo_root, pr_branch);
-
-    let agent_script = create_mock_agent_script(repo_root);
-
+async fn test_fix_loop_multiple_queued_items() {
     let findings = vec![
-        make_finding("bug-alpha"),
-        make_finding("bug-beta"),
-        make_finding("bug-gamma"),
+        make_finding_critical("bug-alpha"),
+        make_finding_critical("bug-beta"),
+        make_finding_critical("bug-gamma"),
     ];
-    let comments = make_review_comments(&findings);
-    let reactions = vec![
-        rocket_reactions(CommentId::new(100)), // bug-alpha queued
-        rocket_reactions(CommentId::new(101)), // bug-beta queued
-        rocket_reactions(CommentId::new(102)), // bug-gamma queued
-    ];
+    let mut f = FixLoopFixture::new(
+        &findings,
+        &[
+            CommentId::new(100),
+            CommentId::new(101),
+            CommentId::new(102),
+        ],
+        None,
+    );
 
-    let submission = Arc::new(MockFixSubmission::new(comments, reactions));
-    let correction_runner = Arc::new(MockCorrectionRunner::noop());
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 3, None);
 
-    let wt_dir = tempfile::TempDir::new().unwrap();
-    let mut config = make_config();
-    config.fix = make_fix_step_config(agent_script);
-    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    let result = f.run().await;
+    shutdown_handle.abort();
 
-    let result = run_fix(
-        PrNumber::new(42),
-        pr_branch,
-        &config,
-        Arc::clone(&submission),
-        &rlph::prompts::PromptEngine::new(None),
-        repo_root,
-        correction_runner,
-    )
-    .await;
-
-    assert!(result.is_ok(), "run_fix failed: {:?}", result.err());
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
 
     // Each fix should have: removed 🚀, added 👍, posted reply
     assert_eq!(
-        submission.deleted_reaction_count(),
+        f.submission.deleted_reaction_count(),
         3,
         "expected 3 🚀 reactions removed"
     );
     assert_eq!(
-        submission.added_reaction_count(),
+        f.submission.added_reaction_count(),
         3,
         "expected 3 result reactions added"
     );
-    assert_eq!(submission.reply_count(), 3, "expected 3 replies posted");
+    assert_eq!(f.submission.reply_count(), 3, "expected 3 replies posted");
 
     // All added reactions should be "+1" (fixed)
-    for (_, reaction) in submission.added_reactions() {
+    for (_, reaction) in f.submission.added_reactions() {
         assert_eq!(reaction, "+1");
     }
 }
 
-/// Test that `run_fix` with no 🚀-reacted items returns Ok and does nothing.
+/// Test that `run_fix_loop` with no 🚀-reacted items returns Ok and does nothing.
 #[tokio::test]
-async fn test_fix_no_queued_items() {
-    let (_bare_dir, repo_dir) = setup_git_repo();
-    let repo_root = repo_dir.path();
-
+async fn test_fix_loop_no_queued_items() {
     let findings = vec![make_finding("a"), make_finding("b")];
-    let comments = make_review_comments(&findings);
-    // No reactions at all
-    let reactions = vec![
-        no_reactions(CommentId::new(100)),
-        no_reactions(CommentId::new(101)),
-    ];
+    let mut f = FixLoopFixture::new(&findings, &[], None);
 
-    let submission = Arc::new(MockFixSubmission::new(comments, reactions));
-    let correction_runner = Arc::new(MockCorrectionRunner::noop());
+    // Shutdown after 2 fetches (ensures at least one full cycle with no work)
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 0, Some(2));
 
-    let config = make_config();
-
-    let result = run_fix(
-        PrNumber::new(42),
-        "main",
-        &config,
-        submission,
-        &rlph::prompts::PromptEngine::new(None),
-        repo_root,
-        correction_runner,
-    )
-    .await;
+    let result = f.run().await;
+    shutdown_handle.abort();
 
     assert!(result.is_ok());
 }
 
-/// Test that worktrees are cleaned up after parallel fixes complete.
+/// Test that worktrees are cleaned up after fixes complete.
 #[tokio::test]
-async fn test_parallel_fix_worktrees_cleaned_up() {
-    let (_bare_dir, repo_dir) = setup_git_repo();
-    let repo_root = repo_dir.path();
-
-    let pr_branch = "feature/cleanup-test";
-    create_pr_branch(repo_root, pr_branch);
-
-    let agent_script = create_mock_agent_script(repo_root);
-
-    let findings = vec![make_finding("clean-a"), make_finding("clean-b")];
-    let comments = make_review_comments(&findings);
-    let reactions = vec![
-        rocket_reactions(CommentId::new(100)),
-        rocket_reactions(CommentId::new(101)),
+async fn test_fix_loop_worktrees_cleaned_up() {
+    let findings = vec![
+        make_finding_critical("clean-a"),
+        make_finding_critical("clean-b"),
     ];
+    let mut f = FixLoopFixture::new(&findings, &[CommentId::new(100), CommentId::new(101)], None);
 
-    let submission = Arc::new(MockFixSubmission::new(comments, reactions));
-    let correction_runner = Arc::new(MockCorrectionRunner::noop());
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 2, None);
 
-    let wt_dir = tempfile::TempDir::new().unwrap();
-    let mut config = make_config();
-    config.fix = make_fix_step_config(agent_script);
-    config.worktree_dir = wt_dir.path().to_str().unwrap().to_string();
+    let result = f.run().await;
+    shutdown_handle.abort();
 
-    let result = run_fix(
-        PrNumber::new(42),
-        pr_branch,
-        &config,
-        submission,
-        &rlph::prompts::PromptEngine::new(None),
-        repo_root,
-        correction_runner,
-    )
-    .await;
-
-    assert!(result.is_ok(), "run_fix failed: {:?}", result.err());
+    assert!(result.is_ok(), "run_fix_loop failed: {:?}", result.err());
 
     // After completion, no fix worktree directories should remain
-    let wt_entries: Vec<_> = std::fs::read_dir(wt_dir.path())
+    let wt_entries: Vec<_> = std::fs::read_dir(&f.config.worktree_dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| {
@@ -476,38 +430,24 @@ async fn test_parallel_fix_worktrees_cleaned_up() {
 
 /// Test that already-fixed items (with 👍 reaction) are skipped.
 #[tokio::test]
-async fn test_fix_skips_already_fixed_items() {
-    let (_bare_dir, repo_dir) = setup_git_repo();
-    let repo_root = repo_dir.path();
-
+async fn test_fix_loop_skips_already_fixed_items() {
     let findings = vec![make_finding("a"), make_finding("b")];
-    let comments = make_review_comments(&findings);
-    // a is already fixed (has 👍), b has no reactions
-    let reactions = vec![
-        fixed_reactions(CommentId::new(100)),
-        no_reactions(CommentId::new(101)),
-    ];
+    let mut f = FixLoopFixture::new(&findings, &[], None);
 
-    let submission = Arc::new(MockFixSubmission::new(comments, reactions));
-    let correction_runner = Arc::new(MockCorrectionRunner::noop());
+    // a is already fixed (has 👍), b has no reactions — neither is queued
+    f.submission
+        .set_reactions(CommentId::new(100), fixed_reactions(CommentId::new(100)).1);
 
-    let config = make_config();
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 0, Some(2));
 
-    let result = run_fix(
-        PrNumber::new(42),
-        "main",
-        &config,
-        Arc::clone(&submission),
-        &rlph::prompts::PromptEngine::new(None),
-        repo_root,
-        correction_runner,
-    )
-    .await;
+    let result = f.run().await;
+    shutdown_handle.abort();
 
     assert!(result.is_ok());
     // Nothing should have been processed
-    assert_eq!(submission.reply_count(), 0);
-    assert_eq!(submission.added_reaction_count(), 0);
+    assert_eq!(f.submission.reply_count(), 0);
+    assert_eq!(f.submission.added_reaction_count(), 0);
 }
 
 // --- Polling loop tests ---
@@ -535,6 +475,22 @@ impl PollingMockSubmission {
 
     fn reply_count(&self) -> usize {
         self.base.reply_count()
+    }
+
+    fn added_reaction_count(&self) -> usize {
+        self.base.added_reaction_count()
+    }
+
+    fn deleted_reaction_count(&self) -> usize {
+        self.base.deleted_reaction_count()
+    }
+
+    fn added_reactions(&self) -> Vec<(CommentId, String)> {
+        self.base.added_reactions()
+    }
+
+    fn set_reactions(&self, comment_id: CommentId, reactions: Vec<Reaction>) {
+        self.base.set_reactions(comment_id, reactions);
     }
 }
 
@@ -958,13 +914,13 @@ async fn test_fix_loop_batch_full_session_reuse() {
     );
 
     // All reactions should be "+1" (fixed)
-    for (_, reaction) in submission.base.added_reactions() {
+    for (_, reaction) in submission.added_reactions() {
         assert_eq!(reaction, "+1");
     }
 
     // 3 rocket reactions should have been removed (one per finding)
     assert_eq!(
-        submission.base.deleted_reaction_count(),
+        submission.deleted_reaction_count(),
         3,
         "expected 3 🚀 reactions removed"
     );
@@ -1083,7 +1039,7 @@ async fn test_fix_loop_batch_wontfix_continues() {
     );
 
     // Verify reactions: first finding gets "confused" (WontFix), second gets "+1" (Fixed)
-    let reactions = submission.base.added_reactions();
+    let reactions = submission.added_reactions();
     assert!(
         reactions.iter().any(|(_, r)| r == "confused"),
         "expected 😕 reaction for WontFix finding, got: {reactions:?}"
@@ -1095,7 +1051,7 @@ async fn test_fix_loop_batch_wontfix_continues() {
 
     // Both rocket reactions should have been removed
     assert_eq!(
-        submission.base.deleted_reaction_count(),
+        submission.deleted_reaction_count(),
         2,
         "expected 2 🚀 reactions removed"
     );
@@ -1290,7 +1246,7 @@ echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"comm
     );
 
     // Reaction should be +1 (fixed)
-    let reactions = submission.base.added_reactions();
+    let reactions = submission.added_reactions();
     assert_eq!(reactions.len(), 1);
     assert_eq!(reactions[0].1, "+1");
 }
