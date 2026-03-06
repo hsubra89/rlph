@@ -148,7 +148,7 @@ async fn test_codex_model_flag() {
     let mut args = base_args();
     args.extend([
         "--model".to_string(),
-        "gpt-5.3-codex".to_string(),
+        "gpt-5.4".to_string(),
         "-".to_string(),
     ]);
 

@@ -269,7 +269,7 @@ fn runner_default_binary(runner: RunnerKind) -> &'static str {
 
 fn runner_default_model(runner: RunnerKind) -> Option<&'static str> {
     match runner {
-        RunnerKind::Codex => Some("gpt-5.3-codex"),
+        RunnerKind::Codex => Some("gpt-5.4"),
         RunnerKind::Claude => Some("claude-opus-4-6"),
         RunnerKind::OpenCode => None,
     }
@@ -868,7 +868,7 @@ worktree_dir = "/tmp/wt"
         let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "codex"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.agent_binary, "codex");
-        assert_eq!(config.agent_model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(config.agent_model.as_deref(), Some("gpt-5.4"));
     }
 
     #[test]

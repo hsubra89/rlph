@@ -1395,7 +1395,7 @@ mod tests {
         let runner = build_runner(
             RunnerKind::Codex,
             "codex",
-            Some("gpt-5.3"),
+            Some("gpt-5.4"),
             None,
             None,
             None,
@@ -1463,14 +1463,14 @@ mod tests {
     fn test_codex_build_resume_command_with_model() {
         let runner = CodexRunner::new(
             "codex".to_string(),
-            Some("gpt-5.3".to_string()),
+            Some("gpt-5.4".to_string()),
             None,
             None,
             2,
         );
         let (_cmd, args) = runner.build_resume_command();
         assert!(args.contains(&"--model".to_string()));
-        assert!(args.contains(&"gpt-5.3".to_string()));
+        assert!(args.contains(&"gpt-5.4".to_string()));
         assert!(args.contains(&"resume".to_string()));
         assert!(args.contains(&"--last".to_string()));
     }
@@ -1648,12 +1648,12 @@ mod tests {
     fn test_codex_resume_with_prompt_command_with_model_and_effort() {
         let (_cmd, args) = build_codex_resume_with_prompt_command(
             "codex",
-            Some("gpt-5.3"),
+            Some("gpt-5.4"),
             Some("medium"),
             "thread-xyz",
         );
         assert!(args.contains(&"--model".to_string()));
-        assert!(args.contains(&"gpt-5.3".to_string()));
+        assert!(args.contains(&"gpt-5.4".to_string()));
         assert!(args.contains(&"--config".to_string()));
         assert!(args.contains(&"model_reasoning_effort=\"medium\"".to_string()));
         assert!(args.contains(&"resume".to_string()));

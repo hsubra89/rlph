@@ -37,7 +37,7 @@ fn test_config_codex(source: &str) -> Config {
     Config {
         runner: RunnerKind::Codex,
         agent_binary: "codex".to_string(),
-        agent_model: Some("gpt-5.3-codex".to_string()),
+        agent_model: Some("gpt-5.4".to_string()),
         ..test_config(source)
     }
 }
@@ -133,7 +133,7 @@ fn test_prd_command_codex_includes_model() {
     let config = test_config_codex("github");
     let (_, args) = build_prd_command(&config, "prompt", None);
     assert!(args.contains(&"--model".to_string()));
-    assert!(args.contains(&"gpt-5.3-codex".to_string()));
+    assert!(args.contains(&"gpt-5.4".to_string()));
 }
 
 /// End-to-end: mock agent binary verifies template is passed as positional arg.
