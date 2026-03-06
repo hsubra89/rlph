@@ -323,7 +323,7 @@ echo "{\"type\":\"result\",\"result\":\"{\\\"status\\\":\\\"wont_fix\\\",\\\"rea
 
 /// Test that `run_fix_loop` processes multiple 🚀-reacted items.
 #[tokio::test]
-async fn test_parallel_fix_multiple_queued_items() {
+async fn test_fix_loop_multiple_queued_items() {
     let findings = vec![
         make_finding_critical("bug-alpha"),
         make_finding_critical("bug-beta"),
@@ -349,26 +349,26 @@ async fn test_parallel_fix_multiple_queued_items() {
 
     // Each fix should have: removed 🚀, added 👍, posted reply
     assert_eq!(
-        f.submission.base.deleted_reaction_count(),
+        f.submission.deleted_reaction_count(),
         3,
         "expected 3 🚀 reactions removed"
     );
     assert_eq!(
-        f.submission.base.added_reaction_count(),
+        f.submission.added_reaction_count(),
         3,
         "expected 3 result reactions added"
     );
     assert_eq!(f.submission.reply_count(), 3, "expected 3 replies posted");
 
     // All added reactions should be "+1" (fixed)
-    for (_, reaction) in f.submission.base.added_reactions() {
+    for (_, reaction) in f.submission.added_reactions() {
         assert_eq!(reaction, "+1");
     }
 }
 
 /// Test that `run_fix_loop` with no 🚀-reacted items returns Ok and does nothing.
 #[tokio::test]
-async fn test_fix_no_queued_items() {
+async fn test_fix_loop_no_queued_items() {
     let findings = vec![make_finding("a"), make_finding("b")];
     let mut f = FixLoopFixture::new(&findings, &[], None);
 
@@ -384,7 +384,7 @@ async fn test_fix_no_queued_items() {
 
 /// Test that worktrees are cleaned up after fixes complete.
 #[tokio::test]
-async fn test_fix_worktrees_cleaned_up() {
+async fn test_fix_loop_worktrees_cleaned_up() {
     let findings = vec![
         make_finding_critical("clean-a"),
         make_finding_critical("clean-b"),
@@ -456,7 +456,7 @@ async fn test_fix_skips_already_fixed_items() {
     assert!(result.is_ok());
     // Nothing should have been processed
     assert_eq!(submission.reply_count(), 0);
-    assert_eq!(submission.base.added_reaction_count(), 0);
+    assert_eq!(submission.added_reaction_count(), 0);
 }
 
 // --- Polling loop tests ---
@@ -484,6 +484,18 @@ impl PollingMockSubmission {
 
     fn reply_count(&self) -> usize {
         self.base.reply_count()
+    }
+
+    fn added_reaction_count(&self) -> usize {
+        self.base.added_reaction_count()
+    }
+
+    fn deleted_reaction_count(&self) -> usize {
+        self.base.deleted_reaction_count()
+    }
+
+    fn added_reactions(&self) -> Vec<(CommentId, String)> {
+        self.base.added_reactions()
     }
 }
 
@@ -907,13 +919,13 @@ async fn test_fix_loop_batch_full_session_reuse() {
     );
 
     // All reactions should be "+1" (fixed)
-    for (_, reaction) in submission.base.added_reactions() {
+    for (_, reaction) in submission.added_reactions() {
         assert_eq!(reaction, "+1");
     }
 
     // 3 rocket reactions should have been removed (one per finding)
     assert_eq!(
-        submission.base.deleted_reaction_count(),
+        submission.deleted_reaction_count(),
         3,
         "expected 3 🚀 reactions removed"
     );
@@ -1032,7 +1044,7 @@ async fn test_fix_loop_batch_wontfix_continues() {
     );
 
     // Verify reactions: first finding gets "confused" (WontFix), second gets "+1" (Fixed)
-    let reactions = submission.base.added_reactions();
+    let reactions = submission.added_reactions();
     assert!(
         reactions.iter().any(|(_, r)| r == "confused"),
         "expected 😕 reaction for WontFix finding, got: {reactions:?}"
@@ -1044,7 +1056,7 @@ async fn test_fix_loop_batch_wontfix_continues() {
 
     // Both rocket reactions should have been removed
     assert_eq!(
-        submission.base.deleted_reaction_count(),
+        submission.deleted_reaction_count(),
         2,
         "expected 2 🚀 reactions removed"
     );
@@ -1239,7 +1251,7 @@ echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"comm
     );
 
     // Reaction should be +1 (fixed)
-    let reactions = submission.base.added_reactions();
+    let reactions = submission.added_reactions();
     assert_eq!(reactions.len(), 1);
     assert_eq!(reactions[0].1, "+1");
 }
