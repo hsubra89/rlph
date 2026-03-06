@@ -29,7 +29,7 @@ use crate::ids::{CommentId, PrNumber, ReactionId};
 use crate::orchestrator::{CorrectionRunner, retry_with_correction};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
-    FINDING_MARKER, SchemaName, StandaloneFixOutput, parse_standalone_fix_output,
+    FINDING_MARKER, SchemaName, Severity, StandaloneFixOutput, parse_standalone_fix_output,
 };
 use crate::runner::{AgentRunner, AnyRunner, Phase, RunResult, build_runner};
 use crate::submission::{PrReviewComment, Reaction, SubmissionBackend};
@@ -388,7 +388,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                 completed.extend(batch_completed);
 
                 if let Some((failed_id, failed_severity, e)) = batch_error {
-                    if matches!(failed_severity, crate::review_schema::Severity::Critical) {
+                    if matches!(failed_severity, Severity::Critical) {
                         let attempts = retries.entry(failed_id.clone()).or_insert(0);
                         *attempts += 1;
                         if *attempts >= MAX_TOTAL_ATTEMPTS {
@@ -756,10 +756,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     shared: &SharedFixState<S, C>,
     prepared_items: Vec<PreparedFixItem>,
     pr_number: PrNumber,
-) -> (
-    HashSet<String>,
-    Option<(String, crate::review_schema::Severity, Error)>,
-) {
+) -> (HashSet<String>, Option<(String, Severity, Error)>) {
     let batch_size = prepared_items.len();
     let mut completed_ids = HashSet::new();
 
@@ -796,7 +793,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
 
     // Run each finding sequentially, sharing the session
     let mut session_id: Option<String> = None;
-    let error: Option<(String, crate::review_schema::Severity, Error)> = 'batch: {
+    let error: Option<(String, Severity, Error)> = 'batch: {
         for (idx, prepared) in prepared_items.into_iter().enumerate() {
             let PreparedFixItem {
                 item,
@@ -1799,7 +1796,7 @@ mod tests {
         assert!(
             matches!(
                 batch_error,
-                Some((ref finding_id, crate::review_schema::Severity::Critical, _))
+                Some((ref finding_id, Severity::Critical, _))
                     if finding_id == "crit-finding"
             ),
             "expected batch failure to preserve finding severity, got: {batch_error:?}"
