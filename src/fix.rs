@@ -14,8 +14,8 @@ const MAX_PUSH_ATTEMPTS: u32 = 3;
 /// Maximum number of fetch retry attempts (git lock contention under concurrency).
 const MAX_FETCH_ATTEMPTS: u32 = 3;
 
-/// Maximum number of attempts for a critical finding before marking it as failed.
-const MAX_RETRY_ATTEMPTS: u8 = 2;
+/// Maximum total attempts before marking a finding as failed (currently CRITICAL only).
+const MAX_TOTAL_ATTEMPTS: u32 = 2;
 
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
@@ -213,7 +213,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
     let mut completed: HashSet<String> = HashSet::new();
     let mut failed: HashSet<String> = HashSet::new();
-    let mut retries: HashMap<String, u8> = HashMap::new();
+    let mut retries: HashMap<String, u32> = HashMap::new();
     let mut cycle: u64 = 0;
     let mut finding_deps: Option<FindingDeps> = None;
 
@@ -335,7 +335,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
     deps: &FindingDeps,
     completed: &mut HashSet<String>,
     failed: &mut HashSet<String>,
-    retries: &mut HashMap<String, u8>,
+    retries: &mut HashMap<String, u32>,
     pr_number: PrNumber,
     prompt_engine: &PromptEngine,
     reply_map: &mut ReplyMap,
@@ -400,7 +400,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                     if is_critical {
                         let attempts = retries.entry(failed_id.clone()).or_insert(0);
                         *attempts += 1;
-                        if *attempts >= MAX_RETRY_ATTEMPTS {
+                        if *attempts >= MAX_TOTAL_ATTEMPTS {
                             eprintln!("[rlph] Critical fix failed after retry: {failed_id}: {e}");
                             warn!(%failed_id, error = %e, "critical fix failed after retry");
                             failed.insert(failed_id);
