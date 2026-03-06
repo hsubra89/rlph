@@ -35,149 +35,6 @@ use crate::runner::{AgentRunner, AnyRunner, Phase, RunResult, build_runner};
 use crate::submission::{PrReviewComment, Reaction, SubmissionBackend};
 use crate::worktree::{WorktreeManager, git_in_dir, resolve_setup_script, validate_branch_name};
 
-/// Run the standalone fix flow for ALL 🚀-reacted findings on a PR sequentially.
-///
-/// Steps:
-/// 1. Fetch inline review comments and their reactions, parse queued items
-/// 2. Collect all eligible queued items (respecting dependencies)
-/// 3. Run a fix agent for each item sequentially
-///    - Each gets its own worktree off `origin/<pr-branch>`
-///    - Parse StandaloneFixOutput JSON (with retry)
-///    - If fixed: rebase onto `origin/<pr-branch>`, push with retry
-///    - Update reactions and post reply
-///    - Clean up worktree
-/// 4. Collect results, log any errors
-pub async fn run_fix<C: CorrectionRunner + 'static>(
-    pr_number: PrNumber,
-    pr_branch: &str,
-    config: &Config,
-    submission: Arc<impl SubmissionBackend + 'static>,
-    prompt_engine: &PromptEngine,
-    repo_root: &Path,
-    correction_runner: Arc<C>,
-) -> Result<()> {
-    // Validate pr_branch from GitHub API at the trust boundary
-    validate_branch_name(pr_branch)?;
-
-    // 1. Fetch review comments and reactions, build fix items
-    info!(pr_number = %pr_number, "polling GitHub for PR review comments");
-    let (items, comments) = fetch_and_parse_items(pr_number, &*submission)?;
-    info!(total = items.len(), "parsed fix items from review comments");
-
-    // Clean up stale 🚀 reactions on already-resolved findings (best-effort)
-    cleanup_stale_rockets(&items, &*submission);
-
-    // 2. Build dependency graph and collect queued items for the scheduler
-    let finding_deps = FindingDeps::build(&items);
-    let queued_items: Vec<FixItem> = items
-        .iter()
-        .filter(|i| i.state == FindingState::Queued)
-        .cloned()
-        .collect();
-
-    // 3. Pre-compute per-item data and run fixes via the scheduler
-    let setup_script =
-        resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?.map(Arc::from);
-    let shared = SharedFixState::new(
-        config,
-        pr_branch,
-        repo_root,
-        Arc::clone(&submission),
-        Arc::clone(&correction_runner),
-        setup_script,
-    );
-
-    let mut reply_map = collect_reply_bodies(&comments);
-    let mut completed: HashSet<String> = HashSet::new();
-    let mut failed: HashSet<String> = HashSet::new();
-    let mut skipped: usize = 0;
-    let mut errors = Vec::new();
-    let mut total_scheduled: usize = 0;
-
-    loop {
-        let mut sched_completed = resolved_finding_ids(&items);
-        sched_completed.extend(completed.iter().map(String::as_str));
-        let sched_failed: HashSet<&str> = failed.iter().map(String::as_str).collect();
-
-        let finding_ids = match fix_scheduler::next_action(
-            &queued_items,
-            &finding_deps,
-            &sched_completed,
-            &sched_failed,
-        ) {
-            ScheduleAction::RunBatch(ids) => ids,
-            ScheduleAction::Idle => break,
-        };
-
-        for finding_id in finding_ids {
-            total_scheduled += 1;
-
-            let Some(item) = queued_items
-                .iter()
-                .find(|i| i.finding.id == finding_id)
-                .cloned()
-            else {
-                warn!(%finding_id, "scheduler returned unknown finding ID, skipping");
-                failed.insert(finding_id);
-                skipped += 1;
-                continue;
-            };
-
-            let Some(prepared) = prepare_fix_item(
-                item,
-                pr_number,
-                &shared.fix_config,
-                prompt_engine,
-                &mut reply_map,
-            ) else {
-                skipped += 1;
-                failed.insert(finding_id);
-                continue;
-            };
-
-            match run_prepared_fix(&shared, prepared, pr_number).await {
-                Ok(()) => {
-                    completed.insert(finding_id);
-                }
-                Err(e) => {
-                    warn!(error = %e, "fix agent failed");
-                    errors.push(e);
-                    failed.insert(finding_id);
-                }
-            }
-        }
-    }
-
-    if total_scheduled == 0 {
-        info!("no eligible items found — nothing to fix");
-        return Ok(());
-    }
-
-    if skipped == total_scheduled {
-        return Err(Error::Orchestrator(format!(
-            "all {skipped} eligible fix item(s) were skipped due to validation errors"
-        )));
-    } else if skipped > 0 {
-        warn!(
-            skipped,
-            total = total_scheduled,
-            "some fix items were skipped due to validation errors"
-        );
-    }
-
-    // 4. Report results
-    if errors.is_empty() {
-        info!(pr_number = %pr_number, "all fixes completed successfully");
-        Ok(())
-    } else {
-        let count = errors.len();
-        Err(Error::Orchestrator(format!(
-            "{count} fix(es) failed; first: {}",
-            errors[0]
-        )))
-    }
-}
-
 /// Run the fix command as a continuous polling loop.
 ///
 /// Polls for newly 🚀-reacted comments every `poll_seconds`, then runs
@@ -470,53 +327,16 @@ pub(crate) async fn wait_or_shutdown(
     }
 }
 
-/// Run a single fix: create worktree, run agent, push, update reactions, cleanup.
-async fn run_single_fix(
-    ctx: FixContext<'_>,
-    wm: &WorktreeManager,
-    submission: &(impl SubmissionBackend + ?Sized),
-    correction_runner: &(impl CorrectionRunner + ?Sized),
-) -> Result<()> {
-    let worktree_path = wm.create_fresh(ctx.fix_branch, ctx.pr_branch)?.path;
-    info!(
-        finding_id = %ctx.item.finding.id,
-        path = %worktree_path.display(),
-        branch = %ctx.fix_branch,
-        "created fix worktree"
-    );
-
-    // Run the fix agent and handle results, ensuring worktree cleanup
-    let result = run_fix_agent_and_apply(&ctx, &worktree_path, submission, correction_runner).await;
-
-    // Clean up worktree (always, even on error)
-    info!(
-        finding_id = %ctx.item.finding.id,
-        path = %worktree_path.display(),
-        "cleaning up fix worktree"
-    );
-    if let Err(e) = wm.remove(&worktree_path) {
-        warn!(error = %e, "failed to clean up fix worktree");
-    }
-
-    result
-}
-
-/// Bundled context for a single fix operation, replacing long parameter lists.
-struct FixContext<'a> {
+/// Bundled context for reaction/reply updates after a fix completes.
+struct FixContext {
     item: FixItem,
     pr_number: PrNumber,
-    pr_branch: &'a str,
-    fix_branch: &'a str,
-    fix_config: &'a ReviewStepConfig,
-    agent_timeout_retries: u32,
-    prompt: &'a str,
 }
 
 /// Shared state cloned into each spawned fix task.
 ///
-/// Groups the Arc-wrapped values that both `run_fix` and `run_fix_loop` need
-/// to clone per spawned task, replacing individual `Arc::clone` lines with
-/// a single `shared.clone()`.
+/// Groups the Arc-wrapped values that `run_fix_loop` needs, replacing
+/// individual `Arc::clone` lines with a single `shared.clone()`.
 struct SharedFixState<S, C> {
     fix_config: Arc<ReviewStepConfig>,
     worktree_dir: Arc<str>,
@@ -707,37 +527,6 @@ fn append_review_context(
     }
 }
 
-/// Build [`FixContext`] and run a single fix.
-///
-/// Shared by both [`run_fix`] (one-shot) and [`run_fix_loop`] (polling).
-async fn run_prepared_fix<S: SubmissionBackend, C: CorrectionRunner>(
-    shared: &SharedFixState<S, C>,
-    prepared: PreparedFixItem,
-    pr_number: PrNumber,
-) -> Result<()> {
-    let PreparedFixItem {
-        item,
-        fix_branch,
-        mut prompt,
-        comment_id,
-        replies,
-    } = prepared;
-
-    append_review_context(&*shared.submission, comment_id, &replies, &mut prompt);
-
-    let ctx = FixContext {
-        item,
-        pr_number,
-        pr_branch: &shared.pr_branch,
-        fix_branch: &fix_branch,
-        fix_config: &shared.fix_config,
-        agent_timeout_retries: shared.agent_timeout_retries,
-        prompt: &prompt,
-    };
-    let wm = shared.make_worktree_manager();
-    run_single_fix(ctx, &wm, &*shared.submission, &*shared.correction_runner).await
-}
-
 /// Run a batch of findings in a single shared agent session.
 ///
 /// CRITICAL findings run as a batch of 1; WARNING/INFO findings batch up to 3.
@@ -911,15 +700,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 }
             };
 
-            let ctx = FixContext {
-                item,
-                pr_number,
-                pr_branch: &shared.pr_branch,
-                fix_branch: &batch_branch,
-                fix_config: &shared.fix_config,
-                agent_timeout_retries: shared.agent_timeout_retries,
-                prompt: &prompt,
-            };
+            let ctx = FixContext { item, pr_number };
             update_reactions_and_reply(&ctx, &*shared.submission, &fix_result);
 
             completed_ids.insert(finding_id);
@@ -1071,51 +852,6 @@ fn build_fix_runner(config: &ReviewStepConfig, agent_timeout_retries: u32) -> An
     .with_stream_prefix("fix".to_string())
 }
 
-/// Inner function: spawn agent, parse output, rebase/push with retry, update reactions + reply.
-async fn run_fix_agent_and_apply(
-    ctx: &FixContext<'_>,
-    worktree_path: &Path,
-    submission: &(impl SubmissionBackend + ?Sized),
-    correction_runner: &(impl CorrectionRunner + ?Sized),
-) -> Result<()> {
-    // Spawn fix agent
-    info!(finding_id = %ctx.item.finding.id, "spawning fix agent");
-    let runner = build_fix_runner(ctx.fix_config, ctx.agent_timeout_retries);
-
-    let run_result = runner.run(Phase::Fix, ctx.prompt, worktree_path).await?;
-
-    // Parse StandaloneFixOutput JSON (with retry on failure)
-    let fix_output = parse_fix_with_retry(
-        &run_result,
-        ctx.fix_config,
-        worktree_path,
-        correction_runner,
-    )
-    .await?;
-
-    info!(finding_id = %ctx.item.finding.id, ?fix_output, "fix agent completed");
-
-    // Apply result
-    let fix_result = apply_fix_output(
-        fix_output,
-        &ctx.item.finding.id,
-        worktree_path,
-        ctx.fix_branch,
-        ctx.pr_branch,
-        &ConflictResolutionCtx {
-            session_id: run_result.session_id.as_deref(),
-            fix_config: ctx.fix_config,
-            correction_runner,
-        },
-    )
-    .await?;
-
-    // Update reactions and post reply (best-effort — don't fail on already-pushed code)
-    update_reactions_and_reply(ctx, submission, &fix_result);
-
-    Ok(())
-}
-
 /// Remove 🚀 reactions from a single review comment (best-effort).
 fn remove_rocket_reactions(
     finding_id: &str,
@@ -1168,7 +904,7 @@ fn cleanup_stale_rockets(items: &[FixItem], submission: &(impl SubmissionBackend
 /// The outcome emoji and reply are added before removing 🚀 so that observers
 /// always see the result before the queuing signal disappears.
 fn update_reactions_and_reply(
-    ctx: &FixContext<'_>,
+    ctx: &FixContext,
     submission: &(impl SubmissionBackend + ?Sized),
     fix_result: &FixResultKind,
 ) {
