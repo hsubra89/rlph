@@ -327,9 +327,9 @@ pub(crate) async fn wait_or_shutdown(
     }
 }
 
-/// Shared state cloned into each spawned fix task.
+/// Shared state used across fix scheduling and batch execution.
 ///
-/// Groups the Arc-wrapped values that `run_fix_loop` needs, replacing
+/// Groups the Arc-wrapped values shared by the fix loop helpers, replacing
 /// individual `Arc::clone` lines with a single `shared.clone()`.
 struct SharedFixState<S, C> {
     fix_config: Arc<ReviewStepConfig>,
