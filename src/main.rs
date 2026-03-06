@@ -66,6 +66,60 @@ fn build_worktree_manager(
     .with_setup_script(setup_script))
 }
 
+fn validate_local_plan_dir(repo_root: &Path, plan_path: &str) -> Result<(), String> {
+    let full_path = repo_root.join(plan_path);
+    if !full_path.exists() {
+        return Err(format!(
+            "local plan path '{}' does not exist",
+            full_path.display()
+        ));
+    }
+    if !full_path.is_dir() {
+        return Err(format!(
+            "local plan path '{}' is not a directory",
+            full_path.display()
+        ));
+    }
+
+    let mut has_file = false;
+    let entries = std::fs::read_dir(&full_path).map_err(|e| {
+        format!(
+            "failed to read local plan directory '{}': {e}",
+            full_path.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            format!(
+                "failed to read local plan directory entry '{}': {e}",
+                full_path.display()
+            )
+        })?;
+        if entry
+            .file_type()
+            .map_err(|e| {
+                format!(
+                    "failed to inspect local plan directory entry '{}': {e}",
+                    full_path.display()
+                )
+            })?
+            .is_file()
+        {
+            has_file = true;
+            break;
+        }
+    }
+
+    if !has_file {
+        return Err(format!(
+            "local plan path '{}' must contain at least one file",
+            full_path.display()
+        ));
+    }
+
+    Ok(())
+}
+
 /// Install a double-SIGINT handler: first signal sends `true` on the channel
 /// (graceful shutdown), second signal exits immediately with code 130.
 fn install_sigint_handler(first_message: &'static str) -> watch::Receiver<bool> {
@@ -345,6 +399,13 @@ async fn main() {
 
             let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
+            if let Some(plan_path) = config.plan_path.as_deref()
+                && let Err(e) = validate_local_plan_dir(&repo_root, plan_path)
+            {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+
             let source: AnySource = match config.source.as_str() {
                 "linear" => match LinearSource::new(&config) {
                     Ok(s) => AnySource::Linear(s),
@@ -407,6 +468,33 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_local_plan_dir_accepts_directory_with_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plan_dir = tmp.path().join("plans/feature-a");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(plan_dir.join("task.md"), "# task\n").unwrap();
+
+        assert!(validate_local_plan_dir(tmp.path(), "plans/feature-a").is_ok());
+    }
+
+    #[test]
+    fn validate_local_plan_dir_rejects_missing_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = validate_local_plan_dir(tmp.path(), "plans/missing").unwrap_err();
+        assert!(err.contains("does not exist"));
+    }
+
+    #[test]
+    fn validate_local_plan_dir_rejects_empty_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plan_dir = tmp.path().join("plans/empty");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+
+        let err = validate_local_plan_dir(tmp.path(), "plans/empty").unwrap_err();
+        assert!(err.contains("must contain at least one file"));
+    }
 
     #[test]
     fn parse_pr_ref_plain_number() {

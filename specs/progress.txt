@@ -1,0 +1,135 @@
+2026-03-05 - Completed Phase 1 (Reference Rewriter) as highest-priority dependency for plan sync.
+- Added `src/reference_rewriter.rs` with `rewrite_issue_urls(markdown, local_ids)` for GitHub issues/PRs and Linear issue URLs.
+- Rewrites only when local file ID exists; skips markdown link destinations to avoid double-wrapping; leaves fenced code blocks unchanged.
+- Added 8 unit tests covering all Phase 1 acceptance criteria plus fenced code-block safety.
+- Feedback loops run: `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo nextest run -E 'test(reference_rewriter)'` (all pass).
+
+2026-03-05 - Implemented Phase 2 trait groundwork as highest-priority unblocker for plan sync.
+- Added `fetch_sub_issues(task_id) -> Result<Vec<Task>>` to `TaskSource` and wired dispatch in `AnySource`.
+- Implemented `GitHubSource::fetch_sub_issues` via `gh issue view --json subIssues`, supporting both list and `{ nodes: [...] }` payload shapes.
+- Added `LinearSource::fetch_sub_issues` stub returning empty vec (compile-safe placeholder per plan).
+- Added/updated tests: 2 new GitHub sub-issue unit tests, plus TaskSource test mocks updated for new trait method.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_fetch_sub_issues_parses_connection_shape) or test(test_fetch_sub_issues_handles_missing_field)'` (all pass).
+
+2026-03-05 - Completed Phase 2 plan-sync module as highest-priority dependency for local/sync-first orchestration.
+- Added `src/plan_sync.rs` with `sync_to_local(source, issue_id, plans_dir) -> PlanDirectory` and `list_plan_files(plan_dir)`.
+- Sync flow now fetches main issue, fetches + hydrates sub-issues, crawls referenced issues up to depth 4 with deduplication, writes `<id>.md` files, then rewrites cross-links via `reference_rewriter`.
+- Reused `WorktreeManager::slugify` for plan folder naming with fallback `gh-<issue_id>` when title slug is empty.
+- Added 4 unit tests covering directory structure, sub-issue inclusion, depth limiting, circular deduplication, link rewriting, and slug fallback.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo nextest run -E 'test(plan_sync)'` (all pass).
+
+2026-03-05 - Completed highest-priority Phase 3 CLI groundwork for local plan source (`plan_path` parsing + validation).
+- Added optional positional `plan_path` to `rlph build` (`BuildArgs`) and plumbed it into `Config` as `plan_path: Option<String>`.
+- Added build-time local plan directory validation in `main`: path must exist, be a directory, and include at least one file.
+- Updated config/test helpers to include new `Config.plan_path` field (`src/prd.rs`, `tests/common/mod.rs`, `tests/prd_integration.rs`) to keep type checks green.
+- Added tests for CLI parsing, config merge, and local plan directory validation success/failure cases.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_parse_build_with_plan_path) or test(test_plan_path_from_build_args) or test(validate_local_plan_dir_accepts_directory_with_files) or test(validate_local_plan_dir_rejects_missing_directory) or test(validate_local_plan_dir_rejects_empty_directory)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 3 task: local mode now bypasses `TaskSource` fetch loop.
+- Updated `Orchestrator::run_iteration` to short-circuit into a local-plan iteration when `Config.plan_path` is set; no `fetch_eligible_tasks`, `fetch_closed_task_ids`, or `get_task_details` calls in this path.
+- Added local-plan task bootstrap with task identity derived from the plan directory slug and reused implement/review flow without source status marking.
+- Updated PR body generation for local plans to reference the plan path instead of adding `Resolves #...`.
+- Added integration coverage `test_local_plan_mode_skips_task_source_fetch` using a fail-fast `TaskSource` implementation.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_local_plan_mode_skips_task_source_fetch)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 3 plumbing task: pass local plan file list through orchestrator prompt vars.
+- Updated `Orchestrator::initial_task_vars` to resolve configured `plan_path` files and inject `plan_dir` + `plan_files` template variables.
+- Added helper `add_plan_prompt_vars` to format deterministic `@plans/...` references for prompt templates.
+- Added unit test `test_add_plan_prompt_vars_populates_plan_dir_and_files` and adjusted local-plan integration fixture to include a real plan file.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_add_plan_prompt_vars_populates_plan_dir_and_files) or test(test_local_plan_mode_skips_task_source_fetch)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 3 task: local plan identity now drives both branch naming and state id.
+- Added `WorktreeManager::local_worktree_name` + `create_for_local_plan` to create/reuse `rlph-local-<plan-slug>` worktrees instead of synthetic issue-number branches.
+- Updated local-plan orchestrator path to call `create_for_local_plan`, keeping local task/state identity as `local-<plan-slug>` from the plan directory name.
+- Added tests: `test_local_worktree_name`, `test_local_plan_branch_name_derived_from_directory_name`, and `test_local_plan_state_id_derived_from_directory_name`.
+- Updated plan status: Phase 3 acceptance criterion "Task identity (for branch name, state) is derived from directory name" marked complete.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_local_plan_mode_skips_task_source_fetch) or test(test_local_plan_branch_name_derived_from_directory_name) or test(test_local_plan_state_id_derived_from_directory_name) or test(test_local_worktree_name)'` (all pass).
+
+2026-03-05 - Completed highest-priority Phase 4 prompt migration task: implement prompt now consumes plan file references.
+- Updated `src/default_prompts/implement-issue.md` to support local/synced plan context via `{{plan_dir}}` + `{{plan_files}}` and render `@plans/...` references when present.
+- Kept backward compatibility: when `plan_files` is absent, template still falls back to existing issue-title/body `<untrusted-content>` mode.
+- Added prompt tests: `test_load_default_implement` now checks plan vars, and new `test_render_implement_with_plan_file_refs` verifies rendering with one and many file references.
+- Updated plan status: Phase 4 acceptance criterion "Implement prompt template renders with `@` file references" marked complete.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_load_default_implement) or test(test_render_implement_with_plan_file_refs)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 4 choose-prompt migration to local plan files.
+- Updated `src/default_prompts/choose-issue.md` with dual-mode rendering: plan-file mode now uses `{{plan_dir}}` + `{{plan_files}}`, instructs explicit `NOTHING_LEFT`, and preserves legacy GitHub-issues JSON mode for backward compatibility.
+- Updated `PromptEngine::render_phase` to inject default empty values for optional `plan_dir`, `plan_files`, and `issues_json` variables so conditional prompt branches render safely across local and remote paths.
+- Added prompt tests: `test_load_default_choose` now asserts `NOTHING_LEFT` + plan vars; new `test_render_choose_with_plan_file_refs` verifies one-file and many-file rendering; kept end-to-end choose render test green.
+- Updated plan status: marked complete for choose prompt plan-file rendering, `NOTHING_LEFT` instruction, varying plan file count rendering, and prompt engine variable coverage.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_load_default_choose) or test(test_render_phase_end_to_end) or test(test_render_choose_with_plan_file_refs)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 4 acceptance criterion: enforce/verify choose+implement cwd roots.
+- Added `WorkingDirCaptureRunner` in `tests/orchestrator_integration.rs` to record the working directory used for choose and implement phases.
+- Added integration test `test_choose_and_implement_run_from_worktree_roots` to verify choose runs at repo worktree root and implement runs at the created issue worktree root.
+- Updated plan status: marked complete for Phase 4 acceptance criterion "Agent cwd is worktree root for both phases".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_choose_and_implement_run_from_worktree_roots)'` (all pass).
+
+2026-03-05 - Completed highest-priority Phase 5 foundation task: draft/ready lifecycle support in submission backend.
+- Extended `SubmissionBackend` with `submit_draft(...)` and `mark_ready(pr_number)` default methods so orchestrator can adopt draft-first lifecycle incrementally.
+- Implemented `GitHubSubmission::submit_draft` via `gh pr create --draft` (with existing-PR reuse) and `GitHubSubmission::mark_ready` via `gh pr ready`.
+- Added idempotent handling for ready transition: treats "already ready" CLI responses as success.
+- Added unit test `test_is_already_ready_error_detects_message` for ready-state error normalization.
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_is_already_ready_error_detects_message)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 task: plan files are now the first commit on worktree branches.
+- Updated orchestrator bootstrap to materialize plan files before implementation in both modes:
+  - Remote mode now runs `plan_sync::sync_to_local(...)` directly into the issue worktree `plans/` directory.
+  - Local mode now copies the configured `plan_path` directory into the local-plan worktree so `@plans/...` references resolve at runtime.
+- Added `commit_plan_files(...)` and wired it immediately after plan materialization to create a dedicated first commit (`chore: add plan files`) before implement/review.
+- Updated prompt var resolution to read `plan_dir`/`plan_files` from the active worktree root (not repo root), so prompts reference the synced/copied plan files.
+- Added unit tests: `test_copy_dir_recursive_copies_nested_files` and `test_commit_plan_files_creates_single_plan_commit`.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Plan files are committed as the first commit on the worktree branch".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_copy_dir_recursive_copies_nested_files) or test(test_commit_plan_files_creates_single_plan_commit) or test(test_local_plan_mode_skips_task_source_fetch) or test(test_choose_and_implement_run_from_worktree_roots)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 task: open draft PR immediately after the plan commit.
+- Refactored orchestrator flow to create PRs before implement/review by adding `open_draft_pr_if_needed(...)` and moving PR submission out of `run_implement_review`.
+- New flow pushes the branch right after plan-file commit, calls `SubmissionBackend::submit_draft(...)`, stores `pr_url` for review/comment phases, then runs implement.
+- Kept current behavior for already-open PRs (skip creation) and dry-run mode (skip creation); extracted body text into `pr_body(...)` for shared remote/local formatting.
+- Added integration test `test_draft_pr_created_before_implement_phase` to enforce submission ordering.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Draft PR is opened immediately after the plan commit".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_full_loop_with_push) or test(test_draft_pr_created_before_implement_phase)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 PR-body task for local plans.
+- Added integration test `test_local_plan_draft_pr_body_references_plan_folder` to verify local-plan draft PR body includes `Implements local plan \`plans/my-feature\`.` and does not include `Resolves #...`.
+- Confirmed existing `Orchestrator::pr_body` behavior satisfies local-plan plan-folder reference requirement without changing runtime logic.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Local-plan draft PRs reference the plan folder in body".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_local_plan_draft_pr_body_references_plan_folder) or test(test_local_plan_branch_name_derived_from_directory_name) or test(test_full_loop_with_push)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 lifecycle task: mark PR ready after pipeline completion.
+- Updated `Orchestrator::run_implement_review` to call `SubmissionBackend::mark_ready(pr_number)` after successful review pipeline completion (non-dry-run), matching draft-first lifecycle semantics.
+- Added integration test `test_pr_marked_ready_after_review_pipeline` and extended test submission tracker/mocks to assert ready-transition calls.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "PR is marked ready after inner loop completes".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_pr_marked_ready_after_review_pipeline) or test(test_full_loop_with_push) or test(test_draft_pr_created_before_implement_phase)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 finalize-order task: run review only after PR is ready.
+- Updated `Orchestrator::run_implement_review` ordering to call `SubmissionBackend::mark_ready(pr_number)` before `run_review_pipeline(...)` in non-dry-run mode.
+- Added integration guard `ReadyBeforeReviewFactory` and migrated test to `test_pr_marked_ready_before_review_pipeline`, which fails if any review phase runs before `mark_ready`.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Review pipeline runs after PR is marked ready".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_pr_marked_ready_before_review_pipeline) or test(test_full_loop_with_push) or test(test_draft_pr_created_before_implement_phase)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 inner-loop task: choose-driven sub-task loop with explicit `NOTHING_LEFT` exit.
+- Updated `Orchestrator::run_implement_review` to run choose from the worktree root on plan-backed iterations, execute implement/push per selected sub-task, and stop when choose stdout is exactly `NOTHING_LEFT`.
+- Added loop safety guard (`MAX_SUBTASK_ITERATIONS`) and moved choose-task parsing to `parse_task_selection_from(root)` so top-level selection still reads repo-root `.rlph/task.toml` while inner-loop selection reads worktree-local `.rlph/task.toml`.
+- Updated integration test runners to emit `NOTHING_LEFT` on second plan choose call, and updated assertions in loop/cwd/count tests to reflect choose→implement iterative behavior.
+- Updated plan status: marked complete for Phase 5 acceptance criteria "Inner loop runs choose → implement → commit cycles" and "Inner loop exits when choose agent outputs `NOTHING_LEFT`".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_local_plan_mode_skips_task_source_fetch) or test(test_choose_and_implement_run_from_worktree_roots) or test(test_continuous_mode_polls_with_empty_results) or test(test_max_iterations_stops_at_limit) or test(test_continuous_shutdown_exits_between_iterations)'` (all pass; nextest reports one test as leaky).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 commit-discipline task: enforce one commit per choose→implement cycle.
+- Updated `Orchestrator::run_implement_review` to capture `HEAD` before each implement run and enforce commit advancement after implement.
+- Added `git_head_oid(...)` + `ensure_cycle_commit(...)`; if implement did not create a commit, orchestrator now creates a cycle commit (`chore: complete plan sub-task <id>`) with `--allow-empty` fallback so every cycle records a distinct commit.
+- Added unit tests: `test_ensure_cycle_commit_creates_allow_empty_commit_when_needed` and `test_ensure_cycle_commit_skips_when_head_already_advanced`.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Each cycle produces a separate commit".
+- Feedback loops run: `cargo fmt --all`, `cargo check`, `cargo nextest run -E 'test(test_ensure_cycle_commit_creates_allow_empty_commit_when_needed) or test(test_ensure_cycle_commit_skips_when_head_already_advanced)'`, `cargo nextest run -E 'test(test_local_plan_mode_skips_task_source_fetch) or test(test_draft_pr_created_before_implement_phase)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 PR-body task for remote-sourced drafts.
+- Strengthened integration coverage in `test_draft_pr_created_before_implement_phase` to assert draft PR body includes `Resolves #42` for remote-sourced runs.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Remote-sourced draft PRs include `Resolves #<issue_number>` in body".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_draft_pr_created_before_implement_phase) or test(test_local_plan_draft_pr_body_references_plan_folder)'` (all pass).
+
+2026-03-05 - Completed highest-priority remaining Phase 5 persistence task: synced remote plan directories now persist after completion.
+- Updated `Orchestrator::run_iteration` to persist the synced `plan_dir` back into repo-root before worktree cleanup via new `persist_plan_dir_to_repo(...)`.
+- Kept worktree cleanup behavior intact while ensuring plan artifacts remain in `<repo>/plans/<slug>/` as durable records.
+- Added integration test `test_remote_plan_directory_persists_after_completion` asserting `plans/fix-bug/42.md` exists after a successful run.
+- Updated plan status: marked complete for Phase 5 acceptance criterion "Plan directory persists after completion (not cleaned up)".
+- Feedback loops run: `cargo fmt --all -- --check`, `cargo check`, `cargo nextest run -E 'test(test_remote_plan_directory_persists_after_completion) or test(test_worktree_cleaned_up_after_success)'` (all pass).

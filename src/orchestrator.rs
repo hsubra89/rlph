@@ -1,6 +1,7 @@
 //! Core orchestration loop: choose task → implement → review → submit.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -15,6 +16,7 @@ use crate::diff_position_mapper::DiffPositionMapper;
 use crate::diff_position_mapper::FallbackKind;
 use crate::error::{Error, Result};
 use crate::ids::{IssueNumber, PrNumber};
+use crate::plan_sync::{list_plan_files, sync_to_local};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
     FallbackContext, ReviewFinding, SchemaName, Verdict, correction_prompt,
@@ -48,6 +50,9 @@ pub enum IterationOutcome {
     ProcessedTask,
     NoEligibleTasks,
 }
+
+const NOTHING_LEFT_SIGNAL: &str = "NOTHING_LEFT";
+const MAX_SUBTASK_ITERATIONS: u32 = 64;
 
 pub struct ReviewInvocation {
     pub task_id_for_state: String,
@@ -350,6 +355,30 @@ impl<
     C: CorrectionRunner,
 > Orchestrator<S, R, B, F, P, C>
 {
+    fn local_plan_slug(&self) -> Result<String> {
+        let plan_path =
+            self.config.plan_path.as_deref().ok_or_else(|| {
+                Error::Orchestrator("local plan path is not configured".to_string())
+            })?;
+        let plan_name = Path::new(plan_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                Error::Orchestrator(format!(
+                    "invalid local plan path '{plan_path}': missing terminal directory name"
+                ))
+            })?;
+
+        let slug = WorktreeManager::slugify(plan_name);
+        if slug.is_empty() {
+            return Err(Error::Orchestrator(format!(
+                "invalid local plan path '{plan_path}': directory name slug is empty"
+            )));
+        }
+
+        Ok(slug)
+    }
+
     /// Run according to configured loop mode.
     ///
     /// When `shutdown` becomes true, the orchestrator exits between iterations.
@@ -448,6 +477,10 @@ impl<
     }
 
     async fn run_iteration(&self) -> Result<IterationOutcome> {
+        if self.config.plan_path.is_some() {
+            return self.run_local_plan_iteration().await;
+        }
+
         // 1. Fetch eligible tasks and filter by dependency graph
         self.reporter.fetching_tasks();
         info!("fetching eligible tasks");
@@ -494,7 +527,7 @@ impl<
             );
 
             // Parse task selection from .rlph/task.toml
-            self.parse_task_selection()?
+            self.parse_task_selection_from(&self.repo_root)?
         };
         let issue_number = parse_issue_number(&task_id)?;
         info!(task_id, issue_number = %issue_number, "selected task");
@@ -532,6 +565,8 @@ impl<
             "worktree created"
         );
 
+        let plan_dir = self.sync_remote_plan_to_worktree(issue_number, &worktree_info)?;
+
         // Update state
         self.state_mgr.set_current_task(
             &task_id,
@@ -540,9 +575,24 @@ impl<
         )?;
 
         // Run the implement → submit → review pipeline, cleaning up on success
+        let (pr_number, pr_url) = self.open_draft_pr_if_needed(
+            &task,
+            Some(issue_number),
+            &worktree_info,
+            existing_pr_number,
+        )?;
+
         let result = self
-            .run_implement_review(&task, issue_number, &worktree_info, existing_pr_number)
-            .await;
+            .run_implement_review(
+                &task,
+                Some(task.id.as_str()),
+                &worktree_info,
+                pr_number,
+                pr_url.as_deref(),
+                Some(&plan_dir),
+            )
+            .await
+            .and_then(|_| self.persist_plan_dir_to_repo(&worktree_info, &plan_dir));
 
         // 11. Clean up worktree
         self.cleanup_worktree(&worktree_info.path);
@@ -565,11 +615,84 @@ impl<
         }
     }
 
+    async fn run_local_plan_iteration(&self) -> Result<IterationOutcome> {
+        let slug = self.local_plan_slug()?;
+        let task_id = format!("local-{slug}");
+        let issue_number = IssueNumber::new(0);
+
+        let task = Task {
+            id: task_id.clone(),
+            title: format!("Implement local plan: {slug}"),
+            body: self
+                .config
+                .plan_path
+                .as_ref()
+                .map(|p| format!("Work from plan directory: {p}"))
+                .unwrap_or_default(),
+            labels: Vec::new(),
+            url: self.config.plan_path.clone().unwrap_or_default(),
+            priority: None,
+        };
+
+        self.reporter.task_selected(issue_number, &task.title);
+
+        info!("creating worktree for local plan");
+        let worktree_info = self.worktree_mgr.create_for_local_plan(&slug)?;
+        let plan_dir = self.copy_local_plan_to_worktree(&worktree_info)?;
+
+        self.state_mgr.set_current_task(
+            &task_id,
+            "implement",
+            &worktree_info.path.display().to_string(),
+        )?;
+
+        let (pr_number, pr_url) =
+            self.open_draft_pr_if_needed(&task, None, &worktree_info, None)?;
+
+        let result = self
+            .run_implement_review(
+                &task,
+                None,
+                &worktree_info,
+                pr_number,
+                pr_url.as_deref(),
+                Some(&plan_dir),
+            )
+            .await;
+
+        self.cleanup_worktree(&worktree_info.path);
+
+        match result {
+            Ok(()) => {
+                self.state_mgr.complete_current_task()?;
+                let _ = self.state_mgr.remove_worktree_mapping(&task_id);
+                self.reporter.iteration_complete(issue_number, &task.title);
+                Ok(IterationOutcome::ProcessedTask)
+            }
+            Err(e) => {
+                warn!(error = %e, "local plan iteration failed");
+                Err(e)
+            }
+        }
+    }
+
     fn cleanup_worktree(&self, path: &Path) {
         info!("cleaning up worktree");
         if let Err(e) = self.worktree_mgr.remove(path) {
             warn!(error = %e, "failed to clean up worktree");
         }
+    }
+
+    fn persist_plan_dir_to_repo(&self, worktree: &WorktreeInfo, plan_dir: &str) -> Result<()> {
+        let source = worktree.path.join(plan_dir);
+        let destination = self.repo_root.join(plan_dir);
+        copy_dir_recursive(&source, &destination)?;
+        info!(
+            source = %source.display(),
+            destination = %destination.display(),
+            "persisted plan directory to repo root"
+        );
+        Ok(())
     }
 
     fn shutdown_requested(shutdown: Option<&watch::Receiver<bool>>) -> bool {
@@ -588,59 +711,147 @@ impl<
         }
     }
 
-    /// Implement, submit PR, and review — the inner pipeline after worktree creation.
+    /// Implement, push updates, and review — the inner pipeline after worktree creation.
     async fn run_implement_review(
         &self,
         task: &Task,
-        issue_number: IssueNumber,
+        mark_in_review_task_id: Option<&str>,
         worktree_info: &WorktreeInfo,
-        existing_pr_number: Option<PrNumber>,
+        pr_number: Option<PrNumber>,
+        pr_url: Option<&str>,
+        plan_dir: Option<&str>,
     ) -> Result<()> {
-        let mut vars = self.initial_task_vars(task, worktree_info);
-
-        // 7. Implement phase
-        self.reporter.implement_started();
-        info!("running implement phase");
-        let impl_prompt = self.prompt_engine.render_phase("implement", &vars)?;
-        self.runner
-            .run(Phase::Implement, &impl_prompt, &worktree_info.path)
-            .await?;
-
-        // 8. Push branch
-        if !self.config.dry_run {
-            info!("pushing branch");
-            self.push_branch(worktree_info)?;
+        let mut vars = self.initial_task_vars(task, worktree_info, plan_dir)?;
+        if let Some(url) = pr_url {
+            vars.insert("pr_url".to_string(), url.to_string());
         }
 
-        // 9. Submit PR (skip if choose agent reported an existing PR)
-        let pr_number = if let Some(pr) = existing_pr_number {
-            info!(pr = %pr, "skipping PR submission — existing PR");
-            Some(pr)
-        } else if !self.config.dry_run {
-            info!("submitting PR");
-            let pr_body = format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.");
-            let result = self.submission.submit(
-                &worktree_info.branch,
-                &self.config.base_branch,
-                &task.title,
-                &pr_body,
-            )?;
-            info!(url = result.url, "PR created");
-            self.reporter.pr_created(&result.url);
-            vars.insert("pr_url".to_string(), result.url);
-            result.number
-        } else {
-            info!("dry run — skipping PR submission");
-            None
-        };
+        let mut implemented_cycles = 0u32;
 
-        // 10. Mark in-review
-        if !self.config.dry_run {
-            self.source.mark_in_review(&task.id)?;
+        if plan_dir.is_some() {
+            for cycle in 1..=MAX_SUBTASK_ITERATIONS {
+                let choose_prompt = self.prompt_engine.render_phase("choose", &vars)?;
+                let choose_result = self
+                    .runner
+                    .run(Phase::Choose, &choose_prompt, &worktree_info.path)
+                    .await?;
+
+                if choose_result.stdout.trim() == NOTHING_LEFT_SIGNAL {
+                    info!(
+                        cycles = implemented_cycles,
+                        "no remaining plan work reported by choose"
+                    );
+                    break;
+                }
+
+                let selected_task_id = self.parse_task_selection_from(&worktree_info.path)?;
+                vars.insert("selected_task_id".to_string(), selected_task_id.clone());
+
+                self.reporter.implement_started();
+                info!(cycle, "running implement phase");
+                let head_before_cycle = git_head_oid(&worktree_info.path)?;
+                let impl_prompt = self.prompt_engine.render_phase("implement", &vars)?;
+                self.runner
+                    .run(Phase::Implement, &impl_prompt, &worktree_info.path)
+                    .await?;
+
+                ensure_cycle_commit(
+                    &worktree_info.path,
+                    &selected_task_id,
+                    cycle,
+                    head_before_cycle.as_deref(),
+                )?;
+
+                implemented_cycles += 1;
+
+                if !self.config.dry_run {
+                    info!(cycle, "pushing branch");
+                    self.push_branch(worktree_info)?;
+                }
+            }
+
+            if implemented_cycles == MAX_SUBTASK_ITERATIONS {
+                return Err(Error::Orchestrator(format!(
+                    "inner loop reached safety limit of {MAX_SUBTASK_ITERATIONS} iterations without {NOTHING_LEFT_SIGNAL}"
+                )));
+            }
+        } else {
+            self.reporter.implement_started();
+            info!("running implement phase");
+            let impl_prompt = self.prompt_engine.render_phase("implement", &vars)?;
+            self.runner
+                .run(Phase::Implement, &impl_prompt, &worktree_info.path)
+                .await?;
+
+            if !self.config.dry_run {
+                info!("pushing branch");
+                self.push_branch(worktree_info)?;
+            }
+        }
+
+        // 9. Mark in-review
+        if !self.config.dry_run
+            && let Some(task_id) = mark_in_review_task_id
+        {
+            self.source.mark_in_review(task_id)?;
+        }
+
+        // 10. Mark draft PR ready, then run review pipeline.
+        if !self.config.dry_run
+            && let Some(pr_number) = pr_number
+        {
+            self.submission.mark_ready(pr_number)?;
+            info!(pr = %pr_number, "marked draft PR as ready");
         }
 
         self.run_review_pipeline(&vars, worktree_info, pr_number)
-            .await
+            .await?;
+
+        Ok(())
+    }
+
+    fn open_draft_pr_if_needed(
+        &self,
+        task: &Task,
+        issue_number: Option<IssueNumber>,
+        worktree_info: &WorktreeInfo,
+        existing_pr_number: Option<PrNumber>,
+    ) -> Result<(Option<PrNumber>, Option<String>)> {
+        if let Some(pr) = existing_pr_number {
+            info!(pr = %pr, "skipping draft PR creation — existing PR");
+            return Ok((Some(pr), None));
+        }
+
+        if self.config.dry_run {
+            info!("dry run — skipping draft PR creation");
+            return Ok((None, None));
+        }
+
+        info!("pushing branch for draft PR");
+        self.push_branch(worktree_info)?;
+
+        let pr_body = self.pr_body(issue_number);
+        let result = self.submission.submit_draft(
+            &worktree_info.branch,
+            &self.config.base_branch,
+            &task.title,
+            &pr_body,
+        )?;
+
+        info!(url = result.url, "draft PR created");
+        self.reporter.pr_created(&result.url);
+
+        Ok((result.number, Some(result.url)))
+    }
+
+    fn pr_body(&self, issue_number: Option<IssueNumber>) -> String {
+        if let Some(issue_number) = issue_number {
+            format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.")
+        } else if let Some(plan_path) = self.config.plan_path.as_deref() {
+            format!("Implements local plan `{plan_path}`.\n\nAutomated implementation by rlph.")
+        } else {
+            "Automated implementation by rlph.".to_string()
+        }
     }
 
     async fn run_review_pipeline(
@@ -852,9 +1063,9 @@ impl<
         Ok(())
     }
 
-    /// Parse the task selection from `.rlph/task.toml` written by the choose agent.
-    fn parse_task_selection(&self) -> Result<String> {
-        let path = self.repo_root.join(".rlph").join("task.toml");
+    /// Parse the task selection from `<root>/.rlph/task.toml` written by the choose agent.
+    fn parse_task_selection_from(&self, root: &Path) -> Result<String> {
+        let path = root.join(".rlph").join("task.toml");
         let content = std::fs::read_to_string(&path).map_err(|e| {
             Error::Orchestrator(format!(
                 "failed to read task selection {}: {e}",
@@ -870,7 +1081,12 @@ impl<
         Ok(selection.id)
     }
 
-    fn initial_task_vars(&self, task: &Task, worktree: &WorktreeInfo) -> HashMap<String, String> {
+    fn initial_task_vars(
+        &self,
+        task: &Task,
+        worktree: &WorktreeInfo,
+        plan_dir: Option<&str>,
+    ) -> Result<HashMap<String, String>> {
         let mut vars = build_task_vars(
             task,
             &self.repo_root,
@@ -878,26 +1094,213 @@ impl<
             &worktree.path,
             &self.config.base_branch,
         );
+
+        if let Some(plan_path) = plan_dir {
+            add_plan_prompt_vars(&mut vars, &worktree.path, plan_path)?;
+        }
+
         vars.insert("pr_number".to_string(), String::new());
         vars.insert("pr_branch".to_string(), String::new());
-        vars
+        Ok(vars)
+    }
+
+    fn sync_remote_plan_to_worktree(
+        &self,
+        issue_number: IssueNumber,
+        worktree: &WorktreeInfo,
+    ) -> Result<String> {
+        let plans_root = worktree.path.join("plans");
+        let synced = sync_to_local(&self.source, &issue_number.to_string(), &plans_root)?;
+        let rel = synced.path.strip_prefix(&worktree.path).map_err(|e| {
+            Error::Orchestrator(format!(
+                "failed to relativize synced plan dir {} against worktree {}: {e}",
+                synced.path.display(),
+                worktree.path.display()
+            ))
+        })?;
+        let plan_dir = rel.to_string_lossy().to_string();
+        commit_plan_files(&worktree.path, &plan_dir)?;
+        Ok(plan_dir)
+    }
+
+    fn copy_local_plan_to_worktree(&self, worktree: &WorktreeInfo) -> Result<String> {
+        let plan_path = self.config.plan_path.as_deref().ok_or_else(|| {
+            Error::Orchestrator("missing plan_path in local plan mode".to_string())
+        })?;
+        let source = self.repo_root.join(plan_path);
+        let destination = worktree.path.join(plan_path);
+        copy_dir_recursive(&source, &destination)?;
+        commit_plan_files(&worktree.path, plan_path)?;
+        Ok(plan_path.to_string())
     }
 
     fn push_branch(&self, worktree: &WorktreeInfo) -> Result<()> {
-        let output = Command::new("git")
-            .args(["push", "-u", "origin", &worktree.branch])
-            .current_dir(&worktree.path)
-            .output()
-            .map_err(|e| Error::Orchestrator(format!("failed to run git push: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Orchestrator(format!("git push failed: {stderr}")));
-        }
+        run_git_checked(
+            &worktree.path,
+            &["push", "-u", "origin", &worktree.branch],
+            "failed to run git push",
+            "git push failed",
+        )?;
 
         info!(branch = worktree.branch, "pushed branch");
         Ok(())
     }
+}
+
+fn add_plan_prompt_vars(
+    vars: &mut HashMap<String, String>,
+    repo_root: &Path,
+    plan_path: &str,
+) -> Result<()> {
+    let plan_dir = repo_root.join(plan_path);
+    let plan_files = list_plan_files(&plan_dir)?;
+    let plan_refs = plan_files
+        .iter()
+        .map(|path| {
+            let rel = path.strip_prefix(repo_root).unwrap_or(path);
+            format!("@{}", rel.display())
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    vars.insert("plan_dir".to_string(), plan_path.to_string());
+    vars.insert("plan_files".to_string(), plan_refs);
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else if file_type.is_file() {
+            fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn run_git_output(
+    worktree_path: &Path,
+    args: &[&str],
+    run_error_prefix: &str,
+) -> Result<std::process::Output> {
+    Command::new("git")
+        .args(args)
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| Error::Orchestrator(format!("{run_error_prefix}: {e}")))
+}
+
+fn run_git_checked(
+    worktree_path: &Path,
+    args: &[&str],
+    run_error_prefix: &str,
+    status_error_prefix: &str,
+) -> Result<std::process::Output> {
+    let output = run_git_output(worktree_path, args, run_error_prefix)?;
+    if !output.status.success() {
+        return Err(Error::Orchestrator(format!(
+            "{status_error_prefix}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(output)
+}
+
+fn commit_plan_files(worktree_path: &Path, plan_dir: &str) -> Result<()> {
+    run_git_checked(
+        worktree_path,
+        &["add", "--", plan_dir],
+        "failed to stage plan files",
+        "git add for plan files failed",
+    )?;
+
+    let staged = Command::new("git")
+        .args(["diff", "--cached", "--quiet", "--", plan_dir])
+        .current_dir(worktree_path)
+        .status()
+        .map_err(|e| Error::Orchestrator(format!("failed to inspect staged plan files: {e}")))?;
+    if staged.success() {
+        return Ok(());
+    }
+
+    run_git_checked(
+        worktree_path,
+        &["commit", "-m", "chore: add plan files"],
+        "failed to commit plan files",
+        "git commit for plan files failed",
+    )?;
+
+    info!(plan_dir, "committed plan files");
+    Ok(())
+}
+
+fn git_head_oid(worktree_path: &Path) -> Result<Option<String>> {
+    let output = run_git_output(
+        worktree_path,
+        &["rev-parse", "HEAD"],
+        "failed to resolve HEAD",
+    )?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let oid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if oid.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(oid))
+    }
+}
+
+fn ensure_cycle_commit(
+    worktree_path: &Path,
+    selected_task_id: &str,
+    cycle: u32,
+    head_before_cycle: Option<&str>,
+) -> Result<()> {
+    let head_after_implement = git_head_oid(worktree_path)?;
+    if head_after_implement.as_deref() != head_before_cycle {
+        info!(cycle, selected_task_id, "implement phase created a commit");
+        return Ok(());
+    }
+
+    run_git_checked(
+        worktree_path,
+        &["add", "-A"],
+        "failed to stage implement changes",
+        "git add for implement changes failed",
+    )?;
+
+    let commit_message = format!("chore: complete plan sub-task {selected_task_id}");
+    run_git_checked(
+        worktree_path,
+        &["commit", "--allow-empty", "-m", commit_message.as_str()],
+        "failed to commit implement changes",
+        "git commit for implement changes failed",
+    )?;
+
+    let head_after_commit = git_head_oid(worktree_path)?;
+    if head_after_commit.as_deref() == head_before_cycle {
+        return Err(Error::Orchestrator(
+            "failed to record a new commit for implement cycle".to_string(),
+        ));
+    }
+
+    info!(
+        cycle,
+        selected_task_id, "recorded commit for implement cycle"
+    );
+    Ok(())
 }
 
 /// Attempt to resume a session with a correction prompt when JSON parsing fails.
@@ -1073,6 +1476,21 @@ mod tests {
     use crate::review_schema::{ReviewFinding, Severity};
     use crate::submission::PrComment;
     use crate::test_helpers::make_finding;
+    use tempfile::TempDir;
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     struct InlineReviewTestSubmission {
         diff: String,
@@ -1286,5 +1704,141 @@ mod tests {
         assert!(comments[0].body.contains(
             "applies to `src/missing.rs:50` but is shown here because that file is not in the diff"
         ));
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_copies_nested_files() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("src");
+        let dst = temp.path().join("dst");
+
+        std::fs::create_dir_all(src.join("nested/deeper")).unwrap();
+        std::fs::write(src.join("top.md"), "top").unwrap();
+        std::fs::write(src.join("nested/deeper/task.txt"), "nested").unwrap();
+
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert_eq!(std::fs::read_to_string(dst.join("top.md")).unwrap(), "top");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("nested/deeper/task.txt")).unwrap(),
+            "nested"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_dir_recursive_skips_symlink_entries() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("src");
+        let dst = temp.path().join("dst");
+        let secret = temp.path().join("secret.txt");
+
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("top.md"), "top").unwrap();
+        std::fs::write(&secret, "sensitive").unwrap();
+        std::os::unix::fs::symlink(&secret, src.join("secret-link.txt")).unwrap();
+
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert_eq!(std::fs::read_to_string(dst.join("top.md")).unwrap(), "top");
+        assert!(!dst.join("secret-link.txt").exists());
+    }
+
+    #[test]
+    fn test_commit_plan_files_creates_single_plan_commit() {
+        let temp = TempDir::new().unwrap();
+        run_git(temp.path(), &["init"]);
+        run_git(temp.path(), &["config", "user.email", "test@test.com"]);
+        run_git(temp.path(), &["config", "user.name", "Test"]);
+        run_git(temp.path(), &["commit", "--allow-empty", "-m", "init"]);
+
+        let plan_dir = temp.path().join("plans/feature-a");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(plan_dir.join("task.md"), "- do work").unwrap();
+
+        commit_plan_files(temp.path(), "plans/feature-a").unwrap();
+        commit_plan_files(temp.path(), "plans/feature-a").unwrap();
+
+        let log = std::process::Command::new("git")
+            .args(["log", "--pretty=%s"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(log.status.success());
+        let subjects = String::from_utf8_lossy(&log.stdout);
+        assert!(subjects.contains("chore: add plan files"));
+        assert_eq!(subjects.matches("chore: add plan files").count(), 1);
+    }
+
+    #[test]
+    fn test_add_plan_prompt_vars_populates_plan_dir_and_files() {
+        let temp = TempDir::new().unwrap();
+        let plan_dir = temp.path().join("plans/my-feature");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(plan_dir.join("02-task.md"), "task").unwrap();
+        std::fs::write(plan_dir.join("01-context.md"), "context").unwrap();
+
+        let mut vars = HashMap::new();
+        add_plan_prompt_vars(&mut vars, temp.path(), "plans/my-feature").unwrap();
+
+        assert_eq!(
+            vars.get("plan_dir").map(String::as_str),
+            Some("plans/my-feature")
+        );
+        assert_eq!(
+            vars.get("plan_files").map(String::as_str),
+            Some("@plans/my-feature/01-context.md, @plans/my-feature/02-task.md")
+        );
+    }
+
+    #[test]
+    fn test_ensure_cycle_commit_creates_allow_empty_commit_when_needed() {
+        let temp = TempDir::new().unwrap();
+        run_git(temp.path(), &["init"]);
+        run_git(temp.path(), &["config", "user.email", "test@test.com"]);
+        run_git(temp.path(), &["config", "user.name", "Test"]);
+        run_git(temp.path(), &["commit", "--allow-empty", "-m", "init"]);
+
+        let before = git_head_oid(temp.path()).unwrap();
+        ensure_cycle_commit(temp.path(), "local-my-feature", 1, before.as_deref()).unwrap();
+
+        let log = Command::new("git")
+            .args(["log", "--pretty=%s", "-1"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(log.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout).trim(),
+            "chore: complete plan sub-task local-my-feature"
+        );
+    }
+
+    #[test]
+    fn test_ensure_cycle_commit_skips_when_head_already_advanced() {
+        let temp = TempDir::new().unwrap();
+        run_git(temp.path(), &["init"]);
+        run_git(temp.path(), &["config", "user.email", "test@test.com"]);
+        run_git(temp.path(), &["config", "user.name", "Test"]);
+        run_git(temp.path(), &["commit", "--allow-empty", "-m", "init"]);
+
+        let before = git_head_oid(temp.path()).unwrap();
+        run_git(
+            temp.path(),
+            &["commit", "--allow-empty", "-m", "agent commit"],
+        );
+
+        ensure_cycle_commit(temp.path(), "gh-42", 1, before.as_deref()).unwrap();
+
+        let log = Command::new("git")
+            .args(["log", "--pretty=%s"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(log.status.success());
+        let subjects = String::from_utf8_lossy(&log.stdout);
+        assert_eq!(subjects.lines().count(), 2);
+        assert!(subjects.contains("agent commit"));
+        assert!(!subjects.contains("chore: complete plan sub-task gh-42"));
     }
 }

@@ -131,6 +131,7 @@ pub struct Config {
     pub fix: ReviewStepConfig,
     pub worktree_setup_script: Option<String>,
     pub linear: Option<LinearConfig>,
+    pub plan_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -471,6 +472,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
         fix,
         worktree_setup_script: file.worktree_setup_script,
         linear,
+        plan_path: build.and_then(|b| b.plan_path.clone()),
     };
     validate(&config)?;
     Ok(config)
@@ -721,6 +723,15 @@ worktree_dir = "/tmp/wt"
         assert_eq!(config.agent_timeout, Some(Duration::from_secs(600)));
         assert_eq!(config.implement_timeout, Some(Duration::from_secs(1800)));
         assert_eq!(config.agent_timeout_retries, 2);
+        assert_eq!(config.plan_path, None);
+    }
+
+    #[test]
+    fn test_plan_path_from_build_args() {
+        let file = ConfigFile::default();
+        let cli = Cli::parse_from(["rlph", "build", "plans/my-feature", "--once"]);
+        let config = merge(file, &cli, cli.build_args()).unwrap();
+        assert_eq!(config.plan_path.as_deref(), Some("plans/my-feature"));
     }
 
     #[test]

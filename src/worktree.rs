@@ -134,6 +134,11 @@ impl WorktreeManager {
         format!("rlph-{issue_number}-{slug}")
     }
 
+    /// Generate the local-plan worktree directory name: `rlph-local-{slug}`.
+    pub fn local_worktree_name(slug: &str) -> String {
+        format!("rlph-local-{slug}")
+    }
+
     /// Create a URL/title-safe slug from a string.
     pub fn slugify(title: &str) -> String {
         let slug: String = title
@@ -240,6 +245,54 @@ impl WorktreeManager {
             self.base_branch
         );
 
+        self.run_setup_script(&canonical_path)?;
+
+        Ok(WorktreeInfo {
+            path: canonical_path,
+            branch,
+        })
+    }
+
+    /// Create a worktree for a local plan. Reuses an existing local-plan worktree.
+    pub fn create_for_local_plan(&self, slug: &str) -> Result<WorktreeInfo> {
+        let name = Self::local_worktree_name(slug);
+
+        if let Some(existing) = self.find_existing_by_name(&name)? {
+            info!(
+                path = %existing.path.display(),
+                branch = %existing.branch,
+                "reusing existing local-plan worktree"
+            );
+            return Ok(existing);
+        }
+
+        let path = self.base_dir.join(&name);
+        let branch = name;
+
+        std::fs::create_dir_all(&self.base_dir).map_err(|e| {
+            Error::Worktree(format!(
+                "failed to create base dir {}: {e}",
+                self.base_dir.display()
+            ))
+        })?;
+
+        self.fetch_with_retry(&self.base_branch, 3)?;
+        let start_point = format!("origin/{}", self.base_branch);
+
+        let create_result = match self.git_worktree_add(&path, &branch, true, Some(&start_point)) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if e.to_string().contains("already exists") {
+                    self.git_worktree_add(&path, &branch, false, None)
+                } else {
+                    Err(e)
+                }
+            }
+        };
+
+        create_result?;
+
+        let canonical_path = path.canonicalize().unwrap_or(path);
         self.run_setup_script(&canonical_path)?;
 
         Ok(WorktreeInfo {
@@ -643,6 +696,14 @@ mod tests {
         assert_eq!(
             WorktreeManager::worktree_name(IssueNumber::new(42), "fix-bug"),
             "rlph-42-fix-bug"
+        );
+    }
+
+    #[test]
+    fn test_local_worktree_name() {
+        assert_eq!(
+            WorktreeManager::local_worktree_name("my-feature"),
+            "rlph-local-my-feature"
         );
     }
 

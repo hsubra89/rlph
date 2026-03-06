@@ -88,6 +88,22 @@ pub trait SubmissionBackend: Send + Sync {
     /// Submit a branch as a PR or diff. Returns the URL of the created PR/diff.
     fn submit(&self, branch: &str, base: &str, title: &str, body: &str) -> Result<SubmitResult>;
 
+    /// Submit a branch as a draft PR. Backends without draft support may fallback to `submit`.
+    fn submit_draft(
+        &self,
+        branch: &str,
+        base: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<SubmitResult> {
+        self.submit(branch, base, title, body)
+    }
+
+    /// Mark an existing draft PR as ready for review.
+    fn mark_ready(&self, _pr_number: PrNumber) -> Result<()> {
+        Ok(())
+    }
+
     /// Find an open PR that references the given issue number.
     fn find_existing_pr_for_issue(&self, _issue_number: IssueNumber) -> Result<Option<PrNumber>> {
         Ok(None)
@@ -353,21 +369,28 @@ impl GitHubSubmission {
         parse_pr_context_json(&stdout)
             .map_err(|e| Error::Submission(format!("failed to parse gh pr view output: {e}")))
     }
-}
 
-impl SubmissionBackend for GitHubSubmission {
-    fn submit(&self, branch: &str, base: &str, title: &str, body: &str) -> Result<SubmitResult> {
-        // Check for existing PR first
+    fn submit_impl(
+        &self,
+        branch: &str,
+        base: &str,
+        title: &str,
+        body: &str,
+        draft: bool,
+    ) -> Result<SubmitResult> {
         if let Some((url, number)) = self.find_existing_pr(branch)? {
             info!(url = %url, "found existing PR for branch");
             return Ok(SubmitResult { url, number });
         }
 
-        // Create new PR
-        let output = Command::new("gh")
-            .args([
-                "pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body,
-            ])
+        let mut cmd = Command::new("gh");
+        cmd.args([
+            "pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body,
+        ]);
+        if draft {
+            cmd.arg("--draft");
+        }
+        let output = cmd
             .output()
             .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
 
@@ -378,8 +401,44 @@ impl SubmissionBackend for GitHubSubmission {
 
         let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let number = parse_pr_number_from_url(&url);
-        info!(url = %url, "created PR");
+        info!(url = %url, draft, "created PR");
         Ok(SubmitResult { url, number })
+    }
+}
+
+impl SubmissionBackend for GitHubSubmission {
+    fn submit(&self, branch: &str, base: &str, title: &str, body: &str) -> Result<SubmitResult> {
+        self.submit_impl(branch, base, title, body, false)
+    }
+
+    fn submit_draft(
+        &self,
+        branch: &str,
+        base: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<SubmitResult> {
+        self.submit_impl(branch, base, title, body, true)
+    }
+
+    fn mark_ready(&self, pr_number: PrNumber) -> Result<()> {
+        let number_str = pr_number.to_string();
+        let output = Command::new("gh")
+            .args(["pr", "ready", &number_str])
+            .output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_already_ready_error(stderr.as_ref()) {
+                info!(pr_number = %pr_number, "PR already ready; skipping");
+                return Ok(());
+            }
+            return Err(Error::Submission(format!("gh pr ready failed: {stderr}")));
+        }
+
+        info!(pr_number = %pr_number, "marked draft PR ready");
+        Ok(())
     }
 
     fn find_existing_pr_for_issue(&self, issue_number: IssueNumber) -> Result<Option<PrNumber>> {
@@ -785,11 +844,17 @@ fn extract_issue_number_reference(body: &str) -> Option<IssueNumber> {
     })
 }
 
+fn is_already_ready_error(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("already") && lower.contains("ready")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        PrComment, extract_issue_number_reference, parse_owner_repo_from_remote,
-        parse_pr_context_json, parse_pr_number_from_url, pr_body_references_issue,
+        PrComment, extract_issue_number_reference, is_already_ready_error,
+        parse_owner_repo_from_remote, parse_pr_context_json, parse_pr_number_from_url,
+        pr_body_references_issue,
     };
     use crate::ids::{CommentId, IssueNumber, PrNumber};
 
@@ -978,5 +1043,14 @@ mod tests {
     #[test]
     fn test_parse_owner_repo_unrecognised() {
         assert!(parse_owner_repo_from_remote("https://gitlab.com/acme/widget").is_err());
+    }
+
+    #[test]
+    fn test_is_already_ready_error_detects_message() {
+        assert!(is_already_ready_error(
+            "pull request is already marked as ready for review"
+        ));
+        assert!(is_already_ready_error("PR ALREADY READY"));
+        assert!(!is_already_ready_error("gh pr ready failed: not found"));
     }
 }

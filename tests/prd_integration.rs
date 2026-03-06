@@ -30,6 +30,7 @@ fn test_config(source: &str) -> Config {
         fix: default_review_step("fix"),
         worktree_setup_script: None,
         linear: None,
+        plan_path: None,
     }
 }
 

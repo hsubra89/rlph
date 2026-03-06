@@ -432,6 +432,10 @@ impl TaskSource for LinearSource {
         Ok(Self::parse_issue(node))
     }
 
+    fn fetch_sub_issues(&self, _task_id: &str) -> Result<Vec<Task>> {
+        Ok(Vec::new())
+    }
+
     fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>> {
         let mut filter = self.build_issue_filter();
         filter["state"] = serde_json::json!({ "type": { "in": ["completed", "canceled"] } });

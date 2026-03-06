@@ -26,6 +26,19 @@ struct GhIssue {
     url: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum GhSubIssues {
+    List(Vec<GhIssue>),
+    Connection { nodes: Vec<GhIssue> },
+}
+
+#[derive(Debug, Deserialize)]
+struct GhIssueWithSubIssues {
+    #[serde(rename = "subIssues")]
+    sub_issues: Option<GhSubIssues>,
+}
+
 /// Abstraction over `gh` CLI execution for testability.
 pub trait GhClient {
     fn run(&self, args: &[&str]) -> Result<String>;
@@ -191,6 +204,23 @@ impl TaskSource for GitHubSource {
 
         Ok(Self::parse_issue(issue))
     }
+
+    fn fetch_sub_issues(&self, task_id: &str) -> Result<Vec<Task>> {
+        let json = self
+            .client
+            .run(&["issue", "view", task_id, "--json", "subIssues"])?;
+
+        let issue: GhIssueWithSubIssues = serde_json::from_str(&json)
+            .map_err(|e| Error::TaskSource(format!("failed to parse gh sub-issues: {e}")))?;
+
+        let sub_issues = match issue.sub_issues {
+            Some(GhSubIssues::List(nodes)) => nodes,
+            Some(GhSubIssues::Connection { nodes }) => nodes,
+            None => Vec::new(),
+        };
+
+        Ok(sub_issues.into_iter().map(Self::parse_issue).collect())
+    }
 }
 
 #[cfg(test)]
@@ -348,5 +378,34 @@ mod tests {
         let tasks = source.fetch_eligible_tasks().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].body, "");
+    }
+
+    #[test]
+    fn test_fetch_sub_issues_parses_connection_shape() {
+        let json = serde_json::json!({
+            "subIssues": {
+                "nodes": [
+                    issue_json(45, "Child issue", &["rlph", "p2"], "child body")
+                ]
+            }
+        })
+        .to_string();
+        let client = MockGhClient::new(vec![Ok(json)]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+
+        let sub_issues = source.fetch_sub_issues("42").unwrap();
+        assert_eq!(sub_issues.len(), 1);
+        assert_eq!(sub_issues[0].id, "45");
+        assert_eq!(sub_issues[0].title, "Child issue");
+        assert_eq!(sub_issues[0].priority, Some(Priority(2)));
+    }
+
+    #[test]
+    fn test_fetch_sub_issues_handles_missing_field() {
+        let client = MockGhClient::new(vec![Ok("{}".to_string())]);
+        let source = GitHubSource::with_client("rlph", Box::new(client));
+
+        let sub_issues = source.fetch_sub_issues("42").unwrap();
+        assert!(sub_issues.is_empty());
     }
 }

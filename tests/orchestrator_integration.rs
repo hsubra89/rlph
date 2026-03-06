@@ -1,7 +1,7 @@
 mod common;
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,6 +44,7 @@ struct SubmissionTracker {
     submissions: Vec<(String, String, String, String)>,
     comments: Vec<(PrNumber, String)>,
     reviews: Vec<PostedReview>,
+    ready_marked: Vec<PrNumber>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +104,10 @@ impl TaskSource for MockSource {
             .ok_or_else(|| Error::TaskSource(format!("task not found: {task_id}")))
     }
 
+    fn fetch_sub_issues(&self, _task_id: &str) -> Result<Vec<Task>> {
+        Ok(Vec::new())
+    }
+
     fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>> {
         Ok(HashSet::new())
     }
@@ -120,10 +125,147 @@ impl MockRunner {
     }
 }
 
-impl AgentRunner for MockRunner {
-    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+fn should_emit_nothing_left_for_plan_choose(prompt: &str, working_dir: &Path) -> bool {
+    if !prompt.contains("## Plan Files") {
+        return false;
+    }
+
+    let marker = working_dir.join(".rlph").join("plan-choose-once.marker");
+    if marker.exists() {
+        return true;
+    }
+
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&marker, "1").unwrap();
+    false
+}
+
+struct SubmitBeforeImplementRunner {
+    task_id: String,
+    submissions: Arc<Mutex<SubmissionTracker>>,
+}
+
+impl SubmitBeforeImplementRunner {
+    fn new(task_id: &str, submissions: Arc<Mutex<SubmissionTracker>>) -> Self {
+        Self {
+            task_id: task_id.to_string(),
+            submissions,
+        }
+    }
+}
+
+#[derive(Default)]
+struct WorkingDirCapture {
+    choose_dirs: Vec<PathBuf>,
+    implement_dirs: Vec<PathBuf>,
+}
+
+struct WorkingDirCaptureRunner {
+    task_id: String,
+    capture: Arc<Mutex<WorkingDirCapture>>,
+}
+
+impl WorkingDirCaptureRunner {
+    fn new(task_id: &str, capture: Arc<Mutex<WorkingDirCapture>>) -> Self {
+        Self {
+            task_id: task_id.to_string(),
+            capture,
+        }
+    }
+}
+
+impl AgentRunner for WorkingDirCaptureRunner {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
         match phase {
             Phase::Choose => {
+                let normalized_dir = working_dir
+                    .canonicalize()
+                    .unwrap_or_else(|_| working_dir.to_path_buf());
+                self.capture
+                    .lock()
+                    .unwrap()
+                    .choose_dirs
+                    .push(normalized_dir);
+
+                if should_emit_nothing_left_for_plan_choose(prompt, working_dir) {
+                    return Ok(RunResult {
+                        exit_code: 0,
+                        stdout: "NOTHING_LEFT".into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    });
+                }
+
+                let ralph_dir = working_dir.join(".rlph");
+                std::fs::create_dir_all(&ralph_dir)
+                    .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                std::fs::write(
+                    ralph_dir.join("task.toml"),
+                    format!("id = \"{}\"", self.task_id),
+                )
+                .map_err(|e| Error::AgentRunner(e.to_string()))?;
+
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "Selected task".into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            }
+            Phase::Implement => {
+                let normalized_dir = working_dir
+                    .canonicalize()
+                    .unwrap_or_else(|_| working_dir.to_path_buf());
+                self.capture
+                    .lock()
+                    .unwrap()
+                    .implement_dirs
+                    .push(normalized_dir);
+
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "IMPLEMENTATION_COMPLETE: done".into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            }
+            Phase::Review => Ok(RunResult {
+                exit_code: 0,
+                stdout: "NO_ISSUES_FOUND".into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+            Phase::ReviewAggregate => Ok(RunResult {
+                exit_code: 0,
+                stdout: APPROVED_AGGREGATOR_JSON.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+            Phase::Fix => Ok(RunResult {
+                exit_code: 0,
+                stdout: r#"{"status":"fixed","commit_message":"fix: done"}"#.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+        }
+    }
+}
+
+impl AgentRunner for MockRunner {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        match phase {
+            Phase::Choose => {
+                if should_emit_nothing_left_for_plan_choose(prompt, working_dir) {
+                    return Ok(RunResult {
+                        exit_code: 0,
+                        stdout: "NOTHING_LEFT".into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    });
+                }
+
                 let ralph_dir = working_dir.join(".rlph");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
@@ -167,9 +309,112 @@ impl AgentRunner for MockRunner {
     }
 }
 
+impl AgentRunner for SubmitBeforeImplementRunner {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        match phase {
+            Phase::Choose => {
+                if should_emit_nothing_left_for_plan_choose(prompt, working_dir) {
+                    return Ok(RunResult {
+                        exit_code: 0,
+                        stdout: "NOTHING_LEFT".into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    });
+                }
+
+                let ralph_dir = working_dir.join(".rlph");
+                std::fs::create_dir_all(&ralph_dir)
+                    .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                std::fs::write(
+                    ralph_dir.join("task.toml"),
+                    format!("id = \"{}\"", self.task_id),
+                )
+                .map_err(|e| Error::AgentRunner(e.to_string()))?;
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "Selected task".into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            }
+            Phase::Implement => {
+                let submissions = self.submissions.lock().unwrap().submissions.len();
+                if submissions != 1 {
+                    return Err(Error::AgentRunner(format!(
+                        "expected draft PR submission before implement, got {submissions}"
+                    )));
+                }
+
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: "IMPLEMENTATION_COMPLETE: done".into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            }
+            Phase::Review => Ok(RunResult {
+                exit_code: 0,
+                stdout: "NO_ISSUES_FOUND".into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+            Phase::ReviewAggregate => Ok(RunResult {
+                exit_code: 0,
+                stdout: APPROVED_AGGREGATOR_JSON.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+            Phase::Fix => Ok(RunResult {
+                exit_code: 0,
+                stdout: r#"{"status":"fixed","commit_message":"fix: done"}"#.into(),
+                stderr: String::new(),
+                session_id: None,
+            }),
+        }
+    }
+}
+
 struct SequenceSource {
     tasks_by_fetch: Arc<Mutex<VecDeque<Vec<Task>>>>,
     task_details: HashMap<String, Task>,
+}
+
+struct FailIfFetchedSource;
+
+impl TaskSource for FailIfFetchedSource {
+    fn fetch_eligible_tasks(&self) -> Result<Vec<Task>> {
+        Err(Error::TaskSource(
+            "fetch_eligible_tasks should not be called in local plan mode".to_string(),
+        ))
+    }
+
+    fn mark_in_progress(&self, _task_id: &str) -> Result<()> {
+        Err(Error::TaskSource(
+            "mark_in_progress should not be called in local plan mode".to_string(),
+        ))
+    }
+
+    fn mark_in_review(&self, _task_id: &str) -> Result<()> {
+        Err(Error::TaskSource(
+            "mark_in_review should not be called in local plan mode".to_string(),
+        ))
+    }
+
+    fn get_task_details(&self, _task_id: &str) -> Result<Task> {
+        Err(Error::TaskSource(
+            "get_task_details should not be called in local plan mode".to_string(),
+        ))
+    }
+
+    fn fetch_sub_issues(&self, _task_id: &str) -> Result<Vec<Task>> {
+        Ok(Vec::new())
+    }
+
+    fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>> {
+        Err(Error::TaskSource(
+            "fetch_closed_task_ids should not be called in local plan mode".to_string(),
+        ))
+    }
 }
 
 impl SequenceSource {
@@ -206,6 +451,10 @@ impl TaskSource for SequenceSource {
             .get(task_id)
             .cloned()
             .ok_or_else(|| Error::TaskSource(format!("task not found: {task_id}")))
+    }
+
+    fn fetch_sub_issues(&self, _task_id: &str) -> Result<Vec<Task>> {
+        Ok(Vec::new())
     }
 
     fn fetch_closed_task_ids(&self) -> Result<HashSet<IssueNumber>> {
@@ -249,10 +498,19 @@ impl CountingRunner {
 }
 
 impl AgentRunner for CountingRunner {
-    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
         match phase {
             Phase::Choose => {
                 self.counts.choose.fetch_add(1, Ordering::SeqCst);
+                if should_emit_nothing_left_for_plan_choose(prompt, working_dir) {
+                    return Ok(RunResult {
+                        exit_code: 0,
+                        stdout: "NOTHING_LEFT".into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    });
+                }
+
                 let ralph_dir = working_dir.join(".rlph");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
@@ -312,12 +570,21 @@ struct FailAtPhaseRunner {
 }
 
 impl AgentRunner for FailAtPhaseRunner {
-    async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
         if phase == self.fail_at {
             return Err(Error::AgentRunner(format!("mock failure at {phase}")));
         }
         match phase {
             Phase::Choose => {
+                if should_emit_nothing_left_for_plan_choose(prompt, working_dir) {
+                    return Ok(RunResult {
+                        exit_code: 0,
+                        stdout: "NOTHING_LEFT".into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    });
+                }
+
                 let ralph_dir = working_dir.join(".rlph");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
@@ -425,6 +692,11 @@ impl SubmissionBackend for MockSubmission {
                 .to_string(),
         )
     }
+
+    fn mark_ready(&self, pr_number: PrNumber) -> Result<()> {
+        self.tracker.lock().unwrap().ready_marked.push(pr_number);
+        Ok(())
+    }
 }
 
 struct FailSubmission;
@@ -454,6 +726,64 @@ impl ReviewRunnerFactory for ApprovedReviewFactory {
                 })
             })
         })))
+    }
+
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
+            Box::pin(async move {
+                let stdout = match phase {
+                    Phase::ReviewAggregate => APPROVED_AGGREGATOR_JSON.to_string(),
+                    _ => String::new(),
+                };
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout,
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            })
+        })))
+    }
+}
+
+struct ReadyBeforeReviewFactory {
+    tracker: Arc<Mutex<SubmissionTracker>>,
+}
+
+impl ReadyBeforeReviewFactory {
+    fn new(tracker: Arc<Mutex<SubmissionTracker>>) -> Self {
+        Self { tracker }
+    }
+}
+
+impl ReviewRunnerFactory for ReadyBeforeReviewFactory {
+    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
+        let tracker = Arc::clone(&self.tracker);
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(
+            move |_phase, _prompt, _dir| {
+                let tracker = Arc::clone(&tracker);
+                Box::pin(async move {
+                    let ready = tracker.lock().unwrap().ready_marked.clone();
+                    if !ready.contains(&PrNumber::new(1)) {
+                        return Err(Error::AgentRunner(
+                            "review ran before PR was marked ready".to_string(),
+                        ));
+                    }
+
+                    Ok(RunResult {
+                        exit_code: 0,
+                        stdout: r#"{"findings":[]}"#.into(),
+                        stderr: String::new(),
+                        session_id: None,
+                    })
+                })
+            },
+        )))
     }
 
     fn create_step_runner(
@@ -839,6 +1169,83 @@ async fn test_full_loop_with_push() {
 }
 
 #[tokio::test]
+async fn test_draft_pr_created_before_implement_phase() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let task = make_task(42, "Fix the bug");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
+    let runner = SubmitBeforeImplementRunner::new("gh-42", Arc::clone(&sub_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_mgr = StateManager::new(&state_dir);
+    let prompt_engine = PromptEngine::new(None);
+
+    let orchestrator = Orchestrator::new(
+        source,
+        runner,
+        submission,
+        worktree_mgr,
+        state_mgr,
+        prompt_engine,
+        make_config(false),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    let subs = sub_tracker.lock().unwrap();
+    assert_eq!(subs.submissions.len(), 1);
+    assert!(subs.submissions[0].3.contains("Resolves #42"));
+}
+
+#[tokio::test]
+async fn test_pr_marked_ready_before_review_pipeline() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let task = make_task(42, "Fix the bug");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let source = MockSource::new(vec![task], Arc::clone(&source_tracker));
+    let runner = MockRunner::new("gh-42");
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_mgr = StateManager::new(&state_dir);
+    let prompt_engine = PromptEngine::new(None);
+
+    let orchestrator = Orchestrator::new(
+        source,
+        runner,
+        submission,
+        worktree_mgr,
+        state_mgr,
+        prompt_engine,
+        make_config(false),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ReadyBeforeReviewFactory::new(Arc::clone(&sub_tracker)));
+
+    orchestrator.run_once().await.unwrap();
+
+    let subs = sub_tracker.lock().unwrap();
+    assert_eq!(subs.ready_marked, vec![PrNumber::new(1)]);
+}
+
+#[tokio::test]
 async fn test_no_eligible_tasks() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
 
@@ -863,6 +1270,201 @@ async fn test_no_eligible_tasks() {
 
     // Should succeed without doing anything
     orchestrator.run_once().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_local_plan_mode_skips_task_source_fetch() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let counts = Arc::new(RunnerCounts::default());
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let plan_dir = repo_dir.path().join("plans/my-feature");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    std::fs::write(plan_dir.join("task.md"), "- implement this").unwrap();
+
+    let mut config = make_config(true);
+    config.plan_path = Some("plans/my-feature".to_string());
+
+    let orchestrator = Orchestrator::new(
+        FailIfFetchedSource,
+        CountingRunner::new("gh-42", Arc::clone(&counts)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 2);
+    assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_choose_and_implement_run_from_worktree_roots() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let capture = Arc::new(Mutex::new(WorkingDirCapture::default()));
+
+    // Two tasks forces choose phase to run.
+    let source = MockSource::new(
+        vec![make_task(42, "Fix the bug"), make_task(43, "Add logs")],
+        Arc::clone(&source_tracker),
+    );
+
+    let orchestrator = Orchestrator::new(
+        source,
+        WorkingDirCaptureRunner::new("gh-42", Arc::clone(&capture)),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        make_config(true),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    let capture = capture.lock().unwrap();
+    assert_eq!(capture.choose_dirs.len(), 3);
+    assert_eq!(capture.implement_dirs.len(), 1);
+
+    let canonical_repo = repo_dir.path().canonicalize().unwrap();
+    let canonical_wt_base = wt_dir.path().canonicalize().unwrap();
+
+    assert_eq!(capture.choose_dirs[0], canonical_repo);
+    assert!(capture.choose_dirs[1].starts_with(&canonical_wt_base));
+    assert!(capture.choose_dirs[2].starts_with(&canonical_wt_base));
+    assert!(capture.implement_dirs[0].starts_with(&canonical_wt_base));
+    assert_ne!(capture.implement_dirs[0], canonical_repo);
+}
+
+#[tokio::test]
+async fn test_local_plan_branch_name_derived_from_directory_name() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let plan_dir = repo_dir.path().join("plans/My Feature");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    std::fs::write(plan_dir.join("task.md"), "- implement this").unwrap();
+
+    let mut config = make_config(false);
+    config.plan_path = Some("plans/My Feature".to_string());
+
+    let orchestrator = Orchestrator::new(
+        FailIfFetchedSource,
+        CountingRunner::new("gh-42", Arc::new(RunnerCounts::default())),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    let subs = sub_tracker.lock().unwrap();
+    assert_eq!(subs.submissions.len(), 1);
+    assert!(subs.submissions[0].0.contains("rlph-local-my-feature"));
+}
+
+#[tokio::test]
+async fn test_local_plan_draft_pr_body_references_plan_folder() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let plan_dir = repo_dir.path().join("plans/my-feature");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    std::fs::write(plan_dir.join("task.md"), "- implement this").unwrap();
+
+    let mut config = make_config(false);
+    config.plan_path = Some("plans/my-feature".to_string());
+
+    let orchestrator = Orchestrator::new(
+        FailIfFetchedSource,
+        CountingRunner::new("gh-42", Arc::new(RunnerCounts::default())),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    let subs = sub_tracker.lock().unwrap();
+    assert_eq!(subs.submissions.len(), 1);
+    assert!(
+        subs.submissions[0]
+            .3
+            .contains("Implements local plan `plans/my-feature`.")
+    );
+    assert!(!subs.submissions[0].3.contains("Resolves #"));
+}
+
+#[tokio::test]
+async fn test_local_plan_state_id_derived_from_directory_name() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let plan_dir = repo_dir.path().join("plans/My Feature");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    std::fs::write(plan_dir.join("task.md"), "- implement this").unwrap();
+
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let mut config = make_config(true);
+    config.plan_path = Some("plans/My Feature".to_string());
+
+    let orchestrator = Orchestrator::new(
+        FailIfFetchedSource,
+        FailAtPhaseRunner {
+            fail_at: Phase::Implement,
+            task_id: "gh-42".to_string(),
+        },
+        MockSubmission::new(Arc::new(Mutex::new(SubmissionTracker::default())), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        config,
+        repo_dir.path().to_path_buf(),
+    );
+
+    let err = orchestrator.run_once().await.unwrap_err();
+    assert!(err.to_string().contains("mock failure at implement"));
+
+    let state_mgr = StateManager::new(&state_dir);
+    let state = state_mgr.load();
+    assert_eq!(
+        state.current_task.as_ref().map(|t| t.id.as_str()),
+        Some("local-my-feature")
+    );
 }
 
 #[tokio::test]
@@ -1069,6 +1671,40 @@ async fn test_worktree_cleaned_up_after_success() {
 }
 
 #[tokio::test]
+async fn test_remote_plan_directory_persists_after_completion() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let task = make_task(42, "Fix bug");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+
+    let orchestrator = Orchestrator::new(
+        MockSource::new(vec![task], Arc::clone(&source_tracker)),
+        MockRunner::new("gh-42"),
+        MockSubmission::new(Arc::clone(&sub_tracker), None),
+        WorktreeManager::new(
+            repo_dir.path().to_path_buf(),
+            wt_dir.path().to_path_buf(),
+            "main".to_string(),
+        ),
+        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        PromptEngine::new(None),
+        make_config(true),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(ApprovedReviewFactory);
+
+    orchestrator.run_once().await.unwrap();
+
+    let persisted_plan_file = repo_dir.path().join("plans/fix-bug/42.md");
+    assert!(
+        persisted_plan_file.exists(),
+        "expected persisted plan file: {}",
+        persisted_plan_file.display()
+    );
+}
+
+#[tokio::test]
 async fn test_needs_fix_completes_successfully() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
@@ -1164,8 +1800,8 @@ async fn test_continuous_mode_polls_with_empty_results() {
 
     orchestrator.run_loop(None).await.unwrap();
 
-    // Single task → choose phase skipped (auto-selected)
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
+    // Top-level choose is skipped, but inner plan choose runs per cycle.
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 2);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
 }
 
@@ -1200,8 +1836,8 @@ async fn test_max_iterations_stops_at_limit() {
 
     orchestrator.run_loop(None).await.unwrap();
 
-    // Single task → choose phase skipped (auto-selected)
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
+    // Top-level choose is skipped, but inner plan choose runs per cycle.
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 6);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 3);
 }
 
@@ -1240,8 +1876,8 @@ async fn test_continuous_shutdown_exits_between_iterations() {
 
     // Shutdown signal fires during implement, but the current iteration
     // completes fully. Shutdown is only checked between iterations.
-    // Single task → choose phase skipped (auto-selected)
-    assert_eq!(counts.choose.load(Ordering::SeqCst), 0);
+    // Top-level choose is skipped, but inner plan choose runs per cycle.
+    assert_eq!(counts.choose.load(Ordering::SeqCst), 2);
     assert_eq!(counts.implement.load(Ordering::SeqCst), 1);
 }
 
