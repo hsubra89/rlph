@@ -419,7 +419,7 @@ async fn test_fix_loop_worktrees_cleaned_up() {
 
 /// Test that already-fixed items (with 👍 reaction) are skipped.
 #[tokio::test]
-async fn test_fix_skips_already_fixed_items() {
+async fn test_fix_loop_skips_already_fixed_items() {
     let findings = vec![make_finding("a"), make_finding("b")];
     let mut f = FixLoopFixture::new(&findings, &[], None);
 
