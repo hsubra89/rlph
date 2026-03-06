@@ -420,43 +420,29 @@ async fn test_fix_loop_worktrees_cleaned_up() {
 /// Test that already-fixed items (with 👍 reaction) are skipped.
 #[tokio::test]
 async fn test_fix_skips_already_fixed_items() {
-    let (_bare_dir, repo_dir) = setup_git_repo();
-    let repo_root = repo_dir.path();
-
     let findings = vec![make_finding("a"), make_finding("b")];
-    let comments = make_review_comments(&findings);
+    let mut f = FixLoopFixture::new(&findings, &[], None);
+
     // a is already fixed (has 👍), b has no reactions — neither is queued
-    let reactions = vec![
-        fixed_reactions(CommentId::new(100)),
-        no_reactions(CommentId::new(101)),
-    ];
+    {
+        let mut reactions = f.submission.base.reactions.lock().unwrap();
+        let entry = reactions
+            .iter_mut()
+            .find(|(id, _)| *id == CommentId::new(100))
+            .expect("missing reactions for comment 100");
+        *entry = fixed_reactions(CommentId::new(100));
+    }
 
-    let submission = Arc::new(PollingMockSubmission::new(comments, reactions, None));
-    let correction_runner = Arc::new(MockCorrectionRunner::noop());
+    let shutdown_handle =
+        spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 0, Some(2));
 
-    let mut config = make_config();
-    config.poll_seconds = std::time::Duration::from_secs(1);
-
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let shutdown_handle = spawn_shutdown_poller(Arc::clone(&submission), shutdown_tx, 0, Some(2));
-
-    let result = run_fix_loop(
-        PrNumber::new(42),
-        "main",
-        &config,
-        Arc::clone(&submission),
-        &rlph::prompts::PromptEngine::new(None),
-        repo_root,
-        correction_runner,
-        shutdown_rx,
-    )
-    .await;
+    let result = f.run().await;
     shutdown_handle.abort();
 
     assert!(result.is_ok());
     // Nothing should have been processed
-    assert_eq!(submission.reply_count(), 0);
-    assert_eq!(submission.added_reaction_count(), 0);
+    assert_eq!(f.submission.reply_count(), 0);
+    assert_eq!(f.submission.added_reaction_count(), 0);
 }
 
 // --- Polling loop tests ---
