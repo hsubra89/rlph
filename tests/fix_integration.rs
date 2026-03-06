@@ -130,6 +130,17 @@ impl MockFixSubmission {
     fn added_reactions(&self) -> Vec<(CommentId, String)> {
         self.added_reactions.lock().unwrap().clone()
     }
+
+    fn set_reactions(&self, comment_id: CommentId, new_reactions: Vec<Reaction>) {
+        let mut reactions = self.reactions.lock().unwrap();
+        if let Some((_, existing_reactions)) =
+            reactions.iter_mut().find(|(id, _)| *id == comment_id)
+        {
+            *existing_reactions = new_reactions;
+        } else {
+            reactions.push((comment_id, new_reactions));
+        }
+    }
 }
 
 impl SubmissionBackend for MockFixSubmission {
@@ -424,14 +435,8 @@ async fn test_fix_loop_skips_already_fixed_items() {
     let mut f = FixLoopFixture::new(&findings, &[], None);
 
     // a is already fixed (has 👍), b has no reactions — neither is queued
-    {
-        let mut reactions = f.submission.base.reactions.lock().unwrap();
-        let entry = reactions
-            .iter_mut()
-            .find(|(id, _)| *id == CommentId::new(100))
-            .expect("missing reactions for comment 100");
-        *entry = fixed_reactions(CommentId::new(100));
-    }
+    f.submission
+        .set_reactions(CommentId::new(100), fixed_reactions(CommentId::new(100)).1);
 
     let shutdown_handle =
         spawn_shutdown_poller(Arc::clone(&f.submission), f.take_shutdown_tx(), 0, Some(2));
@@ -482,6 +487,10 @@ impl PollingMockSubmission {
 
     fn added_reactions(&self) -> Vec<(CommentId, String)> {
         self.base.added_reactions()
+    }
+
+    fn set_reactions(&self, comment_id: CommentId, reactions: Vec<Reaction>) {
+        self.base.set_reactions(comment_id, reactions);
     }
 }
 
