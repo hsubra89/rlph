@@ -1365,78 +1365,13 @@ async fn push_to_pr_branch_with_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
-    use crate::config::{Config, default_review_phases, default_review_step};
     use crate::fix_comment::{FindingState, build_fix_items_from_review_comments};
     use crate::fix_deps::{FindingDeps, resolved_finding_ids};
-    use crate::runner::{RunResult, RunnerKind};
     use crate::test_helpers::{
-        make_finding, make_finding_critical, make_finding_with_deps, make_reactions,
-        make_review_comment,
+        NoopCorrectionRunner, NoopSubmission, make_finding, make_finding_critical,
+        make_finding_with_deps, make_reactions, make_review_comment, make_test_config,
     };
-
-    struct NoopSubmission;
-
-    impl SubmissionBackend for NoopSubmission {
-        fn submit(
-            &self,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: &str,
-        ) -> Result<crate::submission::SubmitResult> {
-            unreachable!("submit is not used in fix unit tests")
-        }
-    }
-
-    struct NoopCorrectionRunner;
-
-    impl CorrectionRunner for NoopCorrectionRunner {
-        async fn resume(
-            &self,
-            _runner_type: RunnerKind,
-            _agent_binary: &str,
-            _model: Option<&str>,
-            _effort: Option<&str>,
-            _variant: Option<&str>,
-            _session_id: &str,
-            _correction_prompt: &str,
-            _working_dir: &Path,
-            _timeout: Option<Duration>,
-            _stream_prefix: Option<&str>,
-        ) -> Result<RunResult> {
-            unreachable!("resume is not used when batch worktree creation fails")
-        }
-    }
-
-    fn make_test_config() -> Config {
-        Config {
-            source: "github".to_string(),
-            runner: RunnerKind::Claude,
-            submission: "github".to_string(),
-            label: "rlph".to_string(),
-            poll_seconds: Duration::from_secs(30),
-            worktree_dir: "worktrees".to_string(),
-            base_branch: "main".to_string(),
-            max_iterations: None,
-            dry_run: false,
-            once: true,
-            continuous: false,
-            agent_binary: "claude".to_string(),
-            agent_model: None,
-            agent_timeout: None,
-            implement_timeout: None,
-            agent_effort: None,
-            agent_variant: None,
-            agent_timeout_retries: 0,
-            review_phases: default_review_phases(),
-            review_aggregate: default_review_step("review-aggregate"),
-            fix: default_review_step("fix"),
-            worktree_setup_script: None,
-            linear: None,
-        }
-    }
 
     #[test]
     fn test_fix_branch_name_is_valid() {
