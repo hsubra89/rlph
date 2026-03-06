@@ -29,7 +29,7 @@ use crate::ids::{CommentId, PrNumber, ReactionId};
 use crate::orchestrator::{CorrectionRunner, retry_with_correction};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
-    FINDING_MARKER, SchemaName, Severity, StandaloneFixOutput, parse_standalone_fix_output,
+    FINDING_MARKER, SchemaName, StandaloneFixOutput, parse_standalone_fix_output,
 };
 use crate::runner::{AgentRunner, AnyRunner, Phase, RunResult, build_runner};
 use crate::submission::{PrReviewComment, Reaction, SubmissionBackend};
@@ -391,13 +391,8 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                 }
                 completed.extend(batch_completed);
 
-                if let Some((failed_id, e)) = batch_error {
-                    // Retry critical-severity findings before marking failed
-                    let is_critical = queued_items.iter().any(|i| {
-                        i.finding.id == failed_id && i.finding.severity == Severity::Critical
-                    });
-
-                    if is_critical {
+                if let Some((failed_id, failed_severity, e)) = batch_error {
+                    if matches!(failed_severity, crate::review_schema::Severity::Critical) {
                         let attempts = retries.entry(failed_id.clone()).or_insert(0);
                         *attempts += 1;
                         if *attempts >= MAX_TOTAL_ATTEMPTS {
@@ -763,13 +758,17 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     shared: &SharedFixState<S, C>,
     prepared_items: Vec<PreparedFixItem>,
     pr_number: PrNumber,
-) -> (HashSet<String>, Option<(String, Error)>) {
+) -> (
+    HashSet<String>,
+    Option<(String, crate::review_schema::Severity, Error)>,
+) {
     let batch_size = prepared_items.len();
     let mut completed_ids = HashSet::new();
 
     // Capture the first finding ID before we move prepared_items, so we can
     // attribute worktree-creation failures to a specific finding.
     let first_finding_id = prepared_items[0].item.finding.id.clone();
+    let first_finding_severity = prepared_items[0].item.finding.severity.clone();
 
     // Use the first item's fix_branch as the worktree branch for the whole batch
     let batch_branch = prepared_items[0].fix_branch.clone();
@@ -779,7 +778,12 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
 
     let worktree_path = match wm.create_fresh(&batch_branch, &shared.pr_branch) {
         Ok(info) => info.path,
-        Err(e) => return (completed_ids, Some((first_finding_id, e))),
+        Err(e) => {
+            return (
+                completed_ids,
+                Some((first_finding_id, first_finding_severity, e)),
+            );
+        }
     };
 
     info!(
@@ -794,7 +798,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
 
     // Run each finding sequentially, sharing the session
     let mut session_id: Option<String> = None;
-    let error: Option<(String, Error)> = 'batch: {
+    let error: Option<(String, crate::review_schema::Severity, Error)> = 'batch: {
         for (idx, prepared) in prepared_items.into_iter().enumerate() {
             let PreparedFixItem {
                 item,
@@ -805,6 +809,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             } = prepared;
 
             let finding_id = item.finding.id.clone();
+            let finding_severity = item.finding.severity.clone();
             let position = idx + 1;
 
             info!(
@@ -827,7 +832,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                         "no session_id from previous finding, cannot resume batch".into(),
                     );
                     warn!(%finding_id, %err, "batch abort");
-                    break 'batch Some((finding_id, err));
+                    break 'batch Some((finding_id, finding_severity, err));
                 };
                 info!(%finding_id, session_id = %sid, "resuming batch session");
                 resume_agent(
@@ -846,7 +851,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 Err(e) => {
                     eprintln!("[rlph] Batch abort (agent failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: agent failed");
-                    break 'batch Some((finding_id, e));
+                    break 'batch Some((finding_id, finding_severity, e));
                 }
             };
 
@@ -858,7 +863,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                         "agent returned no session_id on first finding, cannot resume batch".into(),
                     );
                     warn!(%finding_id, %err, "batch abort");
-                    break 'batch Some((finding_id, err));
+                    break 'batch Some((finding_id, finding_severity, err));
                 }
                 (None, 0) => {} // single-item batch, session_id not needed
                 (None, _) => {
@@ -882,7 +887,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 Err(e) => {
                     eprintln!("[rlph] Batch abort (parse failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: parse failed");
-                    break 'batch Some((finding_id, e));
+                    break 'batch Some((finding_id, finding_severity, e));
                 }
             };
 
@@ -907,7 +912,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 Err(e) => {
                     eprintln!("[rlph] Batch abort (push failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: push failed");
-                    break 'batch Some((finding_id, e));
+                    break 'batch Some((finding_id, finding_severity, e));
                 }
             };
 
@@ -1365,11 +1370,78 @@ async fn push_to_pr_branch_with_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    use crate::config::{Config, default_review_phases, default_review_step};
     use crate::fix_comment::{FindingState, build_fix_items_from_review_comments};
     use crate::fix_deps::{FindingDeps, resolved_finding_ids};
+    use crate::runner::{RunResult, RunnerKind};
     use crate::test_helpers::{
-        make_finding, make_finding_with_deps, make_reactions, make_review_comment,
+        make_finding, make_finding_critical, make_finding_with_deps, make_reactions,
+        make_review_comment,
     };
+
+    struct NoopSubmission;
+
+    impl SubmissionBackend for NoopSubmission {
+        fn submit(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<crate::submission::SubmitResult> {
+            unreachable!("submit is not used in fix unit tests")
+        }
+    }
+
+    struct NoopCorrectionRunner;
+
+    impl CorrectionRunner for NoopCorrectionRunner {
+        async fn resume(
+            &self,
+            _runner_type: RunnerKind,
+            _agent_binary: &str,
+            _model: Option<&str>,
+            _effort: Option<&str>,
+            _variant: Option<&str>,
+            _session_id: &str,
+            _correction_prompt: &str,
+            _working_dir: &Path,
+            _timeout: Option<Duration>,
+            _stream_prefix: Option<&str>,
+        ) -> Result<RunResult> {
+            unreachable!("resume is not used when batch worktree creation fails")
+        }
+    }
+
+    fn make_test_config() -> Config {
+        Config {
+            source: "github".to_string(),
+            runner: RunnerKind::Claude,
+            submission: "github".to_string(),
+            label: "rlph".to_string(),
+            poll_seconds: Duration::from_secs(30),
+            worktree_dir: "worktrees".to_string(),
+            base_branch: "main".to_string(),
+            max_iterations: None,
+            dry_run: false,
+            once: true,
+            continuous: false,
+            agent_binary: "claude".to_string(),
+            agent_model: None,
+            agent_timeout: None,
+            implement_timeout: None,
+            agent_effort: None,
+            agent_variant: None,
+            agent_timeout_retries: 0,
+            review_phases: default_review_phases(),
+            review_aggregate: default_review_step("review-aggregate"),
+            fix: default_review_step("fix"),
+            worktree_setup_script: None,
+            linear: None,
+        }
+    }
 
     #[test]
     fn test_fix_branch_name_is_valid() {
@@ -1698,5 +1770,41 @@ mod tests {
 
         assert_eq!(failed.len(), 1);
         assert!(failed.contains("bad finding"));
+    }
+
+    #[tokio::test]
+    async fn test_run_batch_fix_returns_failed_severity() {
+        let repo_root = tempfile::tempdir().unwrap();
+        let config = make_test_config();
+        let engine = PromptEngine::new(None);
+        let item = make_fix_item(make_finding_critical("crit-finding"), 100);
+        let prepared = prepare_fix_item(
+            item,
+            PrNumber::new(42),
+            &config.fix,
+            &engine,
+            &mut ReplyMap::new(),
+        )
+        .expect("item should prepare successfully");
+        let shared = SharedFixState::new(
+            &config,
+            "main",
+            repo_root.path(),
+            Arc::new(NoopSubmission),
+            Arc::new(NoopCorrectionRunner),
+            None,
+        );
+
+        let (_completed, batch_error) =
+            run_batch_fix(&shared, vec![prepared], PrNumber::new(42)).await;
+
+        assert!(
+            matches!(
+                batch_error,
+                Some((ref finding_id, crate::review_schema::Severity::Critical, _))
+                    if finding_id == "crit-finding"
+            ),
+            "expected batch failure to preserve finding severity, got: {batch_error:?}"
+        );
     }
 }
