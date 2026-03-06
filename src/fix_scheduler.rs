@@ -12,9 +12,7 @@ const MAX_BATCH_SIZE: usize = 3;
 /// Action the fix orchestrator should take next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScheduleAction {
-    /// Run a single CRITICAL finding in its own session.
-    RunCritical(String),
-    /// Run a batch of WARNING/INFO findings (up to 3) in a single session.
+    /// Run a batch of findings in a single session (1 for CRITICAL, up to 3 for WARNING/INFO).
     RunBatch(Vec<String>),
     /// Nothing eligible to schedule.
     Idle,
@@ -30,7 +28,7 @@ pub enum ScheduleAction {
 ///
 /// Priority rules:
 /// 1. Dependencies override severity (a WARNING depended on by a CRITICAL runs first)
-/// 2. Eligible CRITICALs run solo via `RunCritical`
+/// 2. Eligible CRITICALs run solo as a single-element batch
 /// 3. Eligible WARNING/INFO findings are batched (up to 3), WARNING preferred over INFO
 /// 4. Findings in cycles or in the failed set are skipped
 pub fn next_action(
@@ -66,7 +64,7 @@ pub fn next_action(
 
     // CRITICALs run solo, first one wins.
     if let Some(id) = criticals.first() {
-        return ScheduleAction::RunCritical(id.to_string());
+        return ScheduleAction::RunBatch(vec![id.to_string()]);
     }
 
     // Batch WARNING then INFO, up to MAX_BATCH_SIZE.
@@ -123,7 +121,7 @@ mod tests {
         next_action(items, &deps, &completed, &failed)
     }
 
-    // --- All-CRITICAL input → sequential RunCritical ---
+    // --- All-CRITICAL input → sequential RunBatch(vec![id]) ---
 
     #[test]
     fn all_criticals_returns_first() {
@@ -133,7 +131,7 @@ mod tests {
         ];
         assert_eq!(
             schedule(&items, &[], &[]),
-            ScheduleAction::RunCritical("c1".into())
+            ScheduleAction::RunBatch(vec!["c1".into()])
         );
     }
 
@@ -145,7 +143,7 @@ mod tests {
         ];
         assert_eq!(
             schedule(&items, &["c1"], &[]),
-            ScheduleAction::RunCritical("c2".into())
+            ScheduleAction::RunBatch(vec!["c2".into()])
         );
     }
 
@@ -202,7 +200,7 @@ mod tests {
         ];
         assert_eq!(
             schedule(&items, &[], &[]),
-            ScheduleAction::RunCritical("c1".into())
+            ScheduleAction::RunBatch(vec!["c1".into()])
         );
     }
 
@@ -242,7 +240,7 @@ mod tests {
         ];
         assert_eq!(
             schedule(&items, &["w1"], &[]),
-            ScheduleAction::RunCritical("c1".into())
+            ScheduleAction::RunBatch(vec!["c1".into()])
         );
     }
 
@@ -268,7 +266,7 @@ mod tests {
         ];
         assert_eq!(
             schedule(&items, &[], &["c1"]),
-            ScheduleAction::RunCritical("c2".into())
+            ScheduleAction::RunBatch(vec!["c2".into()])
         );
     }
 
@@ -301,7 +299,7 @@ mod tests {
         ];
         assert_eq!(
             schedule(&items, &[], &[]),
-            ScheduleAction::RunCritical("c".into())
+            ScheduleAction::RunBatch(vec!["c".into()])
         );
     }
 
@@ -412,7 +410,7 @@ mod tests {
         // Step 3: after w1, c1 eligible
         assert_eq!(
             schedule(&items, &["i1", "w1"], &[]),
-            ScheduleAction::RunCritical("c1".into())
+            ScheduleAction::RunBatch(vec!["c1".into()])
         );
 
         // Step 4: all done
@@ -434,7 +432,7 @@ mod tests {
         // c1 eligible (critical), w1 eligible (warning) — critical wins
         assert_eq!(
             schedule(&items, &[], &[]),
-            ScheduleAction::RunCritical("c1".into())
+            ScheduleAction::RunBatch(vec!["c1".into()])
         );
 
         // After c1, w1 still eligible as batch (c2 blocked)
@@ -446,7 +444,7 @@ mod tests {
         // After w1, c2 unblocked
         assert_eq!(
             schedule(&items, &["c1", "w1"], &[]),
-            ScheduleAction::RunCritical("c2".into())
+            ScheduleAction::RunBatch(vec!["c2".into()])
         );
     }
 

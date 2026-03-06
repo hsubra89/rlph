@@ -14,8 +14,8 @@ const MAX_PUSH_ATTEMPTS: u32 = 3;
 /// Maximum number of fetch retry attempts (git lock contention under concurrency).
 const MAX_FETCH_ATTEMPTS: u32 = 3;
 
-/// Maximum number of attempts for a critical finding before marking it as failed.
-const MAX_CRITICAL_ATTEMPTS: u8 = 2;
+/// Maximum attempts before marking a critical finding as failed.
+const MAX_CRITICAL_ATTEMPTS: u32 = 2;
 
 use crate::config::{Config, ReviewStepConfig};
 use crate::error::{Error, Result};
@@ -29,7 +29,7 @@ use crate::ids::{CommentId, PrNumber, ReactionId};
 use crate::orchestrator::{CorrectionRunner, retry_with_correction};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
-    FINDING_MARKER, SchemaName, StandaloneFixOutput, parse_standalone_fix_output,
+    FINDING_MARKER, SchemaName, Severity, StandaloneFixOutput, parse_standalone_fix_output,
 };
 use crate::runner::{AgentRunner, AnyRunner, Phase, RunResult, build_runner};
 use crate::submission::{PrReviewComment, Reaction, SubmissionBackend};
@@ -105,7 +105,6 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
             &sched_completed,
             &sched_failed,
         ) {
-            ScheduleAction::RunCritical(id) => vec![id],
             ScheduleAction::RunBatch(ids) => ids,
             ScheduleAction::Idle => break,
         };
@@ -184,7 +183,6 @@ pub async fn run_fix<C: CorrectionRunner + 'static>(
 /// Polls for newly 🚀-reacted comments every `poll_seconds`, then runs
 /// the scheduler in an inner loop each cycle, processing all available
 /// findings until the scheduler returns Idle before waiting again.
-/// CRITICAL findings run one at a time in their own agent session.
 /// Failed CRITICALs are retried once before being added to the failed set.
 ///
 /// On shutdown signal: completes the current fix (if any), then exits cleanly.
@@ -215,7 +213,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
     let mut completed: HashSet<String> = HashSet::new();
     let mut failed: HashSet<String> = HashSet::new();
-    let mut retries: HashMap<String, u8> = HashMap::new();
+    let mut retries: HashMap<String, u32> = HashMap::new();
     let mut cycle: u64 = 0;
     let mut finding_deps: Option<FindingDeps> = None;
 
@@ -337,7 +335,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
     deps: &FindingDeps,
     completed: &mut HashSet<String>,
     failed: &mut HashSet<String>,
-    retries: &mut HashMap<String, u8>,
+    retries: &mut HashMap<String, u32>,
     pr_number: PrNumber,
     prompt_engine: &PromptEngine,
     reply_map: &mut ReplyMap,
@@ -354,62 +352,10 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
         let sched_failed: HashSet<&str> = failed.iter().map(String::as_str).collect();
 
         match fix_scheduler::next_action(queued_items, deps, &sched_completed, &sched_failed) {
-            ScheduleAction::RunCritical(finding_id) => {
-                eprintln!("[rlph] Critical: scheduling single-finding fix for {finding_id}");
-                info!(%finding_id, "Critical processing mode: scheduling single-finding fix session");
-
-                let Some(prepared) = lookup_and_prepare(
-                    &finding_id,
-                    queued_items,
-                    pr_number,
-                    &shared.fix_config,
-                    prompt_engine,
-                    reply_map,
-                    failed,
-                ) else {
-                    continue;
-                };
-
-                match run_prepared_fix(shared, prepared, pr_number).await {
-                    Ok(()) => {
-                        eprintln!("[rlph] Critical fix completed successfully: {finding_id}");
-                        info!(%finding_id, "Critical fix completed successfully");
-                        completed.insert(finding_id);
-                    }
-                    Err(e) => {
-                        let attempts = retries.entry(finding_id.clone()).or_insert(0);
-                        *attempts += 1;
-                        if *attempts >= MAX_CRITICAL_ATTEMPTS {
-                            eprintln!("[rlph] Critical fix failed after retry: {finding_id}: {e}");
-                            warn!(
-                                %finding_id,
-                                error = %e,
-                                "CRITICAL fix failed after retry, adding to failed set"
-                            );
-                            failed.insert(finding_id);
-                        } else {
-                            eprintln!(
-                                "[rlph] Critical fix failed (attempt {}, will retry): {finding_id}: {e}",
-                                *attempts
-                            );
-                            warn!(
-                                %finding_id,
-                                error = %e,
-                                attempt = *attempts,
-                                "CRITICAL fix failed, will retry"
-                            );
-                        }
-                    }
-                }
-            }
             ScheduleAction::RunBatch(finding_ids) => {
                 let batch_size = finding_ids.len();
-                eprintln!("[rlph] Batch: scheduling {batch_size} findings: {finding_ids:?}");
-                info!(
-                    batch_size,
-                    ?finding_ids,
-                    "batch processing mode: scheduling session"
-                );
+                eprintln!("[rlph] Scheduling {batch_size} finding(s): {finding_ids:?}");
+                info!(batch_size, ?finding_ids, "scheduling fix session");
 
                 // Prepare all items, skipping any that fail validation
                 let mut prepared_items = Vec::with_capacity(batch_size);
@@ -436,19 +382,31 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                     run_batch_fix(shared, prepared_items, pr_number).await;
 
                 for id in &batch_completed {
-                    eprintln!("[rlph] Batch finding completed successfully: {id}");
-                    info!(%id, "batch finding completed successfully");
+                    eprintln!("[rlph] Finding completed successfully: {id}");
+                    info!(%id, "finding completed successfully");
                 }
                 completed.extend(batch_completed);
 
-                if let Some((failed_id, e)) = batch_error {
-                    eprintln!("[rlph] Batch finding failed: {failed_id}: {e}");
-                    warn!(
-                        finding_id = %failed_id,
-                        error = %e,
-                        "batch finding failed, remaining items left as Queued"
-                    );
-                    failed.insert(failed_id);
+                if let Some((failed_id, failed_severity, e)) = batch_error {
+                    if matches!(failed_severity, Severity::Critical) {
+                        let attempts = retries.entry(failed_id.clone()).or_insert(0);
+                        *attempts += 1;
+                        if *attempts >= MAX_CRITICAL_ATTEMPTS {
+                            eprintln!("[rlph] Critical fix failed after retry: {failed_id}: {e}");
+                            warn!(finding_id = %failed_id, error = %e, "critical fix failed after retry");
+                            failed.insert(failed_id);
+                        } else {
+                            eprintln!(
+                                "[rlph] Critical fix failed (attempt {}, will retry): {failed_id}: {e}",
+                                *attempts
+                            );
+                            warn!(finding_id = %failed_id, error = %e, attempt = *attempts, "critical fix failed, will retry");
+                        }
+                    } else {
+                        eprintln!("[rlph] Fix failed: {failed_id}: {e}");
+                        warn!(finding_id = %failed_id, error = %e, "fix failed");
+                        failed.insert(failed_id);
+                    }
                 }
             }
             ScheduleAction::Idle => {
@@ -780,7 +738,9 @@ async fn run_prepared_fix<S: SubmissionBackend, C: CorrectionRunner>(
     run_single_fix(ctx, &wm, &*shared.submission, &*shared.correction_runner).await
 }
 
-/// Run a batch of WARNING/INFO findings in a single shared agent session.
+/// Run a batch of findings in a single shared agent session.
+///
+/// CRITICAL findings run as a batch of 1; WARNING/INFO findings batch up to 3.
 ///
 /// Creates one worktree and one agent session. The first finding starts the
 /// session normally; subsequent findings are fed via `resume_agent`
@@ -796,13 +756,14 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     shared: &SharedFixState<S, C>,
     prepared_items: Vec<PreparedFixItem>,
     pr_number: PrNumber,
-) -> (HashSet<String>, Option<(String, Error)>) {
+) -> (HashSet<String>, Option<(String, Severity, Error)>) {
     let batch_size = prepared_items.len();
     let mut completed_ids = HashSet::new();
 
     // Capture the first finding ID before we move prepared_items, so we can
     // attribute worktree-creation failures to a specific finding.
     let first_finding_id = prepared_items[0].item.finding.id.clone();
+    let first_finding_severity = prepared_items[0].item.finding.severity;
 
     // Use the first item's fix_branch as the worktree branch for the whole batch
     let batch_branch = prepared_items[0].fix_branch.clone();
@@ -812,7 +773,12 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
 
     let worktree_path = match wm.create_fresh(&batch_branch, &shared.pr_branch) {
         Ok(info) => info.path,
-        Err(e) => return (completed_ids, Some((first_finding_id, e))),
+        Err(e) => {
+            return (
+                completed_ids,
+                Some((first_finding_id, first_finding_severity, e)),
+            );
+        }
     };
 
     info!(
@@ -827,7 +793,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
 
     // Run each finding sequentially, sharing the session
     let mut session_id: Option<String> = None;
-    let error: Option<(String, Error)> = 'batch: {
+    let error: Option<(String, Severity, Error)> = 'batch: {
         for (idx, prepared) in prepared_items.into_iter().enumerate() {
             let PreparedFixItem {
                 item,
@@ -838,6 +804,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             } = prepared;
 
             let finding_id = item.finding.id.clone();
+            let finding_severity = item.finding.severity;
             let position = idx + 1;
 
             info!(
@@ -860,7 +827,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                         "no session_id from previous finding, cannot resume batch".into(),
                     );
                     warn!(%finding_id, %err, "batch abort");
-                    break 'batch Some((finding_id, err));
+                    break 'batch Some((finding_id, finding_severity, err));
                 };
                 info!(%finding_id, session_id = %sid, "resuming batch session");
                 resume_agent(
@@ -879,7 +846,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 Err(e) => {
                     eprintln!("[rlph] Batch abort (agent failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: agent failed");
-                    break 'batch Some((finding_id, e));
+                    break 'batch Some((finding_id, finding_severity, e));
                 }
             };
 
@@ -891,7 +858,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                         "agent returned no session_id on first finding, cannot resume batch".into(),
                     );
                     warn!(%finding_id, %err, "batch abort");
-                    break 'batch Some((finding_id, err));
+                    break 'batch Some((finding_id, finding_severity, err));
                 }
                 (None, 0) => {} // single-item batch, session_id not needed
                 (None, _) => {
@@ -915,7 +882,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 Err(e) => {
                     eprintln!("[rlph] Batch abort (parse failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: parse failed");
-                    break 'batch Some((finding_id, e));
+                    break 'batch Some((finding_id, finding_severity, e));
                 }
             };
 
@@ -940,7 +907,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                 Err(e) => {
                     eprintln!("[rlph] Batch abort (push failed): {finding_id}: {e}");
                     warn!(%finding_id, error = %e, "batch abort: push failed");
-                    break 'batch Some((finding_id, e));
+                    break 'batch Some((finding_id, finding_severity, e));
                 }
             };
 
@@ -1398,10 +1365,12 @@ async fn push_to_pr_branch_with_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::fix_comment::{FindingState, build_fix_items_from_review_comments};
     use crate::fix_deps::{FindingDeps, resolved_finding_ids};
     use crate::test_helpers::{
-        make_finding, make_finding_with_deps, make_reactions, make_review_comment,
+        NoopCorrectionRunner, NoopSubmission, make_finding, make_finding_critical,
+        make_finding_with_deps, make_reactions, make_review_comment, make_test_config,
     };
 
     #[test]
@@ -1731,5 +1700,41 @@ mod tests {
 
         assert_eq!(failed.len(), 1);
         assert!(failed.contains("bad finding"));
+    }
+
+    #[tokio::test]
+    async fn test_run_batch_fix_returns_failed_severity() {
+        let repo_root = tempfile::tempdir().unwrap();
+        let config = make_test_config();
+        let engine = PromptEngine::new(None);
+        let item = make_fix_item(make_finding_critical("crit-finding"), 100);
+        let prepared = prepare_fix_item(
+            item,
+            PrNumber::new(42),
+            &config.fix,
+            &engine,
+            &mut ReplyMap::new(),
+        )
+        .expect("item should prepare successfully");
+        let shared = SharedFixState::new(
+            &config,
+            "main",
+            repo_root.path(),
+            Arc::new(NoopSubmission),
+            Arc::new(NoopCorrectionRunner),
+            None,
+        );
+
+        let (_completed, batch_error) =
+            run_batch_fix(&shared, vec![prepared], PrNumber::new(42)).await;
+
+        assert!(
+            matches!(
+                batch_error,
+                Some((ref finding_id, Severity::Critical, _))
+                    if finding_id == "crit-finding"
+            ),
+            "expected batch failure to preserve finding severity, got: {batch_error:?}"
+        );
     }
 }
