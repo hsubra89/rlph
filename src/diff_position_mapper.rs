@@ -130,6 +130,10 @@ fn parse_u32(value: &str, context: &str) -> Result<u32, DiffPositionMapperError>
     })
 }
 
+fn validate_u32(value: &str, context: &str) -> Result<(), DiffPositionMapperError> {
+    parse_u32(value, context).map(|_| ())
+}
+
 fn finalize_pending_file(file: PendingFile, files_by_alias: &mut HashMap<String, DiffFile>) {
     let aliases = file.aliases();
     let resolved_current_path = file.resolved_current_path().map(Arc::new);
@@ -206,10 +210,10 @@ impl DiffPositionMapper {
                     "hunk new start",
                 )?;
                 if let Some(count_match) = caps.get(2) {
-                    parse_u32(count_match.as_str(), "hunk old length")?;
+                    validate_u32(count_match.as_str(), "hunk old length")?;
                 }
                 if let Some(count_match) = caps.get(4) {
-                    parse_u32(count_match.as_str(), "hunk new length")?;
+                    validate_u32(count_match.as_str(), "hunk new length")?;
                 }
                 cursor = Some(HunkCursor { old_line, new_line });
                 continue;
