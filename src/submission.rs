@@ -417,6 +417,21 @@ impl GitHubSubmission {
         }
         Ok(response.head_ref_oid)
     }
+
+    fn gh_post_pr_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
+        let number_str = pr_number.to_string();
+        let output = Command::new("gh")
+            .args(["pr", "comment", &number_str, "--body", body])
+            .output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Submission(format!("gh pr comment failed: {stderr}")));
+        }
+
+        Ok(())
+    }
 }
 
 impl SubmissionBackend for GitHubSubmission {
@@ -479,16 +494,7 @@ impl SubmissionBackend for GitHubSubmission {
                 "updated review comment on PR"
             );
         } else {
-            let number_str = pr_number.to_string();
-            let output = Command::new("gh")
-                .args(["pr", "comment", &number_str, "--body", body])
-                .output()
-                .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(Error::Submission(format!("gh pr comment failed: {stderr}")));
-            }
+            self.gh_post_pr_comment(pr_number, body)?;
 
             info!(pr_number = %pr_number, "created review comment on PR");
         }
@@ -705,15 +711,7 @@ impl SubmissionBackend for GitHubSubmission {
     }
 
     fn post_finding_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
-        let number_str = pr_number.to_string();
-        let output = Command::new("gh")
-            .args(["pr", "comment", &number_str, "--body", body])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!("gh pr comment failed: {stderr}")));
-        }
+        self.gh_post_pr_comment(pr_number, body)?;
         Ok(())
     }
 
