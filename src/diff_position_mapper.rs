@@ -39,7 +39,7 @@ pub struct DiffPositionMapper {
 
 #[derive(Debug, Clone)]
 struct DiffFile {
-    current_path: Option<String>,
+    current_path: Option<Arc<String>>,
     commentable_lines: Arc<HashSet<u32>>,
 }
 
@@ -132,7 +132,7 @@ fn parse_u32(value: &str, context: &str) -> Result<u32, DiffPositionMapperError>
 
 fn finalize_pending_file(file: PendingFile, files_by_alias: &mut HashMap<String, DiffFile>) {
     let aliases = file.aliases();
-    let resolved_current_path = file.resolved_current_path();
+    let resolved_current_path = file.resolved_current_path().map(Arc::new);
     let commentable_lines = Arc::new(file.commentable_lines);
     for alias in aliases {
         files_by_alias.insert(
@@ -283,8 +283,10 @@ impl DiffPositionMapper {
 
         let current_path = diff_file
             .current_path
-            .clone()
-            .ok_or_else(|| DiffPositionMapperError::NoCurrentPath(normalized_file.clone()))?;
+            .as_ref()
+            .map(|path| path.as_str())
+            .ok_or_else(|| DiffPositionMapperError::NoCurrentPath(normalized_file.clone()))?
+            .to_string();
 
         if diff_file.commentable_lines.contains(&line) {
             return Ok(ReviewCommentTarget::Line {
@@ -305,21 +307,30 @@ impl DiffPositionMapper {
 
         diff_file
             .current_path
-            .clone()
+            .as_ref()
+            .map(|path| path.to_string())
             .ok_or_else(|| DiffPositionMapperError::NoCurrentPath(normalized_file.clone()))
     }
 
     pub fn find_nearest_file(&self, file: &str) -> Option<String> {
         let path = Path::new(file);
         let mut dir = path.parent();
+        let mut seen_paths = HashSet::<*const String>::new();
         while let Some(current_dir) = dir {
-            let candidate = self.files_by_alias.values().find_map(|df| {
-                df.current_path.as_ref().filter(|p| {
-                    Path::new(p.as_str()).parent() == Some(current_dir) && p.as_str() != file
-                })
-            });
-            if let Some(found) = candidate {
-                return Some(found.clone());
+            for df in self.files_by_alias.values() {
+                let current_path = match df.current_path.as_ref() {
+                    Some(current_path) => current_path,
+                    None => continue,
+                };
+                let current_path_ptr = Arc::as_ptr(current_path);
+                if !seen_paths.insert(current_path_ptr) {
+                    continue;
+                }
+                if Path::new(current_path.as_str()).parent() == Some(current_dir)
+                    && current_path.as_str() != file
+                {
+                    return Some(current_path.as_str().to_string());
+                }
             }
             dir = current_dir.parent();
         }
