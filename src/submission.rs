@@ -1080,16 +1080,21 @@ mod tests {
         assert!(parse_owner_repo_from_remote("https://gitlab.com/acme/widget").is_err());
     }
 
-    #[test]
-    fn test_format_gh_review_submission_error_parses_422_payload() {
-        let attempted = super::format_attempted_line_review_comments(&[InlineReviewComment {
+    fn sample_inline_review_comment() -> InlineReviewComment {
+        InlineReviewComment {
             finding_id: "line-finding".to_string(),
             original_file: "src/main.rs".to_string(),
             original_line: 10,
             path: "src/main.rs".to_string(),
             line: 12,
             body: "body".to_string(),
-        }]);
+        }
+    }
+
+    #[test]
+    fn test_format_gh_review_submission_error_parses_422_payload() {
+        let attempted =
+            super::format_attempted_line_review_comments(&[sample_inline_review_comment()]);
         let stderr = concat!(
             "gh: Unprocessable Entity (HTTP 422)\n",
             "{\"message\":\"Unprocessable Entity\",\"errors\":[\"Line could not be resolved\"],",
@@ -1112,14 +1117,8 @@ mod tests {
 
     #[test]
     fn test_format_gh_review_submission_error_falls_back_to_raw_output() {
-        let attempted = super::format_attempted_line_review_comments(&[InlineReviewComment {
-            finding_id: "line-finding".to_string(),
-            original_file: "src/main.rs".to_string(),
-            original_line: 10,
-            path: "src/main.rs".to_string(),
-            line: 12,
-            body: "body".to_string(),
-        }]);
+        let attempted =
+            super::format_attempted_line_review_comments(&[sample_inline_review_comment()]);
 
         let formatted = format_gh_review_submission_error(
             "create review",
