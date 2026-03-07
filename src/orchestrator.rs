@@ -11,7 +11,9 @@ use tracing::{info, warn};
 
 use crate::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
 use crate::deps::DependencyGraph;
-use crate::diff_position_mapper::{DiffPositionMapper, ReviewCommentTarget};
+use crate::diff_position_mapper::{
+    DiffPositionMapper, DiffPositionMapperError, ReviewCommentTarget,
+};
 use crate::error::{Error, Result};
 use crate::ids::{IssueNumber, PrNumber};
 use crate::prompts::PromptEngine;
@@ -1081,6 +1083,87 @@ fn prepare_review_comments(
                     ),
                 });
             }
+            Err(DiffPositionMapperError::InvalidLine { .. }) => {
+                match mapper.current_path_for(&finding.file) {
+                    Ok(path) => {
+                        prepared.file_comments.push(FileReviewComment {
+                            finding_id: finding.id.clone(),
+                            original_file: finding.file.clone(),
+                            original_line: finding.line,
+                            path,
+                            body: render_inline_finding_comment_for_github(
+                                finding,
+                                &dependency_descriptions,
+                                Some(FallbackContext::File {
+                                    file: finding.file.clone(),
+                                    line: finding.line,
+                                }),
+                            ),
+                        });
+                    }
+                    Err(_) => {
+                        if let Some(related_path) = mapper.find_nearest_file(&finding.file) {
+                            prepared.file_comments.push(FileReviewComment {
+                                finding_id: finding.id.clone(),
+                                original_file: finding.file.clone(),
+                                original_line: finding.line,
+                                path: related_path,
+                                body: render_inline_finding_comment_for_github(
+                                    finding,
+                                    &dependency_descriptions,
+                                    Some(FallbackContext::RelatedFile {
+                                        file: finding.file.clone(),
+                                        line: finding.line,
+                                    }),
+                                ),
+                            });
+                        } else {
+                            prepared.standalone_findings.push(StandaloneFinding {
+                                body: render_inline_finding_comment_for_github(
+                                    finding,
+                                    &dependency_descriptions,
+                                    Some(FallbackContext::Standalone {
+                                        file: finding.file.clone(),
+                                        line: finding.line,
+                                    }),
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+            Err(
+                DiffPositionMapperError::FileNotFound(_)
+                | DiffPositionMapperError::NoCurrentPath(_),
+            ) => {
+                if let Some(related_path) = mapper.find_nearest_file(&finding.file) {
+                    prepared.file_comments.push(FileReviewComment {
+                        finding_id: finding.id.clone(),
+                        original_file: finding.file.clone(),
+                        original_line: finding.line,
+                        path: related_path,
+                        body: render_inline_finding_comment_for_github(
+                            finding,
+                            &dependency_descriptions,
+                            Some(FallbackContext::RelatedFile {
+                                file: finding.file.clone(),
+                                line: finding.line,
+                            }),
+                        ),
+                    });
+                } else {
+                    prepared.standalone_findings.push(StandaloneFinding {
+                        body: render_inline_finding_comment_for_github(
+                            finding,
+                            &dependency_descriptions,
+                            Some(FallbackContext::Standalone {
+                                file: finding.file.clone(),
+                                line: finding.line,
+                            }),
+                        ),
+                    });
+                }
+            }
             Err(_) => {
                 if let Some(related_path) = mapper.find_nearest_file(&finding.file) {
                     prepared.file_comments.push(FileReviewComment {
@@ -1324,6 +1407,34 @@ mod tests {
         assert!(comments.file_comments[0].body.contains(
             "applies to `src/lib.rs:100` but is shown as a file-level comment because that location is not commentable in the diff"
         ));
+    }
+
+    #[test]
+    fn test_prepare_review_comments_invalid_zero_line_posts_file_level_comment() {
+        let submission = InlineReviewTestSubmission {
+            diff: "diff --git a/src/lib.rs b/src/lib.rs\n@@ -0,0 +10,2 @@\n+line10\n+line11\n"
+                .to_string(),
+        };
+        let finding = ReviewFinding {
+            file: "src/lib.rs".to_string(),
+            line: 0,
+            description: "Issue on computed line".to_string(),
+            ..make_finding("invalid-zero-line")
+        };
+
+        let result = prepare_review_comments(&submission, PrNumber::new(11), &[finding]).unwrap();
+        assert!(result.inline_comments.is_empty());
+        assert_eq!(result.file_comments.len(), 1);
+        assert_eq!(result.file_comments[0].path, "src/lib.rs");
+        assert!(
+            result.file_comments[0]
+                .body
+                .contains("`invalid-zero-line` — Issue on computed line")
+        );
+        assert!(result.file_comments[0].body.contains(
+            "applies to `src/lib.rs:0` but is shown as a file-level comment because that location is not commentable in the diff"
+        ));
+        assert!(result.standalone_findings.is_empty());
     }
 
     #[test]

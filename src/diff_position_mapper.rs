@@ -294,6 +294,19 @@ impl DiffPositionMapper {
         Ok(ReviewCommentTarget::File { path: current_path })
     }
 
+    pub fn current_path_for(&self, file: &str) -> Result<String, DiffPositionMapperError> {
+        let normalized_file = normalize_path(file);
+        let diff_file = self
+            .files_by_alias
+            .get(&normalized_file)
+            .ok_or_else(|| DiffPositionMapperError::FileNotFound(normalized_file.clone()))?;
+
+        diff_file
+            .current_path
+            .clone()
+            .ok_or_else(|| DiffPositionMapperError::NoCurrentPath(normalized_file.clone()))
+    }
+
     pub fn find_nearest_file(&self, file: &str) -> Option<String> {
         let path = Path::new(file);
         let mut dir = path.parent();

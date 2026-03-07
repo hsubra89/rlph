@@ -286,7 +286,6 @@ pub fn render_summary_for_github(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FallbackContext {
-    Line(u32),
     File { file: String, line: u32 },
     RelatedFile { file: String, line: u32 },
     Standalone { file: String, line: u32 },
@@ -328,13 +327,6 @@ pub fn render_inline_finding_comment_for_github(
     }
 
     match &fallback {
-        Some(FallbackContext::Line(target_line)) => {
-            write!(
-                body,
-                "\n\n> [!NOTE]\n> This finding applies to line {target_line} but is shown here because that line is not in the diff."
-            )
-            .unwrap();
-        }
         Some(FallbackContext::File { file, line }) => {
             write!(
                 body,
@@ -1170,37 +1162,6 @@ mod tests {
         assert!(body.contains("| correctness | 1 |"));
         assert!(body.contains("| style | 1 |"));
         assert!(!body.contains(FINDING_MARKER));
-    }
-
-    #[test]
-    fn test_render_inline_finding_comment_with_dependency_and_line_fallback_note() {
-        let finding = ReviewFinding {
-            depends_on: vec!["check-null".to_string()],
-            ..finding(
-                "dep-finding",
-                "src/main.rs",
-                88,
-                Severity::Warning,
-                "Potential null dereference",
-                Some("correctness"),
-            )
-        };
-
-        let body = render_inline_finding_comment_for_github(
-            &finding,
-            &["Missing null guard in constructor"],
-            Some(FallbackContext::Line(88)),
-        );
-
-        assert!(body.contains("### 🟡 WARNING (correctness)"));
-        assert!(body.contains("`dep-finding` — Potential null dereference"));
-        assert!(body.contains("> 🚧 **Depends on:**\n> Missing null guard in constructor"));
-        assert!(body.contains(
-            "> [!NOTE]\n> This finding applies to line 88 but is shown here because that line is not in the diff."
-        ));
-        let json = extract_finding_json(&body).expect("finding marker is present");
-        let parsed: ReviewFinding = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.id, "dep-finding");
     }
 
     #[test]
