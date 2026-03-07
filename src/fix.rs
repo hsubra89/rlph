@@ -330,8 +330,8 @@ fn recover_shared_worktree(
                     "failed to remove shared worktree before recreation"
                 );
             }
-            if worktree_path.exists()
-                && let Err(remove_error) = std::fs::remove_dir_all(worktree_path)
+            if let Err(remove_error) = std::fs::remove_dir_all(worktree_path)
+                && remove_error.kind() != std::io::ErrorKind::NotFound
             {
                 eprintln!(
                     "[rlph] Failed to remove broken shared fix worktree at {} before recreation: {remove_error}",
