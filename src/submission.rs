@@ -246,9 +246,15 @@ struct ReviewInlineCommentRequest {
 #[derive(Debug, Serialize)]
 struct FileReviewCommentRequest {
     body: String,
-    commit_id: String,
     path: String,
     subject_type: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewCreateFileCommentsRequest {
+    body: String,
+    event: String,
+    comments: Vec<FileReviewCommentRequest>,
 }
 
 /// GitHub PR submission via `gh` CLI.
@@ -389,35 +395,6 @@ impl GitHubSubmission {
         let stdout = String::from_utf8_lossy(&output.stdout);
         parse_pr_context_json(&stdout)
             .map_err(|e| Error::Submission(format!("failed to parse gh pr view output: {e}")))
-    }
-
-    fn fetch_pr_head_ref_oid(&self, pr_number: PrNumber) -> Result<String> {
-        #[derive(Deserialize)]
-        struct GhPrHeadRef {
-            #[serde(rename = "headRefOid")]
-            head_ref_oid: String,
-        }
-
-        let number_str = pr_number.to_string();
-        let output = Command::new("gh")
-            .args(["pr", "view", &number_str, "--json", "headRefOid"])
-            .output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Submission(format!("gh pr view failed: {stderr}")));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let response: GhPrHeadRef = serde_json::from_str(&stdout)
-            .map_err(|e| Error::Submission(format!("failed to parse gh pr view output: {e}")))?;
-        if response.head_ref_oid.trim().is_empty() {
-            return Err(Error::Submission(
-                "gh pr view returned an empty headRefOid".to_string(),
-            ));
-        }
-        Ok(response.head_ref_oid)
     }
 
     fn gh_post_pr_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
@@ -580,56 +557,65 @@ impl SubmissionBackend for GitHubSubmission {
             return Ok(());
         }
 
-        let commit_id = self.fetch_pr_head_ref_oid(pr_number)?;
-        let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments");
+        let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews");
+        let payload = ReviewCreateFileCommentsRequest {
+            body: format!(
+                "Review: {} file finding(s) across the changes.",
+                comments.len()
+            ),
+            event: PullRequestReviewEvent::Comment.as_api_value().to_string(),
+            comments: comments
+                .iter()
+                .map(|comment| FileReviewCommentRequest {
+                    body: comment.body.clone(),
+                    path: comment.path.clone(),
+                    subject_type: "file".to_string(),
+                })
+                .collect(),
+        };
+        let request_body = serde_json::to_vec(&payload).map_err(|e| {
+            Error::Submission(format!("failed to serialize file review payload: {e}"))
+        })?;
 
-        for comment in comments {
-            let payload = FileReviewCommentRequest {
-                body: comment.body.clone(),
-                commit_id: commit_id.clone(),
-                path: comment.path.clone(),
-                subject_type: "file".to_string(),
-            };
-            let request_body = serde_json::to_vec(&payload).map_err(|e| {
-                Error::Submission(format!("failed to serialize file review payload: {e}"))
-            })?;
+        let mut child = Command::new("gh")
+            .args(["api", &endpoint, "-X", "POST", "--input", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
 
-            let mut child = Command::new("gh")
-                .args(["api", &endpoint, "-X", "POST", "--input", "-"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::Submission("failed to open stdin for gh api".to_string()))?;
+        stdin
+            .write_all(&request_body)
+            .map_err(|e| Error::Submission(format!("failed to write file review payload: {e}")))?;
+        drop(stdin);
 
-            let mut stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| Error::Submission("failed to open stdin for gh api".to_string()))?;
-            stdin.write_all(&request_body).map_err(|e| {
-                Error::Submission(format!("failed to write file review payload: {e}"))
-            })?;
-            drop(stdin);
-
-            let output = child
-                .wait_with_output()
-                .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                return Err(Error::Submission(format_gh_review_submission_error(
-                    "create file review comment",
-                    &[format_attempted_file_review_comment(comment)],
-                    &stderr,
-                    &stdout,
-                )));
-            }
+        let output = child
+            .wait_with_output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let attempted = comments
+                .iter()
+                .map(format_attempted_file_review_comment)
+                .collect::<Vec<_>>();
+            return Err(Error::Submission(format_gh_review_submission_error(
+                "create file review",
+                &attempted,
+                &stderr,
+                &stdout,
+            )));
         }
 
         info!(
             pr_number = %pr_number,
             comments = comments.len(),
-            "created file-level PR review comments"
+            "created batched file-level PR review comments"
         );
         Ok(())
     }
