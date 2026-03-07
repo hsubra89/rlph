@@ -26,6 +26,6 @@ target
 /target
 .ralph/
 .ralph-gh/
-.rlph/state
-.rlph/config.toml
+.brrr/state
+.brrr/config.toml
 ideas.md

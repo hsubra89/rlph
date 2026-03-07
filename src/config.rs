@@ -139,7 +139,7 @@ pub struct InitConfig {
     pub label: String,
 }
 
-const DEFAULT_CONFIG_FILE: &str = ".rlph/config.toml";
+const DEFAULT_CONFIG_FILE: &str = ".brrr/config.toml";
 
 /// Default review phases for use in tests and when no config is provided.
 pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {
@@ -228,7 +228,7 @@ pub fn resolve_init_config_from(cli: &Cli, project_dir: &Path) -> Result<InitCon
             .label
             .clone()
             .or(file.label)
-            .unwrap_or_else(|| "rlph".to_string()),
+            .unwrap_or_else(|| "brrr".to_string()),
     })
 }
 
@@ -455,7 +455,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
             .label
             .clone()
             .or(file.label)
-            .unwrap_or_else(|| "rlph".to_string()),
+            .unwrap_or_else(|| "brrr".to_string()),
         poll_seconds: Duration::from_secs(
             build
                 .and_then(|b| b.poll_seconds)
@@ -465,7 +465,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
         worktree_dir: build
             .and_then(|b| b.worktree_dir.clone())
             .or(file.worktree_dir)
-            .unwrap_or_else(|| "../rlph-worktrees".to_string()),
+            .unwrap_or_else(|| "../brrr-worktrees".to_string()),
         base_branch: build
             .and_then(|b| b.base_branch.clone())
             .or(file.base_branch)
@@ -621,7 +621,7 @@ mod tests {
 source = "github"
 runner = "claude"
 submission = "github"
-label = "rlph"
+label = "brrr"
 poll_seconds = 30
 worktree_dir = "/tmp/wt"
 "#;
@@ -645,10 +645,10 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_file_invalid_source_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.toml"), r#"source = "jira""#).unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown source: jira"));
     }
@@ -656,10 +656,10 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_file_invalid_runner_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.toml"), r#"runner = "podman""#).unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown runner: podman"));
     }
@@ -667,10 +667,10 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_file_invalid_submission_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.toml"), r#"submission = "gitlab""#).unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown submission: gitlab"));
     }
@@ -678,10 +678,10 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_file_zero_poll_seconds_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.toml"), r#"poll_seconds = 0"#).unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("poll_seconds must be > 0"));
     }
@@ -707,7 +707,7 @@ worktree_dir = "/tmp/wt"
             ..Default::default()
         };
         let cli = Cli::parse_from([
-            "rlph",
+            "brrr",
             "build",
             "--once",
             "--source",
@@ -726,12 +726,12 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_defaults_applied() {
         let file = ConfigFile::default();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = merge(file, &cli, cli.build_args()).unwrap();
         assert_eq!(config.source, "github");
         assert_eq!(config.runner, RunnerKind::Claude);
         assert_eq!(config.submission, "github");
-        assert_eq!(config.label, "rlph");
+        assert_eq!(config.label, "brrr");
         assert_eq!(config.poll_seconds, Duration::from_secs(30));
         assert_eq!(config.agent_binary, "claude");
         assert_eq!(config.agent_model.as_deref(), Some("claude-opus-4-6"));
@@ -747,22 +747,22 @@ worktree_dir = "/tmp/wt"
             agent_timeout: Some(120),
             ..Default::default()
         };
-        let cli = Cli::parse_from(["rlph", "build", "--once", "--agent-timeout", "45"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once", "--agent-timeout", "45"]);
         let config = merge(file, &cli, cli.build_args()).unwrap();
         assert_eq!(config.agent_timeout, Some(Duration::from_secs(45)));
     }
 
     #[test]
     fn test_load_missing_default_config_falls_back_to_defaults() {
-        // When no --config is provided and .rlph/config.toml doesn't exist,
+        // When no --config is provided and .brrr/config.toml doesn't exist,
         // Config::load should succeed with built-in defaults.
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.source, "github");
         assert_eq!(config.runner, RunnerKind::Claude);
         assert_eq!(config.submission, "github");
-        assert_eq!(config.label, "rlph");
+        assert_eq!(config.label, "brrr");
         assert_eq!(config.poll_seconds, Duration::from_secs(30));
         assert_eq!(config.agent_binary, "claude");
         assert_eq!(config.agent_model.as_deref(), Some("claude-opus-4-6"));
@@ -775,7 +775,7 @@ worktree_dir = "/tmp/wt"
         // CLI overrides should still win when default config file is absent.
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from([
-            "rlph", "build", "--once", "--runner", "codex", "--label", "custom",
+            "brrr", "build", "--once", "--runner", "codex", "--label", "custom",
         ]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.runner, RunnerKind::Codex);
@@ -787,7 +787,7 @@ worktree_dir = "/tmp/wt"
     fn test_load_explicit_missing_config_errors() {
         // When --config points to a missing file, Config::load should fail.
         let cli = Cli::parse_from([
-            "rlph",
+            "brrr",
             "build",
             "--once",
             "--config",
@@ -800,7 +800,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_resolve_init_config_uses_file_source_without_linear_section() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -808,7 +808,7 @@ worktree_dir = "/tmp/wt"
         )
         .unwrap();
 
-        let cli = Cli::parse_from(["rlph", "init"]);
+        let cli = Cli::parse_from(["brrr", "init"]);
         let cfg = resolve_init_config_from(&cli, tmp.path()).unwrap();
         assert_eq!(cfg.source, "linear");
         assert_eq!(cfg.label, "ops");
@@ -817,7 +817,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_resolve_init_config_cli_overrides_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -825,7 +825,7 @@ worktree_dir = "/tmp/wt"
         )
         .unwrap();
 
-        let cli = Cli::parse_from(["rlph", "init", "--source", "linear", "--label", "cli"]);
+        let cli = Cli::parse_from(["brrr", "init", "--source", "linear", "--label", "cli"]);
         let cfg = resolve_init_config_from(&cli, tmp.path()).unwrap();
         assert_eq!(cfg.source, "linear");
         assert_eq!(cfg.label, "cli");
@@ -834,16 +834,16 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_resolve_init_config_defaults_when_file_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "init"]);
+        let cli = Cli::parse_from(["brrr", "init"]);
         let cfg = resolve_init_config_from(&cli, tmp.path()).unwrap();
         assert_eq!(cfg.source, "github");
-        assert_eq!(cfg.label, "rlph");
+        assert_eq!(cfg.label, "brrr");
     }
 
     #[test]
     fn test_cli_invalid_source_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once", "--source", "jira"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once", "--source", "jira"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown source: jira"));
     }
@@ -851,7 +851,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_cli_invalid_runner_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "bogus"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once", "--runner", "bogus"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown runner: bogus"));
     }
@@ -859,7 +859,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_cli_invalid_submission_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once", "--submission", "gitlab"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once", "--submission", "gitlab"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown submission: gitlab"));
     }
@@ -867,7 +867,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_cli_zero_poll_seconds_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once", "--poll-seconds", "0"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once", "--poll-seconds", "0"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("poll_seconds must be > 0"));
     }
@@ -875,7 +875,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_codex_runner_accepted() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "codex"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once", "--runner", "codex"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.runner, RunnerKind::Codex);
     }
@@ -883,7 +883,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_codex_runner_defaults_binary_to_codex() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "codex"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once", "--runner", "codex"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.agent_binary, "codex");
         assert_eq!(config.agent_model.as_deref(), Some("gpt-5.4"));
@@ -895,7 +895,7 @@ worktree_dir = "/tmp/wt"
     fn test_codex_runner_binary_override() {
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from([
-            "rlph",
+            "brrr",
             "build",
             "--once",
             "--runner",
@@ -910,7 +910,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_old_runner_bare_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "bare"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once", "--runner", "bare"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown runner: bare"));
     }
@@ -918,7 +918,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_old_runner_docker_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "docker"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once", "--runner", "docker"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown runner: docker"));
     }
@@ -926,7 +926,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_review_phases_parsed_from_toml() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -943,7 +943,7 @@ agent_effort = "high"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_phases.len(), 2);
         assert_eq!(config.review_phases[0].name, "correctness");
@@ -963,7 +963,7 @@ agent_effort = "high"
     #[test]
     fn test_review_phases_duplicate_name_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -978,7 +978,7 @@ prompt = "other-review"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("duplicate review phase name"));
     }
@@ -986,7 +986,7 @@ prompt = "other-review"
     #[test]
     fn test_review_aggregate_and_fix_parsed() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1002,7 +1002,7 @@ agent_model = "claude-opus-4-6"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_aggregate.prompt, "my-aggregate");
         assert_eq!(
@@ -1014,7 +1014,7 @@ agent_model = "claude-opus-4-6"
     #[test]
     fn test_review_aggregate_defaults() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_aggregate.prompt, "review-aggregate");
         assert_eq!(config.review_aggregate.runner, RunnerKind::Claude);
@@ -1023,7 +1023,7 @@ agent_model = "claude-opus-4-6"
     #[test]
     fn test_default_review_phases_provided() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_phases.len(), 3);
         assert_eq!(config.review_phases[0].name, "correctness");
@@ -1034,7 +1034,7 @@ agent_model = "claude-opus-4-6"
     #[test]
     fn test_review_phase_empty_name_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1045,7 +1045,7 @@ prompt = "check-review"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("name must not be empty"));
     }
@@ -1053,7 +1053,7 @@ prompt = "check-review"
     #[test]
     fn test_review_phase_empty_prompt_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1064,7 +1064,7 @@ prompt = ""
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("prompt must not be empty"));
     }
@@ -1072,7 +1072,7 @@ prompt = ""
     #[test]
     fn test_review_phase_invalid_runner_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1084,7 +1084,7 @@ runner = "podman"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(err.to_string().contains("unknown runner: podman"));
     }
@@ -1092,7 +1092,7 @@ runner = "podman"
     #[test]
     fn test_review_phase_inherits_global_runner() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1105,7 +1105,7 @@ prompt = "check-review"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_phases[0].runner, RunnerKind::Codex);
         assert_eq!(config.review_phases[0].agent_binary, "codex");
@@ -1114,7 +1114,7 @@ prompt = "check-review"
     #[test]
     fn test_review_phase_overrides_runner_gets_correct_defaults() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1128,7 +1128,7 @@ runner = "claude"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_phases[0].runner, RunnerKind::Claude);
         assert_eq!(config.review_phases[0].agent_binary, "claude");
@@ -1145,7 +1145,7 @@ runner = "claude"
     #[test]
     fn test_review_step_overrides_runner_gets_correct_defaults() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1161,7 +1161,7 @@ runner = "claude"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_aggregate.runner, RunnerKind::Claude);
         assert_eq!(config.review_aggregate.agent_binary, "claude");
@@ -1174,7 +1174,7 @@ runner = "claude"
     #[test]
     fn test_review_phase_inherits_global_agent_overrides() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1190,7 +1190,7 @@ prompt = "check-review"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.review_phases[0].agent_binary, "/opt/agent-proxy");
         assert_eq!(
@@ -1206,7 +1206,7 @@ prompt = "check-review"
     #[test]
     fn test_review_steps_inherit_global_agent_overrides() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1225,7 +1225,7 @@ prompt = "review-aggregate"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
 
         assert_eq!(config.review_aggregate.agent_binary, "/opt/agent-proxy");
@@ -1242,7 +1242,7 @@ prompt = "review-aggregate"
     #[test]
     fn test_opencode_runner_accepted() {
         let tmp = tempfile::tempdir().unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once", "--runner", "opencode"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once", "--runner", "opencode"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.runner, RunnerKind::OpenCode);
         assert_eq!(config.agent_binary, "opencode");
@@ -1254,7 +1254,7 @@ prompt = "review-aggregate"
     #[test]
     fn test_mixed_runner_defaults_do_not_leak_variant() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1280,7 +1280,7 @@ runner = "claude"
         )
         .unwrap();
 
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
 
         assert_eq!(config.agent_variant.as_deref(), Some("high"));
@@ -1302,7 +1302,7 @@ runner = "claude"
     fn test_opencode_with_variant() {
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from([
-            "rlph",
+            "brrr",
             "build",
             "--once",
             "--runner",
@@ -1319,7 +1319,7 @@ runner = "claude"
     fn test_opencode_with_effort_rejected() {
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from([
-            "rlph",
+            "brrr",
             "build",
             "--once",
             "--runner",
@@ -1338,7 +1338,7 @@ runner = "claude"
     fn test_claude_with_variant_rejected() {
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from([
-            "rlph",
+            "brrr",
             "build",
             "--once",
             "--runner",
@@ -1357,7 +1357,7 @@ runner = "claude"
     fn test_codex_with_variant_rejected() {
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from([
-            "rlph",
+            "brrr",
             "build",
             "--once",
             "--runner",
@@ -1375,7 +1375,7 @@ runner = "claude"
     #[test]
     fn test_opencode_variant_plumbed_to_review_phases() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1392,7 +1392,7 @@ prompt = "review-aggregate"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(
             config.review_phases[0].agent_variant.as_deref(),
@@ -1407,7 +1407,7 @@ prompt = "review-aggregate"
     #[test]
     fn test_opencode_review_phase_variant_override() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1422,7 +1422,7 @@ agent_variant = "low"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(
             config.review_phases[0].agent_variant.as_deref(),
@@ -1433,7 +1433,7 @@ agent_variant = "low"
     #[test]
     fn test_phase_opencode_inheriting_effort_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1451,7 +1451,7 @@ prompt = "review-aggregate"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(
             err.to_string()
@@ -1462,7 +1462,7 @@ prompt = "review-aggregate"
     #[test]
     fn test_phase_claude_inheriting_variant_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1481,7 +1481,7 @@ runner = "opencode"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(
             err.to_string()
@@ -1505,7 +1505,7 @@ runner = "opencode"
             worktree_setup_script: Some("my-setup.sh".to_string()),
             ..Default::default()
         };
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = merge(file, &cli, cli.build_args()).unwrap();
         assert_eq!(config.worktree_setup_script.as_deref(), Some("my-setup.sh"));
     }
@@ -1513,7 +1513,7 @@ runner = "opencode"
     #[test]
     fn test_worktree_setup_script_none_by_default() {
         let file = ConfigFile::default();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let config = merge(file, &cli, cli.build_args()).unwrap();
         assert_eq!(config.worktree_setup_script, None);
     }
@@ -1521,7 +1521,7 @@ runner = "opencode"
     #[test]
     fn test_review_aggregate_opencode_inheriting_effort_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".rlph");
+        let cfg_dir = tmp.path().join(".brrr");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1539,7 +1539,7 @@ runner = "opencode"
 "#,
         )
         .unwrap();
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         let err = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap_err();
         assert!(
             err.to_string()

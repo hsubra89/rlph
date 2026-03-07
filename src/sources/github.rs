@@ -238,13 +238,13 @@ mod tests {
     #[test]
     fn test_fetch_filters_eligible_only() {
         let json = mock_issues_json(&[
-            issue_json(1, "Task 1", &["rlph"], "body 1"),
-            issue_json(2, "Task 2", &["rlph", "in-progress"], "body 2"),
-            issue_json(3, "Task 3", &["rlph", "done"], "body 3"),
-            issue_json(4, "Task 4", &["rlph"], "body 4"),
+            issue_json(1, "Task 1", &["brrr"], "body 1"),
+            issue_json(2, "Task 2", &["brrr", "in-progress"], "body 2"),
+            issue_json(3, "Task 3", &["brrr", "done"], "body 3"),
+            issue_json(4, "Task 4", &["brrr"], "body 4"),
         ]);
         let client = MockGhClient::new(vec![Ok(json)]);
-        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let source = GitHubSource::with_client("brrr", Box::new(client));
         let tasks = source.fetch_eligible_tasks().unwrap();
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].id, "1");
@@ -254,11 +254,11 @@ mod tests {
     #[test]
     fn test_fetch_excludes_in_review() {
         let json = mock_issues_json(&[
-            issue_json(1, "Task 1", &["rlph"], "body"),
-            issue_json(2, "Task 2", &["rlph", "in-review"], "body"),
+            issue_json(1, "Task 1", &["brrr"], "body"),
+            issue_json(2, "Task 2", &["brrr", "in-review"], "body"),
         ]);
         let client = MockGhClient::new(vec![Ok(json)]);
-        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let source = GitHubSource::with_client("brrr", Box::new(client));
         let tasks = source.fetch_eligible_tasks().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].id, "1");
@@ -267,12 +267,12 @@ mod tests {
     #[test]
     fn test_fetch_parses_priority() {
         let json = mock_issues_json(&[
-            issue_json(1, "High pri", &["rlph", "p1"], "body"),
-            issue_json(2, "Low pri", &["rlph", "priority-low"], "body"),
-            issue_json(3, "No pri", &["rlph"], "body"),
+            issue_json(1, "High pri", &["brrr", "p1"], "body"),
+            issue_json(2, "Low pri", &["brrr", "priority-low"], "body"),
+            issue_json(3, "No pri", &["brrr"], "body"),
         ]);
         let client = MockGhClient::new(vec![Ok(json)]);
-        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let source = GitHubSource::with_client("brrr", Box::new(client));
         let tasks = source.fetch_eligible_tasks().unwrap();
         assert_eq!(tasks[0].priority, Some(Priority(1)));
         assert_eq!(tasks[1].priority, Some(Priority(9)));
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn test_mark_in_progress() {
         let client = MockGhClient::new(vec![Ok(String::new()), Ok(String::new())]);
-        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let source = GitHubSource::with_client("brrr", Box::new(client));
         source.mark_in_progress("42").unwrap();
     }
 
@@ -291,12 +291,12 @@ mod tests {
         let json = serde_json::to_string(&issue_json(
             7,
             "Detail task",
-            &["rlph", "todo", "p3"],
+            &["brrr", "todo", "p3"],
             "task body",
         ))
         .unwrap();
         let client = MockGhClient::new(vec![Ok(json)]);
-        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let source = GitHubSource::with_client("brrr", Box::new(client));
         let task = source.get_task_details("7").unwrap();
         assert_eq!(task.id, "7");
         assert_eq!(task.title, "Detail task");
@@ -307,12 +307,12 @@ mod tests {
     #[test]
     fn test_fetch_includes_issues_without_active_labels() {
         let json = mock_issues_json(&[
-            issue_json(1, "Just rlph", &["rlph"], "body"),
-            issue_json(2, "Extra label", &["rlph", "bug"], "body"),
+            issue_json(1, "Just brrr", &["brrr"], "body"),
+            issue_json(2, "Extra label", &["brrr", "bug"], "body"),
             issue_json(3, "No labels", &[], "body"),
         ]);
         let client = MockGhClient::new(vec![Ok(json)]);
-        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let source = GitHubSource::with_client("brrr", Box::new(client));
         let tasks = source.fetch_eligible_tasks().unwrap();
         assert_eq!(tasks.len(), 3);
     }
@@ -320,13 +320,13 @@ mod tests {
     #[test]
     fn test_fetch_excludes_mixed_case_active_labels() {
         let json = mock_issues_json(&[
-            issue_json(1, "In progress", &["rlph", "In-Progress"], "body"),
-            issue_json(2, "In review", &["rlph", "IN-REVIEW"], "body"),
-            issue_json(3, "Done", &["rlph", "Done"], "body"),
-            issue_json(4, "Eligible", &["rlph"], "body"),
+            issue_json(1, "In progress", &["brrr", "In-Progress"], "body"),
+            issue_json(2, "In review", &["brrr", "IN-REVIEW"], "body"),
+            issue_json(3, "Done", &["brrr", "Done"], "body"),
+            issue_json(4, "Eligible", &["brrr"], "body"),
         ]);
         let client = MockGhClient::new(vec![Ok(json)]);
-        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let source = GitHubSource::with_client("brrr", Box::new(client));
         let tasks = source.fetch_eligible_tasks().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].id, "4");
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn test_fetch_error_propagated() {
         let client = MockGhClient::new(vec![Err(Error::TaskSource("gh not found".to_string()))]);
-        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let source = GitHubSource::with_client("brrr", Box::new(client));
         let err = source.fetch_eligible_tasks().unwrap_err();
         assert!(err.to_string().contains("gh not found"));
     }
@@ -344,7 +344,7 @@ mod tests {
     fn test_fetch_handles_null_body() {
         let json = r#"[{"number":1,"title":"No body","body":null,"labels":[{"name":"todo"}],"url":"https://example.com/1"}]"#;
         let client = MockGhClient::new(vec![Ok(json.to_string())]);
-        let source = GitHubSource::with_client("rlph", Box::new(client));
+        let source = GitHubSource::with_client("brrr", Box::new(client));
         let tasks = source.fetch_eligible_tasks().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].body, "");

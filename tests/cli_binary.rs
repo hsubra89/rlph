@@ -4,7 +4,7 @@ use std::fs;
 
 #[allow(deprecated)]
 fn cmd() -> Command {
-    Command::cargo_bin("rlph").unwrap()
+    Command::cargo_bin("brrr").unwrap()
 }
 
 // --- Help & version ---
@@ -24,7 +24,7 @@ fn version_flag() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("rlph"));
+        .stdout(predicate::str::contains("brrr"));
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn prd_help() {
 // --- Mode flag validation ---
 
 #[test]
-fn bare_rlph_requires_mode() {
+fn bare_brrr_requires_mode() {
     let tmp = tempfile::tempdir().unwrap();
     cmd()
         .current_dir(&tmp)
@@ -176,7 +176,7 @@ fn config_file_not_found() {
 #[test]
 fn invalid_toml_config() {
     let tmp = tempfile::tempdir().unwrap();
-    let cfg_dir = tmp.path().join(".rlph");
+    let cfg_dir = tmp.path().join(".brrr");
     fs::create_dir_all(&cfg_dir).unwrap();
     fs::write(cfg_dir.join("config.toml"), "not valid {{{{ toml").unwrap();
     cmd()
@@ -193,7 +193,7 @@ fn invalid_toml_config() {
 #[test]
 fn review_rejects_non_github_source() {
     let tmp = tempfile::tempdir().unwrap();
-    let cfg_dir = tmp.path().join(".rlph");
+    let cfg_dir = tmp.path().join(".brrr");
     fs::create_dir_all(&cfg_dir).unwrap();
     fs::write(
         cfg_dir.join("config.toml"),

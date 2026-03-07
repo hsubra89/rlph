@@ -107,6 +107,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
+name = "brrr"
+version = "0.1.8"
+dependencies = [
+ "assert_cmd",
+ "clap",
+ "libc",
+ "predicates",
+ "regex",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "upon",
+ "ureq",
+]
+
+[[package]]
 name = "bstr"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -841,28 +863,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rlph"
-version = "0.1.8"
-dependencies = [
- "assert_cmd",
- "clap",
- "libc",
- "predicates",
- "regex",
- "serde",
- "serde_json",
- "serial_test",
- "tempfile",
- "thiserror",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "upon",
- "ureq",
 ]
 
 [[package]]

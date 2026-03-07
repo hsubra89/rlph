@@ -7,23 +7,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::{default_test_config, setup_git_repo};
-use rlph::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
-use rlph::error::{Error, Result};
-use rlph::ids::{IssueNumber, PrNumber};
-use rlph::orchestrator::{
+use brrr::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
+use brrr::error::{Error, Result};
+use brrr::ids::{IssueNumber, PrNumber};
+use brrr::orchestrator::{
     CorrectionRunner, Orchestrator, ProgressReporter, ReviewInvocation, ReviewRunnerFactory,
     build_task_vars,
 };
-use rlph::prompts::PromptEngine;
-use rlph::review_schema::FINDING_MARKER;
-use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult, RunnerKind};
-use rlph::sources::{Task, TaskSource};
-use rlph::state::StateManager;
-use rlph::submission::{
+use brrr::prompts::PromptEngine;
+use brrr::review_schema::FINDING_MARKER;
+use brrr::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult, RunnerKind};
+use brrr::sources::{Task, TaskSource};
+use brrr::state::StateManager;
+use brrr::submission::{
     InlineReviewComment, PullRequestReviewEvent, SubmissionBackend, SubmitResult,
 };
-use rlph::worktree::WorktreeManager;
+use brrr::worktree::WorktreeManager;
+use common::{default_test_config, setup_git_repo};
 use tokio::sync::watch;
 
 // --- Shared test JSON literals ---
@@ -124,7 +124,7 @@ impl AgentRunner for MockRunner {
     async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
         match phase {
             Phase::Choose => {
-                let ralph_dir = working_dir.join(".rlph");
+                let ralph_dir = working_dir.join(".brrr");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
                 std::fs::write(
@@ -253,7 +253,7 @@ impl AgentRunner for CountingRunner {
         match phase {
             Phase::Choose => {
                 self.counts.choose.fetch_add(1, Ordering::SeqCst);
-                let ralph_dir = working_dir.join(".rlph");
+                let ralph_dir = working_dir.join(".brrr");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
                 std::fs::write(
@@ -318,7 +318,7 @@ impl AgentRunner for FailAtPhaseRunner {
         }
         match phase {
             Phase::Choose => {
-                let ralph_dir = working_dir.join(".rlph");
+                let ralph_dir = working_dir.join(".brrr");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
                 std::fs::write(
@@ -743,7 +743,7 @@ async fn test_full_loop_dry_run() {
         wt_dir.path().to_path_buf(),
         "main".to_string(),
     );
-    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_dir = repo_dir.path().join(".brrr-test-state");
     let state_mgr = StateManager::new(&state_dir);
     let prompt_engine = PromptEngine::new(None);
 
@@ -773,8 +773,8 @@ async fn test_full_loop_dry_run() {
     assert_eq!(state.history.len(), 1);
     assert_eq!(state.history[0].id, "gh-42");
 
-    // .rlph/task.toml should be cleaned up
-    assert!(!repo_dir.path().join(".rlph").join("task.toml").exists());
+    // .brrr/task.toml should be cleaned up
+    assert!(!repo_dir.path().join(".brrr").join("task.toml").exists());
 }
 
 #[tokio::test]
@@ -793,7 +793,7 @@ async fn test_full_loop_with_push() {
         wt_dir.path().to_path_buf(),
         "main".to_string(),
     );
-    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_dir = repo_dir.path().join(".brrr-test-state");
     let state_mgr = StateManager::new(&state_dir);
     let prompt_engine = PromptEngine::new(None);
 
@@ -819,7 +819,7 @@ async fn test_full_loop_with_push() {
     // Submission should have been called
     let subs = sub_tracker.lock().unwrap();
     assert_eq!(subs.submissions.len(), 1);
-    assert!(subs.submissions[0].0.contains("rlph-42")); // branch name
+    assert!(subs.submissions[0].0.contains("brrr-42")); // branch name
     assert_eq!(subs.submissions[0].1, "main"); // base
     assert_eq!(subs.submissions[0].2, "Fix the bug"); // title
     assert!(subs.submissions[0].3.contains("Resolves #42")); // body
@@ -833,7 +833,7 @@ async fn test_full_loop_with_push() {
         .unwrap();
     let branches = String::from_utf8_lossy(&output.stdout);
     assert!(
-        branches.contains("rlph-42"),
+        branches.contains("brrr-42"),
         "remote branch not found: {branches}"
     );
 }
@@ -855,7 +855,7 @@ async fn test_no_eligible_tasks() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        StateManager::new(repo_dir.path().join(".brrr-test-state")),
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
@@ -888,7 +888,7 @@ async fn test_error_at_choose_phase() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        StateManager::new(repo_dir.path().join(".brrr-test-state")),
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
@@ -908,7 +908,7 @@ async fn test_error_at_implement_phase() {
         task_id: "gh-42".to_string(),
     };
 
-    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_dir = repo_dir.path().join(".brrr-test-state");
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
@@ -942,7 +942,7 @@ async fn test_error_at_review_phase() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
-    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_dir = repo_dir.path().join(".brrr-test-state");
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
@@ -988,7 +988,7 @@ async fn test_error_at_submission() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        StateManager::new(repo_dir.path().join(".brrr-test-state")),
         PromptEngine::new(None),
         make_config(false), // need non-dry-run to trigger submission
         repo_dir.path().to_path_buf(),
@@ -1003,7 +1003,7 @@ async fn test_state_transitions_through_phases() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(7, "Add feature");
 
-    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_dir = repo_dir.path().join(".brrr-test-state");
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
@@ -1050,7 +1050,7 @@ async fn test_worktree_cleaned_up_after_success() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        StateManager::new(repo_dir.path().join(".brrr-test-state")),
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
@@ -1060,7 +1060,7 @@ async fn test_worktree_cleaned_up_after_success() {
     orchestrator.run_once().await.unwrap();
 
     // Worktree directory should be removed
-    let wt_path = wt_dir.path().join("rlph-42-fix-bug");
+    let wt_path = wt_dir.path().join("brrr-42-fix-bug");
     assert!(
         !wt_path.exists(),
         "worktree should be cleaned up: {}",
@@ -1073,7 +1073,7 @@ async fn test_needs_fix_completes_successfully() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
-    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_dir = repo_dir.path().join(".brrr-test-state");
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
@@ -1114,7 +1114,7 @@ async fn test_existing_pr_skips_submission() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        StateManager::new(repo_dir.path().join(".brrr-test-state")),
         PromptEngine::new(None),
         make_config(false), // non-dry-run so submission would normally fire
         repo_dir.path().to_path_buf(),
@@ -1155,7 +1155,7 @@ async fn test_continuous_mode_polls_with_empty_results() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        StateManager::new(repo_dir.path().join(".brrr-test-state")),
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
@@ -1191,7 +1191,7 @@ async fn test_max_iterations_stops_at_limit() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        StateManager::new(repo_dir.path().join(".brrr-test-state")),
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
@@ -1229,7 +1229,7 @@ async fn test_continuous_shutdown_exits_between_iterations() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
+        StateManager::new(repo_dir.path().join(".brrr-test-state")),
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
@@ -1262,7 +1262,7 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
     let worktree_info = worktree_mgr
         .create(IssueNumber::new(42), "review-only")
         .unwrap();
-    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_dir = repo_dir.path().join(".brrr-test-state");
     let vars = make_review_vars(
         &task,
         repo_dir.path(),
@@ -1334,7 +1334,7 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
     let worktree_info = worktree_mgr
         .create(IssueNumber::new(88), "review-pr-only")
         .unwrap();
-    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_dir = repo_dir.path().join(".brrr-test-state");
     let vars = make_review_vars(
         &task,
         repo_dir.path(),
@@ -1399,7 +1399,7 @@ async fn test_review_only_needs_fix_completes_successfully() {
         &worktree_info.branch,
         &worktree_info.path,
     );
-    let state_dir = repo_dir.path().join(".rlph-test-state");
+    let state_dir = repo_dir.path().join(".brrr-test-state");
 
     let orchestrator = Orchestrator::new(
         source,
@@ -1480,7 +1480,7 @@ fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
     let worktree_info = worktree_mgr
         .create(IssueNumber::new(42), "review-reporter")
         .unwrap();
-    let state_dir = repo_dir.join(".rlph-test-state");
+    let state_dir = repo_dir.join(".brrr-test-state");
     let vars = make_review_vars(task, repo_dir, &worktree_info.branch, &worktree_info.path);
 
     let (reporter, events) = CapturingReporter::new();
@@ -1662,7 +1662,7 @@ fn build_iteration_orchestrator_with_reporter<F: ReviewRunnerFactory>(
         wt_dir.to_path_buf(),
         "main".to_string(),
     );
-    let state_dir = repo_dir.join(".rlph-test-state");
+    let state_dir = repo_dir.join(".brrr-test-state");
 
     let (reporter, events) = CapturingReporter::new();
 
@@ -2048,7 +2048,7 @@ fn build_correction_test_orchestrator<F: ReviewRunnerFactory>(
     let worktree_info = worktree_mgr
         .create(IssueNumber::new(42), "correction-test")
         .unwrap();
-    let state_dir = repo_dir.join(".rlph-test-state");
+    let state_dir = repo_dir.join(".brrr-test-state");
     let vars = make_review_vars(task, repo_dir, &worktree_info.branch, &worktree_info.path);
 
     let (reporter, events) = CapturingReporter::new();

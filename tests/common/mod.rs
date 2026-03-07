@@ -4,8 +4,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use rlph::config::{Config, default_review_phases, default_review_step};
-use rlph::runner::RunnerKind;
+use brrr::config::{Config, default_review_phases, default_review_step};
+use brrr::runner::RunnerKind;
 
 pub fn run_git(dir: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -48,7 +48,7 @@ pub fn default_test_config() -> Config {
         source: "github".to_string(),
         runner: RunnerKind::Claude,
         submission: "github".to_string(),
-        label: "rlph".to_string(),
+        label: "brrr".to_string(),
         poll_seconds: Duration::from_secs(30),
         worktree_dir: String::new(),
         base_branch: "main".to_string(),

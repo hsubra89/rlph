@@ -2,9 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rlph::error::Error;
-use rlph::process::{ProcessConfig, spawn_and_stream};
-use rlph::runner::extract_session_id;
+use brrr::error::Error;
+use brrr::process::{ProcessConfig, spawn_and_stream};
+use brrr::runner::extract_session_id;
 use serde_json::Value;
 
 fn working_dir() -> PathBuf {
@@ -54,7 +54,7 @@ fn classify_claude_skip(stdout_lines: &[String], stderr_lines: &[String]) -> Opt
     None
 }
 
-async fn run_claude_or_skip(args: Vec<String>) -> Option<rlph::process::ProcessOutput> {
+async fn run_claude_or_skip(args: Vec<String>) -> Option<brrr::process::ProcessOutput> {
     match spawn_and_stream(config_with_args(args, None)).await {
         Ok(output) => {
             if let Some(reason) = classify_claude_skip(&output.stdout_lines, &output.stderr_lines) {
@@ -80,7 +80,7 @@ async fn run_claude_or_skip(args: Vec<String>) -> Option<rlph::process::ProcessO
     }
 }
 
-fn extract_session_id_from_output(output: &rlph::process::ProcessOutput) -> Option<String> {
+fn extract_session_id_from_output(output: &brrr::process::ProcessOutput) -> Option<String> {
     let mut lines = output.stdout_lines.clone();
     lines.extend(output.stderr_lines.clone());
     extract_session_id(&lines)
@@ -205,7 +205,7 @@ async fn test_claude_resume_with_prompt() {
 // Helpers for schema validation
 // ---------------------------------------------------------------------------
 
-fn parse_events(output: &rlph::process::ProcessOutput) -> Vec<Value> {
+fn parse_events(output: &brrr::process::ProcessOutput) -> Vec<Value> {
     output
         .stdout_lines
         .iter()

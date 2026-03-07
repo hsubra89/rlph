@@ -8,24 +8,24 @@ use tokio::sync::watch;
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
-use rlph::cli::{Cli, CliCommand};
-use rlph::config::{Config, resolve_init_config};
-use rlph::fix;
-use rlph::fix_comment::format_fix_items_for_display;
-use rlph::ids::PrNumber;
-use rlph::orchestrator::{
+use brrr::cli::{Cli, CliCommand};
+use brrr::config::{Config, resolve_init_config};
+use brrr::fix;
+use brrr::fix_comment::format_fix_items_for_display;
+use brrr::ids::PrNumber;
+use brrr::orchestrator::{
     DefaultCorrectionRunner, Orchestrator, ReviewInvocation, build_task_vars,
 };
-use rlph::prd;
-use rlph::prompts::PromptEngine;
-use rlph::runner::build_runner;
-use rlph::sources::AnySource;
-use rlph::sources::github::GitHubSource;
-use rlph::sources::linear::LinearSource;
-use rlph::sources::{Task, TaskSource};
-use rlph::state::StateManager;
-use rlph::submission::{GitHubSubmission, PrContext, parse_pr_number_from_url};
-use rlph::worktree::{WorktreeManager, resolve_setup_script};
+use brrr::prd;
+use brrr::prompts::PromptEngine;
+use brrr::runner::build_runner;
+use brrr::sources::AnySource;
+use brrr::sources::github::GitHubSource;
+use brrr::sources::linear::LinearSource;
+use brrr::sources::{Task, TaskSource};
+use brrr::state::StateManager;
+use brrr::submission::{GitHubSubmission, PrContext, parse_pr_number_from_url};
+use brrr::worktree::{WorktreeManager, resolve_setup_script};
 
 /// Parse a PR reference that is either a plain number or a GitHub PR URL.
 fn parse_pr_ref(s: &str) -> Result<PrNumber, String> {
@@ -46,7 +46,7 @@ fn parse_pr_ref_or_exit(s: &str) -> PrNumber {
 
 fn print_pr_banner(pr: &PrContext) {
     eprintln!(
-        "[rlph] PR #{}: {} \u{2192} {}",
+        "[brrr] PR #{}: {} \u{2192} {}",
         pr.number, pr.head_branch, pr.base_branch
     );
 }
@@ -55,7 +55,7 @@ fn build_worktree_manager(
     config: &Config,
     repo_root: &Path,
     base_branch: &str,
-) -> rlph::error::Result<WorktreeManager> {
+) -> brrr::error::Result<WorktreeManager> {
     let worktree_base = PathBuf::from(&config.worktree_dir);
     let setup_script = resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?;
     Ok(WorktreeManager::new(
@@ -76,7 +76,7 @@ fn install_sigint_handler(first_message: &'static str) -> watch::Receiver<bool> 
             let _ = tx.send(true);
         }
         if tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!("[rlph] Second SIGINT received; exiting immediately");
+            eprintln!("[brrr] Second SIGINT received; exiting immediately");
             std::process::exit(130);
         }
     });
@@ -98,7 +98,7 @@ async fn main() {
     let cli = Cli::parse();
     init_logging();
 
-    debug!("rlph starting");
+    debug!("brrr starting");
 
     match cli.command {
         CliCommand::Init => {
@@ -110,7 +110,7 @@ async fn main() {
                 }
             };
             if init_cfg.source == "linear" {
-                if let Err(e) = rlph::sources::linear::init_interactive(&init_cfg.label) {
+                if let Err(e) = brrr::sources::linear::init_interactive(&init_cfg.label) {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
@@ -128,7 +128,7 @@ async fn main() {
                 }
             };
             if config.source != "github" {
-                eprintln!("error: 'rlph review' supports only source = \"github\"");
+                eprintln!("error: 'brrr review' supports only source = \"github\"");
                 std::process::exit(1);
             }
 
@@ -207,7 +207,7 @@ async fn main() {
             let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
             let prompt_engine = PromptEngine::new(None);
             let timeout = config.implement_timeout;
-            let factory = rlph::orchestrator::DefaultReviewRunnerFactory { stream: true };
+            let factory = brrr::orchestrator::DefaultReviewRunnerFactory { stream: true };
             let orchestrator = Orchestrator::new(
                 source,
                 build_runner(
@@ -285,7 +285,7 @@ async fn main() {
 
             // Set up SIGINT handler for graceful shutdown
             let shutdown_rx = install_sigint_handler(
-                "[rlph] SIGINT received; completing in-flight fixes then exiting",
+                "[brrr] SIGINT received; completing in-flight fixes then exiting",
             );
 
             if let Err(e) = fix::run_fix_loop(
@@ -390,11 +390,11 @@ async fn main() {
             );
 
             let shutdown_rx = install_sigint_handler(
-                "[rlph] SIGINT received; shutting down after current iteration",
+                "[brrr] SIGINT received; shutting down after current iteration",
             );
 
             if let Err(e) = orchestrator.run_loop(Some(shutdown_rx)).await {
-                if matches!(&e, rlph::error::Error::Interrupted) {
+                if matches!(&e, brrr::error::Error::Interrupted) {
                     std::process::exit(130);
                 }
                 eprintln!("error: {e}");

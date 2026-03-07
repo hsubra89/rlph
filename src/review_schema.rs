@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::error::{Error, Result};
 
 /// HTML comment marker used to embed finding JSON in PR comments.
-pub const FINDING_MARKER: &str = "<!-- rlph-finding:";
+pub const FINDING_MARKER: &str = "<!-- brrr-finding:";
 
 /// Deserialize a `Vec<String>` that tolerates both absent keys and explicit `null`.
 ///
@@ -341,7 +341,7 @@ pub fn parse_aggregator_output(raw: &str) -> Result<AggregatorOutput> {
         .map_err(|e| Error::Orchestrator(format!("failed to parse aggregator JSON: {e}")))
 }
 
-/// Structured output from the standalone `rlph fix` agent.
+/// Structured output from the standalone `brrr fix` agent.
 ///
 /// Uses a tagged union so `"status": "fixed"` includes `commit_message`
 /// while `"status": "wont_fix"` includes `reason`.
@@ -412,7 +412,7 @@ pub fn group_by_category<'a, T>(
     groups
 }
 
-/// Extract the raw JSON payload from a `<!-- rlph-finding:{json} -->` marker in a line.
+/// Extract the raw JSON payload from a `<!-- brrr-finding:{json} -->` marker in a line.
 ///
 /// Returns the JSON slice between the marker and ` -->`, or `None` if not found.
 pub fn extract_finding_json(line: &str) -> Option<&str> {
@@ -900,7 +900,7 @@ mod tests {
             .unwrap()
             .replace("--", r"\u002d\u002d");
         let expected = format!(
-            "Issues found.\n\n### Correctness\n- [ ] **CRITICAL** `src/main.rs` L42: SQL injection\n  <!-- rlph-finding:{json} -->"
+            "Issues found.\n\n### Correctness\n- [ ] **CRITICAL** `src/main.rs` L42: SQL injection\n  <!-- brrr-finding:{json} -->"
         );
         assert_eq!(result, expected);
     }
@@ -1008,7 +1008,7 @@ mod tests {
         assert!(result.contains("### General"));
     }
 
-    /// Extract the first `<!-- rlph-finding:{json} -->` payload from rendered output.
+    /// Extract the first `<!-- brrr-finding:{json} -->` payload from rendered output.
     fn extract_embedded_json(rendered: &str) -> &str {
         extract_finding_json(rendered).expect("marker present")
     }

@@ -1,4 +1,4 @@
-# rlph
+# brrr
 
 Autonomous AI development loop CLI. Fetches tasks from issue trackers, spins up an AI agent to implement them, reviews the output, and submits pull requests — all in a single command.
 
@@ -12,22 +12,22 @@ fetch task → choose → implement → self-review → submit PR → repeat
 
 Each iteration is self-contained: the agent works in an isolated git worktree, so the main branch stays clean regardless of what the agent produces.
 
-In practice, you label issues in your tracker (GitHub, Linear), point `rlph` at the repo, and walk away. The tool handles task selection (including dependency ordering), worktree lifecycle, agent orchestration across choose/implement/review phases, branch pushing, and PR creation.
+In practice, you label issues in your tracker (GitHub, Linear), point `brrr` at the repo, and walk away. The tool handles task selection (including dependency ordering), worktree lifecycle, agent orchestration across choose/implement/review phases, branch pushing, and PR creation.
 
-`rlph` is agent-agnostic — it shells out to any CLI-based coding agent (Claude Code, OpenAI Codex, OpenCode) via a simple trait interface, so you can swap models without changing your workflow.
+`brrr` is agent-agnostic — it shells out to any CLI-based coding agent (Claude Code, OpenAI Codex, OpenCode) via a simple trait interface, so you can swap models without changing your workflow.
 
 ## Installation
 
 ### Quick install (macOS / Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hsubra89/rlph/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/hsubra89/brrr/main/install.sh | sh
 ```
 
 To install to a custom directory (e.g. `/usr/local/bin`):
 
 ```bash
-RLPH_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/hsubra89/rlph/main/install.sh | sh
+BRRR_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/hsubra89/brrr/main/install.sh | sh
 ```
 
 ### From source
@@ -40,30 +40,30 @@ cargo install --path .
 
 ```bash
 # Run a single iteration: pick one task, implement it, submit a PR
-rlph --once
+brrr --once
 
 # Run continuously, polling for new tasks
-rlph --continuous
+brrr --continuous
 
 # Review an existing PR directly (accepts PR number or URL)
-rlph review 123
-rlph review https://github.com/owner/repo/pull/123
+brrr review 123
+brrr review https://github.com/owner/repo/pull/123
 
 # Fix checked review findings on a PR
-rlph fix 123
+brrr fix 123
 ```
 
 ## Configuration
 
-Configuration is read from `.rlph/config.toml` in the project root. CLI flags override file values, which override built-in defaults.
+Configuration is read from `.brrr/config.toml` in the project root. CLI flags override file values, which override built-in defaults.
 
 ```toml
 source = "github"              # Task source: github, linear
 runner = "claude"              # Agent runner: claude, codex, opencode
 submission = "github"          # Submission backend: github
-label = "rlph"                 # Label to filter eligible tasks
+label = "brrr"                 # Label to filter eligible tasks
 poll_seconds = 30              # Poll interval in seconds (continuous mode)
-worktree_dir = "../rlph-worktrees"  # Base directory for git worktrees
+worktree_dir = "../brrr-worktrees"  # Base directory for git worktrees
 base_branch = "main"           # Base branch for worktrees and PRs (auto-detected)
 max_iterations = 10            # Max iterations before stopping (continuous mode)
 dry_run = false                # Full loop without pushing or marking issues
@@ -74,18 +74,18 @@ implement_timeout = 1800       # Implement phase timeout in seconds (30 min)
 agent_effort = "high"          # Effort level: low, medium, high (Claude/Codex only)
 agent_variant = "high"         # Variant: low, high (OpenCode only)
 agent_timeout_retries = 1      # Retries on agent timeout (resumes session)
-worktree_setup_script = ".rlph/worktree-setup.sh"  # Script to run after worktree creation (see below)
+worktree_setup_script = ".brrr/worktree-setup.sh"  # Script to run after worktree creation (see below)
 ```
 
 ### Worktree Setup Script
 
-After creating a worktree, `rlph` can run a shell script for project-specific setup (installing dependencies, copying `.env` files, etc.).
+After creating a worktree, `brrr` can run a shell script for project-specific setup (installing dependencies, copying `.env` files, etc.).
 
-**Convention:** If `.rlph/worktree-setup.sh` exists in the repo root, it is **automatically executed** after every worktree creation — no configuration required. This follows the same trust model as `Makefile`s and `.github/workflows`: anyone with commit access to the repo can introduce or modify the script.
+**Convention:** If `.brrr/worktree-setup.sh` exists in the repo root, it is **automatically executed** after every worktree creation — no configuration required. This follows the same trust model as `Makefile`s and `.github/workflows`: anyone with commit access to the repo can introduce or modify the script.
 
 **Overrides:**
 
-- Set `worktree_setup_script` in `.rlph/config.toml` to use a different path.
+- Set `worktree_setup_script` in `.brrr/config.toml` to use a different path.
 - Set `worktree_setup_script = ""` (empty string) to explicitly disable auto-execution.
 
 The script receives the repo root as its first argument and runs with the new worktree as its working directory. A non-zero exit code aborts worktree creation.
@@ -93,9 +93,9 @@ The script receives the repo root as its first argument and runs with the new wo
 ## CLI Reference
 
 ```
-rlph — autonomous AI development loop
+brrr — autonomous AI development loop
 
-Usage: rlph [OPTIONS] [COMMAND]
+Usage: brrr [OPTIONS] [COMMAND]
 
 Options:
       --once                             Run a single iteration then exit
@@ -135,23 +135,23 @@ Specify one of `--once`, `--continuous`, or `--max-iterations`. `--continuous` a
 
 1. **Fetch** — Pulls eligible tasks from the configured source (GitHub issues, Linear tickets) filtered by label. Respects dependency ordering so blocked tasks are skipped. Auto-selects when only one task is eligible.
 2. **Worktree** — Creates an isolated git worktree for the task. Runs the worktree setup script if present.
-3. **Implement** — Runs an AI agent to implement the task. Agent output streams to stderr in real time. If the agent times out, `rlph` resumes the session automatically (up to `agent_timeout_retries` times).
+3. **Implement** — Runs an AI agent to implement the task. Agent output streams to stderr in real time. If the agent times out, `brrr` resumes the session automatically (up to `agent_timeout_retries` times).
 4. **Review** — Parallel multi-phase review: independent agents evaluate correctness, security, and hygiene concurrently, then an aggregator consolidates findings into a verdict. Findings are posted as a PR comment.
 5. **Submit** — Opens a pull request and posts structured review findings as a PR comment with per-finding checkboxes.
 
-### `rlph review <PR>`
+### `brrr review <PR>`
 
 Runs the review pipeline directly on an existing PR (accepts PR number or full GitHub URL). Creates a worktree from the PR's head branch, runs all review phases, and posts findings.
 
-### `rlph fix <PR>`
+### `brrr fix <PR>`
 
 Polls a PR's review comment for checked finding checkboxes. Each checked finding spawns a fix agent in its own worktree. Findings support dependency ordering — a finding won't be fixed until its dependencies are resolved. Results are reflected back into the PR comment. Use `--dry-run` to parse and display findings without applying fixes.
 
-### `rlph init`
+### `brrr init`
 
 Initializes the configured task source. For Linear: interactive team selection and label creation. For GitHub: no-op (labels are created on first use).
 
-### `rlph prd [DESCRIPTION]`
+### `brrr prd [DESCRIPTION]`
 
 Launches an interactive PRD-writing session with an AI agent. The agent guides you through requirements gathering and outputs a structured PRD. Optionally provide a seed description.
 
@@ -194,7 +194,7 @@ Release steps:
    - `x86_64-apple-darwin`
    - `aarch64-apple-darwin`
 
-Each release archive includes the `rlph` binary, `README.md`, and `LICENSE`.
+Each release archive includes the `brrr` binary, `README.md`, and `LICENSE`.
 
 ## Inspired by
 

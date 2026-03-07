@@ -1,6 +1,6 @@
 # Engineering Checklist
 
-Use this checklist to keep `rlph` quality aligned with mature Rust projects (for example Tokio-style rigor around async safety and testing).
+Use this checklist to keep `brrr` quality aligned with mature Rust projects (for example Tokio-style rigor around async safety and testing).
 
 ## CI Gates
 

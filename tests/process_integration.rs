@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rlph::process::{ProcessConfig, spawn_and_stream};
+use brrr::process::{ProcessConfig, spawn_and_stream};
 use serial_test::serial;
 
 fn make_config(command: &str, args: &[&str]) -> ProcessConfig {
@@ -97,8 +97,8 @@ async fn test_spawn_failure() {
 #[tokio::test]
 #[serial]
 async fn test_env_vars() {
-    let mut config = make_config("bash", &["-c", "echo $RLPH_TEST_VAR"]);
-    config.env = vec![("RLPH_TEST_VAR".to_string(), "hello_world".to_string())];
+    let mut config = make_config("bash", &["-c", "echo $BRRR_TEST_VAR"]);
+    config.env = vec![("BRRR_TEST_VAR".to_string(), "hello_world".to_string())];
     let output = spawn_and_stream(config).await.unwrap();
     assert!(output.success());
     assert_eq!(output.stdout_lines, vec!["hello_world"]);
@@ -108,7 +108,7 @@ async fn test_env_vars() {
 #[serial]
 #[cfg(unix)]
 async fn test_sigint_to_child() {
-    let pid_file = format!("/tmp/rlph_test_sigint_{}", std::process::id());
+    let pid_file = format!("/tmp/brrr_test_sigint_{}", std::process::id());
     let pid_file_clone = pid_file.clone();
 
     let config = ProcessConfig {
@@ -207,7 +207,7 @@ async fn test_double_sigint_force_exit() {
 #[serial]
 #[cfg(unix)]
 async fn test_timeout_kills_descendants() {
-    let pid_file = format!("/tmp/rlph_timeout_descendant_{}.pid", std::process::id());
+    let pid_file = format!("/tmp/brrr_timeout_descendant_{}.pid", std::process::id());
     let pid_file_clone = pid_file.clone();
 
     // Child shell ignores TERM and waits; its background child should not survive timeout cleanup.

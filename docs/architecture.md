@@ -10,8 +10,8 @@
 | GitHub/Linear task sources | `src/sources/` |
 | PR submission | `src/submission.rs` |
 | Prompt templates | `src/default_prompts/` |
-| Config | `src/config.rs`, `.rlph/config.toml` |
-| Local state | `src/state.rs`, `.rlph/state/` |
+| Config | `src/config.rs`, `.brrr/config.toml` |
+| Local state | `src/state.rs`, `.brrr/state/` |
 
 ## Orchestrator Pipeline
 
@@ -19,7 +19,7 @@ The core loop in `orchestrator.rs` runs this sequence per iteration:
 
 ```
 Fetch tasks (TaskSource) → filter by dependency graph (deps.rs)
-  → Choose phase: agent picks task, writes .rlph/task.toml
+  → Choose phase: agent picks task, writes .brrr/task.toml
   → Create worktree (worktree.rs)
   → Implement phase: agent codes in worktree
   → Push branch, submit PR (SubmissionBackend)
@@ -60,6 +60,6 @@ All extensibility is through traits dispatched via enums (`AnySource`, `AnyRunne
 - **Agent output is trusted.** No verification of agent-reported task IDs, review signals, or PR numbers. The system is only as reliable as the underlying model.
 - **`gh` CLI as GitHub API layer.** All GitHub operations shell out to `gh` rather than using a Rust HTTP client. This leverages the user's existing auth and avoids token management.
 - **Worktree isolation.** Each task runs in a separate git worktree so main branch stays clean and multiple tasks could theoretically run in parallel.
-- **Prompt template overrides.** Users can place custom templates in `.rlph/prompts/` to override embedded defaults without modifying the binary.
-- **Review comment upserts.** Review comments are identified by `<!-- rlph-review -->` HTML marker for idempotent updates.
+- **Prompt template overrides.** Users can place custom templates in `.brrr/prompts/` to override embedded defaults without modifying the binary.
+- **Review comment upserts.** Review comments are identified by `<!-- brrr-review -->` HTML marker for idempotent updates.
 - **Untrusted PR comment wrapping.** External PR comments are wrapped in `<untrusted-content>` tags in prompts to mitigate prompt injection.

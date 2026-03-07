@@ -2,9 +2,9 @@ mod common;
 
 use std::process::Command;
 
+use brrr::ids::{IssueNumber, PrNumber};
+use brrr::worktree::WorktreeManager;
 use common::run_git;
-use rlph::ids::{IssueNumber, PrNumber};
-use rlph::worktree::WorktreeManager;
 use tempfile::TempDir;
 
 /// Create a temporary git repo with an initial commit.
@@ -64,7 +64,7 @@ fn test_create_worktree() {
     );
 
     let info = mgr.create(IssueNumber::new(42), "fix-bug").unwrap();
-    assert_eq!(info.branch, "rlph-42-fix-bug");
+    assert_eq!(info.branch, "brrr-42-fix-bug");
     assert!(info.path.exists());
     assert!(info.path.join("README.md").exists());
 }
@@ -81,7 +81,7 @@ fn test_create_worktree_correct_naming() {
     );
 
     let info = mgr.create(IssueNumber::new(7), "add-auth").unwrap();
-    assert!(info.path.ends_with("rlph-7-add-auth"));
+    assert!(info.path.ends_with("brrr-7-add-auth"));
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn test_find_existing_worktree() {
     assert!(found.is_some());
     let found = found.unwrap();
     assert_eq!(found.path, created.path);
-    assert_eq!(found.branch, "rlph-10-feature");
+    assert_eq!(found.branch, "brrr-10-feature");
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn test_remove_worktree_cleans_branch() {
 
     // Branch should be deleted
     let output = Command::new("git")
-        .args(["branch", "--list", "rlph-20-branch-cleanup"])
+        .args(["branch", "--list", "brrr-20-branch-cleanup"])
         .current_dir(repo.path())
         .output()
         .unwrap();
@@ -228,9 +228,9 @@ fn test_create_for_branch() {
     let info = mgr
         .create_for_branch(PrNumber::new(77), "feature/review-pr")
         .unwrap();
-    assert_eq!(info.branch, "rlph-pr-77-feature-review-pr");
+    assert_eq!(info.branch, "brrr-pr-77-feature-review-pr");
     assert!(info.path.exists());
-    assert!(info.path.ends_with("rlph-pr-77-feature-review-pr"));
+    assert!(info.path.ends_with("brrr-pr-77-feature-review-pr"));
     assert!(info.path.join("branch.txt").exists());
 }
 
@@ -267,7 +267,7 @@ fn test_reset_to_remote_removes_nested_git_repositories() {
         "main".to_string(),
     );
 
-    let info = mgr.create_fresh("rlph-fix-main", "main").unwrap();
+    let info = mgr.create_fresh("brrr-fix-main", "main").unwrap();
     let nested_repo = info.path.join("nested-repo");
     std::fs::create_dir_all(&nested_repo).unwrap();
     run_git(&nested_repo, &["init"]);

@@ -94,7 +94,7 @@ pub trait SubmissionBackend: Send + Sync {
     }
 
     /// Post or update a review comment on an existing PR.
-    /// If a previous rlph review comment exists, updates it; otherwise creates a new one.
+    /// If a previous brrr review comment exists, updates it; otherwise creates a new one.
     fn upsert_review_comment(&self, _pr_number: PrNumber, _body: &str) -> Result<()> {
         Ok(())
     }
@@ -154,9 +154,9 @@ pub trait SubmissionBackend: Send + Sync {
         Ok(())
     }
 
-    /// Resolve all completed rlph-finding review threads on a PR.
+    /// Resolve all completed brrr-finding review threads on a PR.
     ///
-    /// Finds unresolved threads whose first comment contains the `<!-- rlph-finding:`
+    /// Finds unresolved threads whose first comment contains the `<!-- brrr-finding:`
     /// marker and has a ✅ (THUMBS_UP) or 😕 (CONFUSED) reaction, then resolves them
     /// via the GitHub GraphQL API. Returns the count of threads resolved.
     fn resolve_completed_review_threads(&self, _pr_number: PrNumber) -> Result<u32> {
@@ -175,7 +175,7 @@ pub trait SubmissionBackend: Send + Sync {
 }
 
 /// HTML marker injected into review comments so we can find and update them.
-pub const REVIEW_MARKER: &str = "<!-- rlph-review -->";
+pub const REVIEW_MARKER: &str = "<!-- brrr-review -->";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PullRequestReviewEvent {
@@ -302,7 +302,7 @@ impl GitHubSubmission {
         Ok(None)
     }
 
-    /// Find an existing rlph review comment on a PR, returning its ID if found.
+    /// Find an existing brrr review comment on a PR, returning its ID if found.
     fn find_review_comment(&self, pr_number: PrNumber) -> Result<Option<CommentId>> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments");
         let output = Command::new("gh")
@@ -310,7 +310,7 @@ impl GitHubSubmission {
                 "api",
                 &endpoint,
                 "--jq",
-                ".[] | select(.body | contains(\"<!-- rlph-review -->\")) | .id",
+                ".[] | select(.body | contains(\"<!-- brrr-review -->\")) | .id",
             ])
             .output()
             .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
@@ -387,7 +387,7 @@ impl SubmissionBackend for GitHubSubmission {
     }
 
     fn upsert_review_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
-        // Try to find an existing rlph review comment
+        // Try to find an existing brrr review comment
         if let Some(comment_id) = self.find_review_comment(pr_number)? {
             let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}");
             let output = Command::new("gh")

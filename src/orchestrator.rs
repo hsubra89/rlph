@@ -196,47 +196,47 @@ pub struct StderrReporter;
 
 impl ProgressReporter for StderrReporter {
     fn fetching_tasks(&self) {
-        eprintln!("[rlph] Fetching eligible tasks...");
+        eprintln!("[brrr] Fetching eligible tasks...");
     }
 
     fn tasks_found(&self, count: usize) {
-        eprintln!("[rlph] Found {count} eligible task(s)");
+        eprintln!("[brrr] Found {count} eligible task(s)");
     }
 
     fn task_selected(&self, issue_number: IssueNumber, title: &str) {
-        eprintln!("[rlph] Selected #{issue_number}: {title}");
+        eprintln!("[brrr] Selected #{issue_number}: {title}");
     }
 
     fn implement_started(&self) {
-        eprintln!("[rlph] Implementing...");
+        eprintln!("[brrr] Implementing...");
     }
 
     fn pr_created(&self, url: &str) {
-        eprintln!("[rlph] PR created: {url}");
+        eprintln!("[brrr] PR created: {url}");
     }
 
     fn iteration_complete(&self, issue_number: IssueNumber, title: &str) {
-        eprintln!("[rlph] Done with #{issue_number}: {title}");
+        eprintln!("[brrr] Done with #{issue_number}: {title}");
     }
 
     fn phases_started(&self, names: &[String]) {
         eprintln!(
-            "[rlph] Running {} review agents: {}",
+            "[brrr] Running {} review agents: {}",
             names.len(),
             names.join(", ")
         );
     }
 
     fn phase_complete(&self, name: &str) {
-        eprintln!("[rlph] Review phase complete: {name}");
+        eprintln!("[brrr] Review phase complete: {name}");
     }
 
     fn review_summary(&self, body: &str) {
-        eprintln!("[rlph] Review summary:\n{body}");
+        eprintln!("[brrr] Review summary:\n{body}");
     }
 
     fn pr_url(&self, url: &str) {
-        eprintln!("[rlph] PR: {url}");
+        eprintln!("[brrr] PR: {url}");
     }
 }
 
@@ -494,7 +494,7 @@ impl<
                 "choose phase complete"
             );
 
-            // Parse task selection from .rlph/task.toml
+            // Parse task selection from .brrr/task.toml
             self.parse_task_selection()?
         };
         let issue_number = parse_issue_number(&task_id)?;
@@ -619,7 +619,7 @@ impl<
             Some(pr)
         } else if !self.config.dry_run {
             info!("submitting PR");
-            let pr_body = format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.");
+            let pr_body = format!("Resolves #{issue_number}\n\nAutomated implementation by brrr.");
             let result = self.submission.submit(
                 &worktree_info.branch,
                 &self.config.base_branch,
@@ -672,7 +672,7 @@ impl<
                 .create_phase_runner(phase_config, self.config.agent_timeout_retries);
 
             eprintln!(
-                "[rlph] review phase {}: {}",
+                "[brrr] review phase {}: {}",
                 phase_config.name,
                 format_runner_display(
                     phase_config.runner,
@@ -864,9 +864,9 @@ impl<
         Ok(())
     }
 
-    /// Parse the task selection from `.rlph/task.toml` written by the choose agent.
+    /// Parse the task selection from `.brrr/task.toml` written by the choose agent.
     fn parse_task_selection(&self) -> Result<String> {
-        let path = self.repo_root.join(".rlph").join("task.toml");
+        let path = self.repo_root.join(".brrr").join("task.toml");
         let content = std::fs::read_to_string(&path).map_err(|e| {
             Error::Orchestrator(format!(
                 "failed to read task selection {}: {e}",

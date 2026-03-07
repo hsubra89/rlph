@@ -468,7 +468,7 @@ impl TaskSource for LinearSource {
 }
 
 // ---------------------------------------------------------------------------
-// rlph init — label bootstrapping
+// brrr init — label bootstrapping
 // ---------------------------------------------------------------------------
 
 /// Create the configured label in a Linear team if it doesn't already exist.
@@ -565,7 +565,7 @@ fn init_label_with_client(label: &str, team_key: &str, client: &dyn LinearClient
 }
 
 // ---------------------------------------------------------------------------
-// rlph init — interactive team discovery + label bootstrapping
+// brrr init — interactive team discovery + label bootstrapping
 // ---------------------------------------------------------------------------
 
 /// Interactive init: discover teams, prompt user to pick one, create label, write config.
@@ -591,10 +591,10 @@ pub fn init_interactive(label: &str) -> Result<()> {
 
     init_label_with_client(label, &team_key, &client)?;
 
-    let config_dir = std::path::Path::new(".rlph");
+    let config_dir = std::path::Path::new(".brrr");
     write_linear_config(&team_key, config_dir)?;
 
-    eprintln!("Wrote [linear] config to .rlph/config.toml");
+    eprintln!("Wrote [linear] config to .brrr/config.toml");
     Ok(())
 }
 
@@ -775,11 +775,11 @@ mod tests {
     fn test_fetch_eligible_returns_all_from_api() {
         // Server-side filter handles state exclusion; client gets only eligible issues
         let data = issues_response(vec![
-            issue_node(1, "Task 1", 0, "Todo", "unstarted", &["rlph"]),
-            issue_node(4, "Task 4", 2, "Backlog", "backlog", &["rlph"]),
+            issue_node(1, "Task 1", 0, "Todo", "unstarted", &["brrr"]),
+            issue_node(4, "Task 4", 2, "Backlog", "backlog", &["brrr"]),
         ]);
         let client = MockLinearClient::new(vec![Ok(data)]);
-        let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
+        let source = LinearSource::with_client("brrr", "ENG", Box::new(client));
         let tasks = source.fetch_eligible_tasks().unwrap();
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].id, "1");
@@ -799,12 +799,12 @@ mod tests {
     #[test]
     fn test_fetch_parses_priority() {
         let data = issues_response(vec![
-            issue_node(1, "Urgent", 1, "Todo", "unstarted", &["rlph"]),
-            issue_node(2, "High", 2, "Todo", "unstarted", &["rlph"]),
-            issue_node(3, "None", 0, "Todo", "unstarted", &["rlph"]),
+            issue_node(1, "Urgent", 1, "Todo", "unstarted", &["brrr"]),
+            issue_node(2, "High", 2, "Todo", "unstarted", &["brrr"]),
+            issue_node(3, "None", 0, "Todo", "unstarted", &["brrr"]),
         ]);
         let client = MockLinearClient::new(vec![Ok(data)]);
-        let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
+        let source = LinearSource::with_client("brrr", "ENG", Box::new(client));
         let tasks = source.fetch_eligible_tasks().unwrap();
         assert_eq!(tasks[0].priority, Some(Priority(1)));
         assert_eq!(tasks[1].priority, Some(Priority(2)));
@@ -827,7 +827,7 @@ mod tests {
             }]}
         });
         let client = MockLinearClient::new(vec![Ok(data)]);
-        let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
+        let source = LinearSource::with_client("brrr", "ENG", Box::new(client));
         let tasks = source.fetch_eligible_tasks().unwrap();
         assert_eq!(tasks[0].body, "");
     }
@@ -840,22 +840,22 @@ mod tests {
             3,
             "Todo",
             "unstarted",
-            &["rlph", "bug"],
+            &["brrr", "bug"],
         )]);
         let client = MockLinearClient::new(vec![Ok(data)]);
-        let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
+        let source = LinearSource::with_client("brrr", "ENG", Box::new(client));
         let task = source.get_task_details("7").unwrap();
         assert_eq!(task.id, "7");
         assert_eq!(task.title, "Detail task");
         assert_eq!(task.priority, Some(Priority(5))); // Medium
-        assert_eq!(task.labels, vec!["rlph", "bug"]);
+        assert_eq!(task.labels, vec!["brrr", "bug"]);
     }
 
     #[test]
     fn test_get_task_details_not_found() {
         let data = issues_response(vec![]);
         let client = MockLinearClient::new(vec![Ok(data)]);
-        let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
+        let source = LinearSource::with_client("brrr", "ENG", Box::new(client));
         let err = source.get_task_details("999").unwrap_err();
         assert!(err.to_string().contains("not found"));
     }
@@ -870,7 +870,7 @@ mod tests {
             ]}
         });
         let client = MockLinearClient::new(vec![Ok(data)]);
-        let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
+        let source = LinearSource::with_client("brrr", "ENG", Box::new(client));
         let ids = source.fetch_closed_task_ids().unwrap();
         assert_eq!(
             ids,
@@ -897,7 +897,7 @@ mod tests {
         let update_data = serde_json::json!({ "issueUpdate": { "success": true } });
 
         let client = MockLinearClient::new(vec![Ok(issue_data), Ok(state_data), Ok(update_data)]);
-        let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
+        let source = LinearSource::with_client("brrr", "ENG", Box::new(client));
         source.mark_in_progress("42").unwrap();
     }
 
@@ -906,7 +906,7 @@ mod tests {
         let client = MockLinearClient::new(vec![Err(Error::TaskSource(
             "connection refused".to_string(),
         ))]);
-        let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
+        let source = LinearSource::with_client("brrr", "ENG", Box::new(client));
         let err = source.fetch_eligible_tasks().unwrap_err();
         assert!(err.to_string().contains("connection refused"));
     }
@@ -916,21 +916,21 @@ mod tests {
         let label_data = serde_json::json!({ "issueLabels": { "nodes": [] } });
         let team_data = serde_json::json!({ "teams": { "nodes": [{ "id": "team-uuid" }] } });
         let create_data = serde_json::json!({
-            "issueLabelCreate": { "success": true, "issueLabel": { "id": "lbl-1", "name": "rlph" } }
+            "issueLabelCreate": { "success": true, "issueLabel": { "id": "lbl-1", "name": "brrr" } }
         });
 
         let client = MockLinearClient::new(vec![Ok(label_data), Ok(team_data), Ok(create_data)]);
-        init_label_with_client("rlph", "ENG", &client).unwrap();
+        init_label_with_client("brrr", "ENG", &client).unwrap();
     }
 
     #[test]
     fn test_init_label_skips_when_exists() {
         let label_data = serde_json::json!({
-            "issueLabels": { "nodes": [{ "id": "lbl-1", "name": "rlph" }] }
+            "issueLabels": { "nodes": [{ "id": "lbl-1", "name": "brrr" }] }
         });
 
         let client = MockLinearClient::new(vec![Ok(label_data)]);
-        init_label_with_client("rlph", "ENG", &client).unwrap();
+        init_label_with_client("brrr", "ENG", &client).unwrap();
     }
 
     #[test]

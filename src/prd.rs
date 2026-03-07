@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 
-const PROMPT_OVERRIDE_DIR: &str = ".rlph/prompts";
+const PROMPT_OVERRIDE_DIR: &str = ".brrr/prompts";
 
 /// Build the submission instructions string for the given task source.
 pub fn submission_instructions(source: &str, label: &str) -> String {
@@ -117,9 +117,9 @@ mod tests {
 
     #[test]
     fn test_submission_instructions_github() {
-        let instr = submission_instructions("github", "rlph");
+        let instr = submission_instructions("github", "brrr");
         assert!(instr.contains("gh issue create"));
-        assert!(instr.contains("rlph"));
+        assert!(instr.contains("brrr"));
     }
 
     #[test]
@@ -127,19 +127,19 @@ mod tests {
         let instr = submission_instructions("github", "ai-tasks");
         assert!(instr.contains("--label \"ai-tasks\""));
         assert!(instr.contains("ai-tasks"));
-        assert!(!instr.contains("rlph"));
+        assert!(!instr.contains("brrr"));
     }
 
     #[test]
     fn test_submission_instructions_linear() {
-        let instr = submission_instructions("linear", "rlph");
+        let instr = submission_instructions("linear", "brrr");
         assert!(instr.contains("Linear"));
-        assert!(instr.contains("rlph"));
+        assert!(instr.contains("brrr"));
     }
 
     #[test]
     fn test_submission_instructions_unknown_source() {
-        let instr = submission_instructions("jira", "rlph");
+        let instr = submission_instructions("jira", "brrr");
         assert!(instr.contains("configured task source"));
     }
 
@@ -211,7 +211,7 @@ mod tests {
             source: source.to_string(),
             runner: RunnerKind::Claude,
             submission: "github".to_string(),
-            label: "rlph".to_string(),
+            label: "brrr".to_string(),
             poll_seconds: std::time::Duration::from_secs(30),
             worktree_dir: "../wt".to_string(),
             base_branch: "main".to_string(),

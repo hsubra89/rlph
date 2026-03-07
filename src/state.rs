@@ -32,7 +32,7 @@ pub struct StateData {
     pub worktree_mappings: HashMap<String, String>,
 }
 
-/// Manages local state persisted as TOML in `.rlph/state/`.
+/// Manages local state persisted as TOML in `.brrr/state/`.
 pub struct StateManager {
     state_dir: PathBuf,
 }
@@ -46,7 +46,7 @@ impl StateManager {
 
     /// Default state directory relative to a repo root.
     pub fn default_dir(repo_root: &Path) -> PathBuf {
-        repo_root.join(".rlph").join("state")
+        repo_root.join(".brrr").join("state")
     }
 
     fn state_file(&self) -> PathBuf {

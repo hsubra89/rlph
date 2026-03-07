@@ -20,7 +20,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  BINARY_NAME: rlph
+  BINARY_NAME: brrr
 
 jobs:
   resolve-release:

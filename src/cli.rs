@@ -2,9 +2,9 @@
 
 use clap::{Args, Parser, Subcommand};
 
-/// rlph — autonomous AI development loop
+/// brrr — autonomous AI development loop
 #[derive(Parser, Debug, Clone)]
-#[command(name = "rlph", version, about, subcommand_required = true)]
+#[command(name = "brrr", version, about, subcommand_required = true)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: CliCommand,
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_parse_build_once() {
-        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once"]);
         match cli.command {
             CliCommand::Build { args } => {
                 assert!(args.once);
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn test_parse_build_continuous_with_max() {
-        let cli = Cli::parse_from(["rlph", "build", "--continuous", "--max-iterations", "5"]);
+        let cli = Cli::parse_from(["brrr", "build", "--continuous", "--max-iterations", "5"]);
         match cli.command {
             CliCommand::Build { args } => {
                 assert!(args.continuous);
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn test_parse_build_dry_run() {
-        let cli = Cli::parse_from(["rlph", "build", "--dry-run", "--once"]);
+        let cli = Cli::parse_from(["brrr", "build", "--dry-run", "--once"]);
         match cli.command {
             CliCommand::Build { args } => {
                 assert!(args.dry_run);
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn test_parse_build_all_overrides() {
         let cli = Cli::parse_from([
-            "rlph",
+            "brrr",
             "build",
             "--once",
             "--runner",
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_parse_build_poll_interval_alias() {
-        let cli = Cli::parse_from(["rlph", "build", "--once", "--poll-interval", "45"]);
+        let cli = Cli::parse_from(["brrr", "build", "--once", "--poll-interval", "45"]);
         match cli.command {
             CliCommand::Build { args } => {
                 assert_eq!(args.poll_seconds, Some(45));
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_parse_init_allows_global_args_after_subcommand() {
-        let cli = Cli::parse_from(["rlph", "init", "--source", "linear", "--label", "auto"]);
+        let cli = Cli::parse_from(["brrr", "init", "--source", "linear", "--label", "auto"]);
         assert!(matches!(cli.command, CliCommand::Init));
         assert_eq!(cli.source.as_deref(), Some("linear"));
         assert_eq!(cli.label.as_deref(), Some("auto"));
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_parse_review() {
-        let cli = Cli::parse_from(["rlph", "review", "123"]);
+        let cli = Cli::parse_from(["brrr", "review", "123"]);
         match cli.command {
             CliCommand::Review { pr_ref } => assert_eq!(pr_ref, "123"),
             _ => panic!("expected Review subcommand"),
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_parse_review_url() {
-        let cli = Cli::parse_from(["rlph", "review", "https://github.com/owner/repo/pull/456"]);
+        let cli = Cli::parse_from(["brrr", "review", "https://github.com/owner/repo/pull/456"]);
         match cli.command {
             CliCommand::Review { pr_ref } => {
                 assert_eq!(pr_ref, "https://github.com/owner/repo/pull/456");
@@ -258,19 +258,19 @@ mod tests {
     #[test]
     fn test_parse_review_with_global_args_after_subcommand() {
         let cli = Cli::parse_from([
-            "rlph", "review", "77", "--source", "github", "--label", "rlph",
+            "brrr", "review", "77", "--source", "github", "--label", "brrr",
         ]);
         match cli.command {
             CliCommand::Review { pr_ref } => assert_eq!(pr_ref, "77"),
             _ => panic!("expected Review subcommand"),
         }
         assert_eq!(cli.source.as_deref(), Some("github"));
-        assert_eq!(cli.label.as_deref(), Some("rlph"));
+        assert_eq!(cli.label.as_deref(), Some("brrr"));
     }
 
     #[test]
     fn test_parse_prd_no_description() {
-        let cli = Cli::parse_from(["rlph", "prd"]);
+        let cli = Cli::parse_from(["brrr", "prd"]);
         match cli.command {
             CliCommand::Prd { description, .. } => assert!(description.is_none()),
             _ => panic!("expected Prd subcommand"),
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn test_parse_prd_with_description() {
-        let cli = Cli::parse_from(["rlph", "prd", "add auth support"]);
+        let cli = Cli::parse_from(["brrr", "prd", "add auth support"]);
         match cli.command {
             CliCommand::Prd { description, .. } => {
                 assert_eq!(description.as_deref(), Some("add auth support"));
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn test_parse_prd_with_overrides() {
         let cli = Cli::parse_from([
-            "rlph",
+            "brrr",
             "prd",
             "--runner",
             "codex",
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_parse_review_with_runner() {
-        let cli = Cli::parse_from(["rlph", "review", "99", "--runner", "codex"]);
+        let cli = Cli::parse_from(["brrr", "review", "99", "--runner", "codex"]);
         match cli.command {
             CliCommand::Review { pr_ref } => assert_eq!(pr_ref, "99"),
             _ => panic!("expected Review subcommand"),
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_parse_fix_with_runner() {
-        let cli = Cli::parse_from(["rlph", "fix", "42", "--runner", "opencode"]);
+        let cli = Cli::parse_from(["brrr", "fix", "42", "--runner", "opencode"]);
         match cli.command {
             CliCommand::Fix { pr_ref, dry_run } => {
                 assert_eq!(pr_ref, "42");
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_parse_fix_dry_run() {
-        let cli = Cli::parse_from(["rlph", "fix", "123", "--dry-run"]);
+        let cli = Cli::parse_from(["brrr", "fix", "123", "--dry-run"]);
         match cli.command {
             CliCommand::Fix { pr_ref, dry_run } => {
                 assert_eq!(pr_ref, "123");
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_parse_fix_without_dry_run() {
-        let cli = Cli::parse_from(["rlph", "fix", "456"]);
+        let cli = Cli::parse_from(["brrr", "fix", "456"]);
         match cli.command {
             CliCommand::Fix { pr_ref, dry_run } => {
                 assert_eq!(pr_ref, "456");
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn test_parse_fix_url() {
-        let cli = Cli::parse_from(["rlph", "fix", "https://github.com/owner/repo/pull/789"]);
+        let cli = Cli::parse_from(["brrr", "fix", "https://github.com/owner/repo/pull/789"]);
         match cli.command {
             CliCommand::Fix { pr_ref, .. } => {
                 assert_eq!(pr_ref, "https://github.com/owner/repo/pull/789");

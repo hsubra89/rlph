@@ -1,4 +1,4 @@
-# rlph
+# brrr
 
 Rust binary crate (edition 2024). Autonomous AI dev-loop CLI: fetches tasks, spins up worktrees, runs coding agents through implement/review phases, submits PRs.
 

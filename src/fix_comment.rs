@@ -95,7 +95,7 @@ pub fn classify_reactions(reactions: &[Reaction]) -> (FindingState, Vec<Reaction
 
 /// Build `FixItem`s from inline review comments and their reactions.
 ///
-/// For each review comment that contains a `<!-- rlph-finding:{...} -->` marker,
+/// For each review comment that contains a `<!-- brrr-finding:{...} -->` marker,
 /// parses the finding JSON and determines the state from reactions.
 /// Reply comments (`in_reply_to_id` set) are skipped.
 pub fn build_fix_items_from_review_comments(
@@ -138,7 +138,7 @@ pub fn build_fix_items_from_review_comments(
 
 /// Extract a `ReviewFinding` from the embedded JSON in a comment body.
 ///
-/// Scans all lines for the `<!-- rlph-finding:{...} -->` marker and returns
+/// Scans all lines for the `<!-- brrr-finding:{...} -->` marker and returns
 /// the first successfully parsed finding.
 fn extract_finding_from_body(body: &str) -> Option<ReviewFinding> {
     for line in body.lines() {
@@ -472,7 +472,7 @@ mod tests {
     fn test_build_items_malformed_json_skipped() {
         let comment = PrReviewComment {
             id: CommentId::new(100),
-            body: "**CRITICAL** `f.rs` L1: bug <!-- rlph-finding:{bad json} -->".to_string(),
+            body: "**CRITICAL** `f.rs` L1: bug <!-- brrr-finding:{bad json} -->".to_string(),
             in_reply_to_id: None,
         };
         let items = build_fix_items_from_review_comments(&[comment], &[]);
