@@ -1150,8 +1150,6 @@ async fn push_to_pr_branch_with_retry(
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
-
     use super::*;
 
     use crate::fix_comment::{FindingState, build_fix_items_from_review_comments};
@@ -1162,20 +1160,10 @@ mod tests {
     };
 
     fn run_git(cwd: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
+        git_in_dir(cwd, args).unwrap_or_else(|e| panic!("git {:?} failed: {e}", args));
     }
 
-    fn init_git_repo() -> tempfile::TempDir {
+    fn init_temp_repo() -> tempfile::TempDir {
         let repo = tempfile::tempdir().unwrap();
         let repo_path = repo.path();
 
@@ -1557,7 +1545,7 @@ mod tests {
 
     #[test]
     fn test_reset_failure_recreates_shared_worktree() {
-        let repo = init_git_repo();
+        let repo = init_temp_repo();
         let worktree_base = tempfile::tempdir().unwrap();
         let worktree_manager = WorktreeManager::new(
             repo.path().to_path_buf(),
