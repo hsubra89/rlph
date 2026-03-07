@@ -50,6 +50,15 @@ impl Severity {
             Severity::Info => "INFO",
         }
     }
+
+    /// Colored circle emoji for GitHub rendering.
+    pub fn emoji(&self) -> &'static str {
+        match self {
+            Severity::Critical => "🔴",
+            Severity::Warning => "🟡",
+            Severity::Info => "🔵",
+        }
+    }
 }
 
 impl Ord for Severity {
@@ -77,6 +86,14 @@ impl Verdict {
         match self {
             Verdict::Approved => "approved",
             Verdict::NeedsFix => "needs_fix",
+        }
+    }
+
+    /// Status emoji for GitHub rendering.
+    pub fn emoji(&self) -> &'static str {
+        match self {
+            Verdict::Approved => "✅",
+            Verdict::NeedsFix => "❌",
         }
     }
 }
@@ -196,7 +213,8 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
         for &f in group.iter() {
             write!(
                 body,
-                "\n- [ ] **{}** `{}` L{}: {}",
+                "\n- [ ] {} **{}** `{}` L{}: {}",
+                f.severity.emoji(),
                 f.severity.label(),
                 f.file,
                 f.line,
@@ -204,7 +222,7 @@ pub fn render_findings_for_github(findings: &[ReviewFinding], summary: &str) -> 
             )
             .unwrap();
             if !f.depends_on.is_empty() {
-                write!(body, " *(depends on: {})*", f.depends_on.join(", ")).unwrap();
+                write!(body, " 🚧 *(depends on: {})*", f.depends_on.join(", ")).unwrap();
             }
             append_suggested_fixes(&mut body, &f.suggested_fixes, "  ");
             let json = escaped_finding_marker_json(f);
@@ -241,7 +259,8 @@ pub fn render_summary_for_github(
 
     write!(
         body,
-        "\n\n- Verdict: `{}`\n- Findings: {} total (`critical`: {}, `warning`: {}, `info`: {})",
+        "\n\n- Verdict: {} `{}`\n- Findings: {} total (🔴 `critical`: {}, 🟡 `warning`: {}, 🔵 `info`: {})",
+        verdict.emoji(),
         verdict.label(),
         findings.len(),
         critical,
@@ -256,9 +275,10 @@ pub fn render_summary_for_github(
         return body;
     }
 
+    body.push_str("\n| Category | Count |\n|----------|------:|");
     let groups = group_by_category(findings, |f| f.category.as_deref());
     for (category, group) in groups {
-        write!(body, "\n- {}: {}", category, group.len()).unwrap();
+        write!(body, "\n| {} | {} |", category, group.len()).unwrap();
     }
 
     body
@@ -282,7 +302,8 @@ pub fn render_inline_finding_comment_for_github(
         .map(|c| format!(" ({c})"))
         .unwrap_or_default();
     let mut body = format!(
-        "**{}**{} `{}`: {}",
+        "### {} {}{}\n\n`{}` — {}",
+        finding.severity.emoji(),
         finding.severity.label(),
         category_part,
         finding.id,
@@ -290,14 +311,15 @@ pub fn render_inline_finding_comment_for_github(
     );
 
     if !finding.suggested_fixes.is_empty() {
-        body.push_str("\n\n**Suggested fixes:**");
+        body.push_str("\n\n<details><summary><strong>Suggested fixes</strong></summary>\n");
         append_suggested_fixes(&mut body, &finding.suggested_fixes, "");
+        body.push_str("\n\n</details>");
     }
 
     if !dependency_descriptions.is_empty() {
         write!(
             body,
-            "\n\n> **Depends on:**\n> {}",
+            "\n\n> 🚧 **Depends on:**\n> {}",
             dependency_descriptions.join("\n> ")
         )
         .unwrap();
@@ -307,14 +329,14 @@ pub fn render_inline_finding_comment_for_github(
         Some(FallbackContext::Line(target_line)) => {
             write!(
                 body,
-                "\n\nNote: this finding applies to line {target_line} but is shown here because that line is not in the diff."
+                "\n\n> [!NOTE]\n> This finding applies to line {target_line} but is shown here because that line is not in the diff."
             )
             .unwrap();
         }
         Some(FallbackContext::File { file, line }) => {
             write!(
                 body,
-                "\n\nNote: this finding applies to `{file}:{line}` but is shown here because that file is not in the diff."
+                "\n\n> [!NOTE]\n> This finding applies to `{file}:{line}` but is shown here because that file is not in the diff."
             )
             .unwrap();
         }
@@ -900,7 +922,7 @@ mod tests {
             .unwrap()
             .replace("--", r"\u002d\u002d");
         let expected = format!(
-            "Issues found.\n\n### Correctness\n- [ ] **CRITICAL** `src/main.rs` L42: SQL injection\n  <!-- rlph-finding:{json} -->"
+            "Issues found.\n\n### Correctness\n- [ ] 🔴 **CRITICAL** `src/main.rs` L42: SQL injection\n  <!-- rlph-finding:{json} -->"
         );
         assert_eq!(result, expected);
     }
@@ -951,8 +973,8 @@ mod tests {
             ),
         ];
         let result = render_findings_for_github(&findings, "S.");
-        let crit_pos = result.find("**CRITICAL**").unwrap();
-        let info_pos = result.find("**INFO**").unwrap();
+        let crit_pos = result.find("🔴 **CRITICAL**").unwrap();
+        let info_pos = result.find("🔵 **INFO**").unwrap();
         assert!(crit_pos < info_pos);
     }
 
@@ -970,7 +992,7 @@ mod tests {
             )
         }];
         let result = render_findings_for_github(&findings, "S.");
-        assert!(result.contains("*(depends on: null-check, init-val)*"));
+        assert!(result.contains("🚧 *(depends on: null-check, init-val)*"));
     }
 
     #[test]
@@ -1124,11 +1146,13 @@ mod tests {
 
         let body = render_summary_for_github(Verdict::NeedsFix, &findings, "Issues found.");
         assert!(body.contains("Issues found."));
-        assert!(body.contains("Verdict: `needs_fix`"));
-        assert!(body.contains("Findings: 2 total (`critical`: 1, `warning`: 1, `info`: 0)"));
+        assert!(body.contains("Verdict: ❌ `needs_fix`"));
+        assert!(
+            body.contains("Findings: 2 total (🔴 `critical`: 1, 🟡 `warning`: 1, 🔵 `info`: 0)")
+        );
         assert!(body.contains("### Category Breakdown"));
-        assert!(body.contains("- correctness: 1"));
-        assert!(body.contains("- style: 1"));
+        assert!(body.contains("| correctness | 1 |"));
+        assert!(body.contains("| style | 1 |"));
         assert!(!body.contains(FINDING_MARKER));
     }
 
@@ -1152,12 +1176,11 @@ mod tests {
             Some(FallbackContext::Line(88)),
         );
 
-        assert!(
-            body.contains("**WARNING** (correctness) `dep-finding`: Potential null dereference")
-        );
-        assert!(body.contains("> **Depends on:**\n> Missing null guard in constructor"));
+        assert!(body.contains("### 🟡 WARNING (correctness)"));
+        assert!(body.contains("`dep-finding` — Potential null dereference"));
+        assert!(body.contains("> 🚧 **Depends on:**\n> Missing null guard in constructor"));
         assert!(body.contains(
-            "Note: this finding applies to line 88 but is shown here because that line is not in the diff."
+            "> [!NOTE]\n> This finding applies to line 88 but is shown here because that line is not in the diff."
         ));
         let json = extract_finding_json(&body).expect("finding marker is present");
         let parsed: ReviewFinding = serde_json::from_str(json).unwrap();
@@ -1184,9 +1207,10 @@ mod tests {
             }),
         );
 
-        assert!(body.contains("**CRITICAL** (correctness) `file-fallback`: Issue in missing file"));
+        assert!(body.contains("### 🔴 CRITICAL (correctness)"));
+        assert!(body.contains("`file-fallback` — Issue in missing file"));
         assert!(body.contains(
-            "Note: this finding applies to `src/missing.rs:42` but is shown here because that file is not in the diff."
+            "> [!NOTE]\n> This finding applies to `src/missing.rs:42` but is shown here because that file is not in the diff."
         ));
     }
 
@@ -1208,9 +1232,9 @@ mod tests {
         };
 
         let body = render_inline_finding_comment_for_github(&finding, &[], None);
-        assert!(body.contains(
-            "**Suggested fixes:**\n1. Check bounds before indexing\n2. Add unit test for empty input"
-        ));
+        assert!(body.contains("<details><summary><strong>Suggested fixes</strong></summary>"));
+        assert!(body.contains("1. Check bounds before indexing\n2. Add unit test for empty input"));
+        assert!(body.contains("</details>"));
     }
 
     // ---- StandaloneFixOutput tests ----
