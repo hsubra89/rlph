@@ -22,7 +22,8 @@ use crate::review_schema::{
     render_inline_finding_comment_for_github, render_summary_for_github,
 };
 use crate::runner::{
-    AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, resume_with_correction,
+    AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, format_runner_display,
+    resume_with_correction,
 };
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
@@ -670,22 +671,15 @@ impl<
                 .review_factory
                 .create_phase_runner(phase_config, self.config.agent_timeout_retries);
 
-            let model_tag = phase_config.agent_model.as_deref().unwrap_or("(default)");
-            let mut extras = Vec::new();
-            if let Some(ref e) = phase_config.agent_effort {
-                extras.push(format!("effort={e}"));
-            }
-            if let Some(ref v) = phase_config.agent_variant {
-                extras.push(format!("variant={v}"));
-            }
-            let suffix = if extras.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", extras.join(", "))
-            };
             eprintln!(
-                "[rlph] review phase \"{}\": {}@{}{}",
-                phase_config.name, model_tag, phase_config.runner, suffix
+                "[rlph] review phase {}: {}",
+                phase_config.name,
+                format_runner_display(
+                    phase_config.runner,
+                    phase_config.agent_model.as_deref(),
+                    phase_config.agent_effort.as_deref(),
+                    phase_config.agent_variant.as_deref(),
+                )
             );
 
             let mut phase_vars = vars.clone();
