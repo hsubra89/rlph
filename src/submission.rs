@@ -243,18 +243,56 @@ struct ReviewInlineCommentRequest {
     body: String,
 }
 
-#[derive(Debug, Serialize)]
-struct FileReviewCommentRequest {
-    body: String,
-    path: String,
-    subject_type: String,
+// GraphQL mutation for file-level review comments.
+// The REST API's review creation endpoint does not support `subjectType` on
+// `DraftPullRequestReviewComment`. The GraphQL `addPullRequestReview` mutation
+// supports it via `threads` with `subjectType: FILE`.
+const ADD_FILE_REVIEW_MUTATION: &str = r#"
+mutation($pullRequestId: ID!, $body: String!, $event: PullRequestReviewEvent!, $threads: [DraftPullRequestReviewThread]!) {
+  addPullRequestReview(input: {pullRequestId: $pullRequestId, body: $body, event: $event, threads: $threads}) {
+    pullRequestReview {
+      id
+    }
+  }
+}
+"#;
+
+const PR_NODE_ID_QUERY: &str = r#"
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id
+    }
+  }
+}
+"#;
+
+#[derive(Debug, Deserialize)]
+struct GraphQLResponse<T> {
+    data: Option<T>,
+    #[serde(default)]
+    errors: Option<Vec<GraphQLError>>,
 }
 
-#[derive(Debug, Serialize)]
-struct ReviewCreateFileCommentsRequest {
-    body: String,
-    event: String,
-    comments: Vec<FileReviewCommentRequest>,
+#[derive(Debug, Deserialize)]
+struct GraphQLError {
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrNodeIdData {
+    repository: Option<PrNodeIdRepo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrNodeIdRepo {
+    #[serde(rename = "pullRequest")]
+    pull_request: Option<PrNodeId>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrNodeId {
+    id: String,
 }
 
 /// GitHub PR submission via `gh` CLI.
@@ -557,46 +595,59 @@ impl SubmissionBackend for GitHubSubmission {
             return Ok(());
         }
 
-        let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews");
-        let payload = ReviewCreateFileCommentsRequest {
-            body: format!(
-                "Review: {} file finding(s) across the changes.",
-                comments.len()
-            ),
-            event: PullRequestReviewEvent::Comment.as_api_value().to_string(),
-            comments: comments
-                .iter()
-                .map(|comment| FileReviewCommentRequest {
-                    body: comment.body.clone(),
-                    path: comment.path.clone(),
-                    subject_type: "file".to_string(),
+        let (owner, repo) = detect_owner_repo()?;
+        let pr_node_id = fetch_pr_node_id(&owner, &repo, pr_number)?;
+
+        let threads: Vec<Value> = comments
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "path": c.path,
+                    "body": c.body,
+                    "subjectType": "FILE"
                 })
-                .collect(),
-        };
-        let request_body = serde_json::to_vec(&payload).map_err(|e| {
+            })
+            .collect();
+
+        let body = format!(
+            "Review: {} file finding(s) across the changes.",
+            comments.len()
+        );
+
+        let payload = serde_json::json!({
+            "query": ADD_FILE_REVIEW_MUTATION,
+            "variables": {
+                "pullRequestId": pr_node_id,
+                "body": body,
+                "event": "COMMENT",
+                "threads": threads,
+            }
+        });
+        let payload_bytes = serde_json::to_vec(&payload).map_err(|e| {
             Error::Submission(format!("failed to serialize file review payload: {e}"))
         })?;
 
         let mut child = Command::new("gh")
-            .args(["api", &endpoint, "-X", "POST", "--input", "-"])
+            .args(["api", "graphql", "--input", "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+            .map_err(|e| Error::Submission(format!("failed to run gh api graphql: {e}")))?;
 
         let mut stdin = child
             .stdin
             .take()
             .ok_or_else(|| Error::Submission("failed to open stdin for gh api".to_string()))?;
         stdin
-            .write_all(&request_body)
+            .write_all(&payload_bytes)
             .map_err(|e| Error::Submission(format!("failed to write file review payload: {e}")))?;
         drop(stdin);
 
         let output = child
             .wait_with_output()
-            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+            .map_err(|e| Error::Submission(format!("failed to run gh api graphql: {e}")))?;
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -608,6 +659,24 @@ impl SubmissionBackend for GitHubSubmission {
                 "create file review",
                 &attempted,
                 &stderr,
+                &stdout,
+            )));
+        }
+
+        // Check for GraphQL-level errors in the response body.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(resp) = serde_json::from_str::<GraphQLResponse<Value>>(&stdout)
+            && let Some(errors) = &resp.errors
+        {
+            let msgs: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+            let attempted = comments
+                .iter()
+                .map(format_attempted_file_review_comment)
+                .collect::<Vec<_>>();
+            return Err(Error::Submission(format_gh_review_submission_error(
+                "create file review",
+                &attempted,
+                &msgs.join(", "),
                 &stdout,
             )));
         }
@@ -874,6 +943,55 @@ fn format_gh_api_error_value(value: &Value) -> String {
         Value::Null => "null".to_string(),
         _ => value.to_string(),
     }
+}
+
+/// Fetch the GraphQL node ID for a pull request.
+fn fetch_pr_node_id(owner: &str, repo: &str, pr_number: PrNumber) -> Result<String> {
+    let query_arg = format!("query={PR_NODE_ID_QUERY}");
+    let owner_arg = format!("owner={owner}");
+    let name_arg = format!("name={repo}");
+    let number_arg = format!("number={pr_number}");
+
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "graphql",
+            "-f",
+            &query_arg,
+            "-f",
+            &owner_arg,
+            "-f",
+            &name_arg,
+            "-F",
+            &number_arg,
+        ])
+        .output()
+        .map_err(|e| Error::Submission(format!("failed to run gh api graphql: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Submission(format!(
+            "failed to fetch PR node ID: {stderr}"
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let resp: GraphQLResponse<PrNodeIdData> = serde_json::from_str(&stdout)
+        .map_err(|e| Error::Submission(format!("failed to parse PR node ID response: {e}")))?;
+
+    if let Some(errors) = &resp.errors {
+        let msgs: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+        return Err(Error::Submission(format!(
+            "GraphQL errors fetching PR node ID: {}",
+            msgs.join(", ")
+        )));
+    }
+
+    resp.data
+        .and_then(|d| d.repository)
+        .and_then(|r| r.pull_request)
+        .map(|pr| pr.id)
+        .ok_or_else(|| Error::Submission(format!("PR #{pr_number} not found")))
 }
 
 /// Detect the GitHub repository owner and name from the local git remote URL.
