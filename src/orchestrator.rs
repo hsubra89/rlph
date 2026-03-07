@@ -1251,7 +1251,7 @@ mod tests {
             .expect("expected follow-up comment");
         assert!(
             body.body
-                .contains("> **Depends on:**\n> `base-check`: Base check missing")
+                .contains("> 🚧 **Depends on:**\n> `base-check`: Base check missing")
         );
     }
 

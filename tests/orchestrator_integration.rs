@@ -1304,7 +1304,7 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
     assert!(
         submission_data.comments[0]
             .1
-            .contains("Verdict: `approved`")
+            .contains("Verdict: ✅ `approved`")
     );
     assert!(!submission_data.comments[0].1.contains(FINDING_MARKER));
     assert!(submission_data.reviews.is_empty());
@@ -1431,7 +1431,7 @@ async fn test_review_only_needs_fix_completes_successfully() {
     assert!(
         submission_data.comments[0]
             .1
-            .contains("Verdict: `needs_fix`")
+            .contains("Verdict: ❌ `needs_fix`")
     );
     assert!(!submission_data.comments[0].1.contains(FINDING_MARKER));
 
@@ -1445,11 +1445,8 @@ async fn test_review_only_needs_fix_completes_successfully() {
     let inline_comment = &submission_data.reviews[0].comments[0];
     assert_eq!(inline_comment.path, "src/main.rs");
     assert_eq!(inline_comment.line, 1);
-    assert!(
-        inline_comment
-            .body
-            .contains("**WARNING** `issue-found`: issue")
-    );
+    assert!(inline_comment.body.contains("### 🟡 WARNING"));
+    assert!(inline_comment.body.contains("`issue-found` — issue"));
     assert!(inline_comment.body.contains(FINDING_MARKER));
 }
 
