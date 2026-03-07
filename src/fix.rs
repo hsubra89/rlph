@@ -215,6 +215,8 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
     fix_branch: &str,
     wm: &WorktreeManager,
 ) {
+    let mut needs_worktree_recovery = false;
+
     loop {
         if *shutdown.borrow() {
             break;
@@ -251,13 +253,16 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                     continue;
                 }
 
+                if needs_worktree_recovery
+                    && !recover_shared_worktree(wm, worktree_path, &shared.pr_branch, fix_branch)
+                {
+                    break;
+                }
+
                 let (batch_completed, batch_error) =
                     run_batch_fix(shared, prepared_items, pr_number, worktree_path, fix_branch)
                         .await;
-
-                if !recover_shared_worktree(wm, worktree_path, &shared.pr_branch, fix_branch) {
-                    break;
-                }
+                needs_worktree_recovery = true;
 
                 for id in &batch_completed {
                     eprintln!("[rlph] Finding completed successfully: {id}");
