@@ -401,6 +401,22 @@ impl WorktreeManager {
         })
     }
 
+    /// Reset an existing worktree to the latest remote branch state.
+    ///
+    /// Fetches the remote branch, hard-resets the worktree, and cleans untracked files
+    /// so it's ready for the next fix session.
+    pub fn reset_to_remote(&self, worktree_path: &Path, remote_branch: &str) -> Result<()> {
+        self.fetch_with_retry(remote_branch, 3)?;
+        git_in_dir(
+            worktree_path,
+            &["reset", "--hard", &format!("origin/{remote_branch}")],
+        )
+        .map_err(|e| Error::Worktree(format!("failed to reset worktree: {e}")))?;
+        git_in_dir(worktree_path, &["clean", "-fd"])
+            .map_err(|e| Error::Worktree(format!("failed to clean worktree: {e}")))?;
+        Ok(())
+    }
+
     /// Run the setup script in the given worktree directory, if configured.
     fn run_setup_script(&self, worktree_path: &Path) -> Result<()> {
         let script = match &self.setup_script {
