@@ -6,7 +6,6 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use serde_json;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
