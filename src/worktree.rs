@@ -650,6 +650,29 @@ impl WorktreeManager {
 mod tests {
     use super::*;
 
+    fn run_git(cwd: &Path, args: &[&str]) {
+        git_in_dir(cwd, args).unwrap_or_else(|e| panic!("git {:?} failed: {e}", args));
+    }
+
+    fn init_temp_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+
+        run_git(path, &["init"]);
+        run_git(path, &["config", "user.email", "test@test.com"]);
+        run_git(path, &["config", "user.name", "Test"]);
+
+        std::fs::write(path.join("README.md"), "# initial\n").unwrap();
+        run_git(path, &["add", "."]);
+        run_git(path, &["commit", "-m", "init"]);
+        run_git(path, &["branch", "-M", "main"]);
+
+        let path_str = path.to_str().unwrap();
+        run_git(path, &["remote", "add", "origin", path_str]);
+
+        dir
+    }
+
     #[test]
     fn test_worktree_name() {
         assert_eq!(
@@ -900,5 +923,53 @@ mod tests {
 
         let result = resolve_setup_script(Some("scripts/../../escape.sh"), tmp.path()).unwrap();
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_reset_to_remote_restores_latest_remote_state() {
+        let repo = init_temp_repo();
+        let wt_base = tempfile::tempdir().unwrap();
+        let mgr = WorktreeManager::new(
+            repo.path().to_path_buf(),
+            wt_base.path().to_path_buf(),
+            "main".to_string(),
+        );
+
+        let info = mgr.create_fresh("rlph-fix-main", "main").unwrap();
+
+        std::fs::write(repo.path().join("README.md"), "# remote\n").unwrap();
+        std::fs::write(repo.path().join("remote-only.txt"), "from remote\n").unwrap();
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "remote update"]);
+
+        std::fs::write(info.path.join("README.md"), "# local dirty\n").unwrap();
+        std::fs::write(info.path.join("staged.txt"), "staged change\n").unwrap();
+        run_git(&info.path, &["add", "staged.txt"]);
+        std::fs::write(info.path.join("scratch.txt"), "untracked\n").unwrap();
+
+        let dirty_status = git_in_dir(&info.path, &["status", "--porcelain"]).unwrap();
+        assert!(
+            !dirty_status.trim().is_empty(),
+            "expected dirty worktree before reset"
+        );
+
+        mgr.reset_to_remote(&info.path, "main").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(info.path.join("README.md")).unwrap(),
+            "# remote\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(info.path.join("remote-only.txt")).unwrap(),
+            "from remote\n"
+        );
+        assert!(!info.path.join("staged.txt").exists());
+        assert!(!info.path.join("scratch.txt").exists());
+
+        let status = git_in_dir(&info.path, &["status", "--porcelain"]).unwrap();
+        assert!(
+            status.trim().is_empty(),
+            "expected clean worktree after reset, got: {status}"
+        );
     }
 }
