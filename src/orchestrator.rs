@@ -1074,6 +1074,38 @@ fn push_related_file_or_standalone(
     }
 }
 
+fn push_current_file_or_related_or_standalone(
+    prepared: &mut PreparedReviewComments,
+    mapper: &DiffPositionMapper,
+    finding: &ReviewFinding,
+    dependency_descriptions: &[&str],
+) {
+    match mapper.current_path_for(&finding.file) {
+        Ok(path) => {
+            prepared.file_comments.push(FileReviewComment {
+                finding_id: finding.id.clone(),
+                original_file: finding.file.clone(),
+                original_line: finding.line,
+                path,
+                body: render_inline_finding_comment_for_github(
+                    finding,
+                    dependency_descriptions,
+                    Some(FallbackContext::File {
+                        file: finding.file.clone(),
+                        line: finding.line,
+                    }),
+                ),
+            });
+        }
+        Err(
+            DiffPositionMapperError::FileNotFound(_) | DiffPositionMapperError::NoCurrentPath(_),
+        ) => push_related_file_or_standalone(prepared, mapper, finding, dependency_descriptions),
+        Err(DiffPositionMapperError::Parse(_) | DiffPositionMapperError::InvalidLine { .. }) => {
+            unreachable!("current_path_for only returns file lookup errors")
+        }
+    }
+}
+
 fn prepare_review_comments(
     submission: &(impl SubmissionBackend + ?Sized),
     pr_number: PrNumber,
@@ -1135,34 +1167,12 @@ fn prepare_review_comments(
                 });
             }
             Err(DiffPositionMapperError::InvalidLine { .. }) => {
-                match mapper.current_path_for(&finding.file) {
-                    Ok(path) => {
-                        prepared.file_comments.push(FileReviewComment {
-                            finding_id: finding.id.clone(),
-                            original_file: finding.file.clone(),
-                            original_line: finding.line,
-                            path,
-                            body: render_inline_finding_comment_for_github(
-                                finding,
-                                &dependency_descriptions,
-                                Some(FallbackContext::File {
-                                    file: finding.file.clone(),
-                                    line: finding.line,
-                                }),
-                            ),
-                        });
-                    }
-                    Err(
-                        DiffPositionMapperError::FileNotFound(_)
-                        | DiffPositionMapperError::NoCurrentPath(_),
-                    ) => push_related_file_or_standalone(
-                        &mut prepared,
-                        &mapper,
-                        finding,
-                        &dependency_descriptions,
-                    ),
-                    Err(err) => return Err(err.into()),
-                }
+                push_current_file_or_related_or_standalone(
+                    &mut prepared,
+                    &mapper,
+                    finding,
+                    &dependency_descriptions,
+                );
             }
             Err(
                 DiffPositionMapperError::FileNotFound(_)
@@ -1173,7 +1183,9 @@ fn prepare_review_comments(
                 finding,
                 &dependency_descriptions,
             ),
-            Err(err @ DiffPositionMapperError::Parse(_)) => return Err(err.into()),
+            Err(DiffPositionMapperError::Parse(_)) => {
+                unreachable!("target_for only returns file lookup errors after diff parsing")
+            }
         }
     }
 
