@@ -1038,6 +1038,42 @@ struct StandaloneFinding {
     body: String,
 }
 
+fn push_related_file_or_standalone(
+    prepared: &mut PreparedReviewComments,
+    mapper: &DiffPositionMapper,
+    finding: &ReviewFinding,
+    dependency_descriptions: &[&str],
+) {
+    if let Some(related_path) = mapper.find_nearest_file(&finding.file) {
+        prepared.file_comments.push(FileReviewComment {
+            finding_id: finding.id.clone(),
+            original_file: finding.file.clone(),
+            original_line: finding.line,
+            path: related_path,
+            body: render_inline_finding_comment_for_github(
+                finding,
+                dependency_descriptions,
+                Some(FallbackContext::RelatedFile {
+                    file: finding.file.clone(),
+                    line: finding.line,
+                }),
+            ),
+        });
+    } else {
+        prepared.standalone_findings.push(StandaloneFinding {
+            finding_id: finding.id.clone(),
+            body: render_inline_finding_comment_for_github(
+                finding,
+                dependency_descriptions,
+                Some(FallbackContext::Standalone {
+                    file: finding.file.clone(),
+                    line: finding.line,
+                }),
+            ),
+        });
+    }
+}
+
 fn prepare_review_comments(
     submission: &(impl SubmissionBackend + ?Sized),
     pr_number: PrNumber,
@@ -1116,101 +1152,28 @@ fn prepare_review_comments(
                             ),
                         });
                     }
-                    Err(_) => {
-                        if let Some(related_path) = mapper.find_nearest_file(&finding.file) {
-                            prepared.file_comments.push(FileReviewComment {
-                                finding_id: finding.id.clone(),
-                                original_file: finding.file.clone(),
-                                original_line: finding.line,
-                                path: related_path,
-                                body: render_inline_finding_comment_for_github(
-                                    finding,
-                                    &dependency_descriptions,
-                                    Some(FallbackContext::RelatedFile {
-                                        file: finding.file.clone(),
-                                        line: finding.line,
-                                    }),
-                                ),
-                            });
-                        } else {
-                            prepared.standalone_findings.push(StandaloneFinding {
-                                finding_id: finding.id.clone(),
-                                body: render_inline_finding_comment_for_github(
-                                    finding,
-                                    &dependency_descriptions,
-                                    Some(FallbackContext::Standalone {
-                                        file: finding.file.clone(),
-                                        line: finding.line,
-                                    }),
-                                ),
-                            });
-                        }
-                    }
+                    Err(
+                        DiffPositionMapperError::FileNotFound(_)
+                        | DiffPositionMapperError::NoCurrentPath(_),
+                    ) => push_related_file_or_standalone(
+                        &mut prepared,
+                        &mapper,
+                        finding,
+                        &dependency_descriptions,
+                    ),
+                    Err(err) => return Err(err.into()),
                 }
             }
             Err(
                 DiffPositionMapperError::FileNotFound(_)
                 | DiffPositionMapperError::NoCurrentPath(_),
-            ) => {
-                if let Some(related_path) = mapper.find_nearest_file(&finding.file) {
-                    prepared.file_comments.push(FileReviewComment {
-                        finding_id: finding.id.clone(),
-                        original_file: finding.file.clone(),
-                        original_line: finding.line,
-                        path: related_path,
-                        body: render_inline_finding_comment_for_github(
-                            finding,
-                            &dependency_descriptions,
-                            Some(FallbackContext::RelatedFile {
-                                file: finding.file.clone(),
-                                line: finding.line,
-                            }),
-                        ),
-                    });
-                } else {
-                    prepared.standalone_findings.push(StandaloneFinding {
-                        finding_id: finding.id.clone(),
-                        body: render_inline_finding_comment_for_github(
-                            finding,
-                            &dependency_descriptions,
-                            Some(FallbackContext::Standalone {
-                                file: finding.file.clone(),
-                                line: finding.line,
-                            }),
-                        ),
-                    });
-                }
-            }
-            Err(_) => {
-                if let Some(related_path) = mapper.find_nearest_file(&finding.file) {
-                    prepared.file_comments.push(FileReviewComment {
-                        finding_id: finding.id.clone(),
-                        original_file: finding.file.clone(),
-                        original_line: finding.line,
-                        path: related_path,
-                        body: render_inline_finding_comment_for_github(
-                            finding,
-                            &dependency_descriptions,
-                            Some(FallbackContext::RelatedFile {
-                                file: finding.file.clone(),
-                                line: finding.line,
-                            }),
-                        ),
-                    });
-                } else {
-                    prepared.standalone_findings.push(StandaloneFinding {
-                        finding_id: finding.id.clone(),
-                        body: render_inline_finding_comment_for_github(
-                            finding,
-                            &dependency_descriptions,
-                            Some(FallbackContext::Standalone {
-                                file: finding.file.clone(),
-                                line: finding.line,
-                            }),
-                        ),
-                    });
-                }
-            }
+            ) => push_related_file_or_standalone(
+                &mut prepared,
+                &mapper,
+                finding,
+                &dependency_descriptions,
+            ),
+            Err(err @ DiffPositionMapperError::Parse(_)) => return Err(err.into()),
         }
     }
 
