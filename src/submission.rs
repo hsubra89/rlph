@@ -859,8 +859,13 @@ fn format_gh_review_submission_error(
 }
 
 fn parse_gh_api_error(text: &str) -> Option<GhApiErrorResponse> {
-    let start = text.find('{')?;
-    serde_json::from_str::<GhApiErrorResponse>(&text[start..]).ok()
+    let text = text.trim();
+    serde_json::from_str::<GhApiErrorResponse>(text)
+        .ok()
+        .or_else(|| {
+            let start = text.find('{')?;
+            serde_json::from_str::<GhApiErrorResponse>(&text[start..]).ok()
+        })
 }
 
 fn format_gh_api_error_value(value: &Value) -> String {
