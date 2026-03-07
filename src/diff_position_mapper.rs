@@ -315,15 +315,14 @@ impl DiffPositionMapper {
     pub fn find_nearest_file(&self, file: &str) -> Option<String> {
         let path = Path::new(file);
         let mut dir = path.parent();
-        let mut seen_paths = HashSet::<*const String>::new();
+        let mut seen_paths = HashSet::<&str>::new();
         while let Some(current_dir) = dir {
             for df in self.files_by_alias.values() {
                 let current_path = match df.current_path.as_ref() {
                     Some(current_path) => current_path,
                     None => continue,
                 };
-                let current_path_ptr = Arc::as_ptr(current_path);
-                if !seen_paths.insert(current_path_ptr) {
+                if !seen_paths.insert(current_path.as_str()) {
                     continue;
                 }
                 if Path::new(current_path.as_str()).parent() == Some(current_dir)
