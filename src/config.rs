@@ -377,6 +377,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
             let runner_binary = runner_default_binary(effective_runner);
             let runner_model = runner_default_model(effective_runner);
             let runner_effort = runner_default_effort(effective_runner);
+            let runner_variant = runner_default_variant(effective_runner);
             Ok(ReviewPhaseConfig {
                 name: p.name,
                 prompt: p.prompt,
@@ -395,7 +396,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
                 agent_variant: p
                     .agent_variant
                     .or_else(|| global_variant_override.clone())
-                    .or_else(|| runner_default_variant(effective_runner).map(str::to_string)),
+                    .or_else(|| runner_variant.map(str::to_string)),
                 agent_timeout: p.agent_timeout.map(Duration::from_secs).or(global_timeout),
                 runner: effective_runner,
             })
@@ -412,6 +413,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
             let runner_binary = runner_default_binary(effective_runner);
             let runner_model = runner_default_model(effective_runner);
             let runner_effort = runner_default_effort(effective_runner);
+            let runner_variant = runner_default_variant(effective_runner);
             Ok(ReviewStepConfig {
                 prompt: s.prompt.unwrap_or_else(|| default_prompt.to_string()),
                 agent_binary: s
@@ -429,7 +431,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
                 agent_variant: s
                     .agent_variant
                     .or_else(|| global_variant_override.clone())
-                    .or_else(|| runner_default_variant(effective_runner).map(str::to_string)),
+                    .or_else(|| runner_variant.map(str::to_string)),
                 agent_timeout: s.agent_timeout.map(Duration::from_secs).or(global_timeout),
                 runner: effective_runner,
             })
