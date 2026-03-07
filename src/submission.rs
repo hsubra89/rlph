@@ -594,7 +594,7 @@ struct GhApiErrorResponse {
     #[serde(default)]
     errors: Vec<Value>,
     documentation_url: Option<String>,
-    status: Option<Value>,
+    status: Option<String>,
 }
 
 fn format_attempted_line_review_comments(comments: &[InlineReviewComment]) -> Vec<String> {
@@ -643,7 +643,7 @@ fn format_gh_review_submission_error(
             ));
         }
         if let Some(status) = parsed.status {
-            lines.push(format!("status: {}", format_gh_api_error_value(&status)));
+            lines.push(format!("status: {}", status.trim()));
         }
         if let Some(url) = parsed.documentation_url
             && !url.trim().is_empty()
