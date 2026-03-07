@@ -20,6 +20,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 - `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
 - `file`: use the current path in the repository. For renamed files use the new path.
 - `line`: use a 1-based line number on the new/current side of the diff. Do not use deleted-line numbers or `0`.
+- `description`: use backticks around code references (function names, variable names, type names, file paths) for readability.
 - `suggested_fixes`: at least one concrete, actionable fix the author can apply. Each entry is a short description of a distinct fix option.
 - `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
 - Every finding must be actionable — do not report information-only observations. If you cannot propose a concrete fix, do not report it.
