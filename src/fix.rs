@@ -69,7 +69,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
     let poll_duration = config.poll_seconds;
 
     // Create a single shared worktree for the entire fix loop
-    let fix_branch = format!("rlph-fix-{}", WorktreeManager::slugify(pr_branch));
+    let fix_branch = WorktreeManager::fix_branch_name(pr_branch);
     let worktree_manager = shared.make_worktree_manager();
     let worktree_path = worktree_manager.create_fresh(&fix_branch, pr_branch)?.path;
 

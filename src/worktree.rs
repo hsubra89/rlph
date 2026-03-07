@@ -135,6 +135,11 @@ impl WorktreeManager {
         format!("rlph-{issue_number}-{slug}")
     }
 
+    /// Generate the shared fix branch name for a PR branch.
+    pub fn fix_branch_name(pr_branch: &str) -> String {
+        format!("rlph-fix-{}", Self::slugify(pr_branch))
+    }
+
     /// Create a URL/title-safe slug from a string.
     pub fn slugify(title: &str) -> String {
         let slug: String = title
@@ -683,6 +688,14 @@ mod tests {
         assert_eq!(
             WorktreeManager::worktree_name(IssueNumber::new(42), "fix-bug"),
             "rlph-42-fix-bug"
+        );
+    }
+
+    #[test]
+    fn test_fix_branch_name() {
+        assert_eq!(
+            WorktreeManager::fix_branch_name("feature/SQL Injection"),
+            "rlph-fix-feature-sql-injection"
         );
     }
 
