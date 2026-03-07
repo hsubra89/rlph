@@ -488,7 +488,7 @@ impl SubmissionBackend for GitHubSubmission {
             let stdout = String::from_utf8_lossy(&output.stdout);
             return Err(Error::Submission(format_gh_review_submission_error(
                 "create review",
-                &format_attempted_line_review_comments(comments),
+                comments,
                 &stderr,
                 &stdout,
             )));
@@ -597,33 +597,24 @@ struct GhApiErrorResponse {
     status: Option<String>,
 }
 
-fn format_attempted_line_review_comments(comments: &[InlineReviewComment]) -> Vec<String> {
-    comments
-        .iter()
-        .map(|comment| {
-            format!(
-                "`{}` original {}:{} -> line comment {}:{}",
-                comment.finding_id,
-                comment.original_file,
-                comment.original_line,
-                comment.path,
-                comment.line
-            )
-        })
-        .collect()
-}
-
 fn format_gh_review_submission_error(
     action: &str,
-    attempted: &[String],
+    attempted: &[InlineReviewComment],
     stderr: &str,
     stdout: &str,
 ) -> String {
     let mut lines = vec![format!("gh api {action} failed")];
     if !attempted.is_empty() {
         lines.push("attempted comments:".to_string());
-        for item in attempted {
-            lines.push(format!("  - {item}"));
+        for comment in attempted {
+            lines.push(format!(
+                "  - `{}` original {}:{} -> line comment {}:{}",
+                comment.finding_id,
+                comment.original_file,
+                comment.original_line,
+                comment.path,
+                comment.line
+            ));
         }
     }
 
@@ -632,15 +623,14 @@ fn format_gh_review_submission_error(
             lines.push(format!("github message: {}", parsed.message.trim()));
         }
         if !parsed.errors.is_empty() {
-            lines.push(format!(
-                "github errors: {}",
-                parsed
-                    .errors
-                    .iter()
-                    .map(format_gh_api_error_value)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ));
+            let mut errors = String::new();
+            for (idx, error) in parsed.errors.iter().enumerate() {
+                if idx > 0 {
+                    errors.push_str("; ");
+                }
+                errors.push_str(&format_gh_api_error_value(error));
+            }
+            lines.push(format!("github errors: {}", errors));
         }
         if let Some(status) = parsed.status {
             lines.push(format!("status: {}", status.trim()));
@@ -1091,8 +1081,7 @@ mod tests {
 
     #[test]
     fn test_format_gh_review_submission_error_parses_422_payload() {
-        let attempted =
-            super::format_attempted_line_review_comments(&[sample_inline_review_comment()]);
+        let attempted = [sample_inline_review_comment()];
         let stderr = concat!(
             "gh: Unprocessable Entity (HTTP 422)\n",
             "{\"message\":\"Unprocessable Entity\",\"errors\":[\"Line could not be resolved\"],",
@@ -1115,8 +1104,7 @@ mod tests {
 
     #[test]
     fn test_format_gh_review_submission_error_falls_back_to_raw_output() {
-        let attempted =
-            super::format_attempted_line_review_comments(&[sample_inline_review_comment()]);
+        let attempted = [sample_inline_review_comment()];
 
         let formatted = format_gh_review_submission_error(
             "create review",
