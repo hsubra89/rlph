@@ -173,6 +173,11 @@ pub trait SubmissionBackend: Send + Sync {
         Ok(0)
     }
 
+    /// Post a standalone PR comment for a finding that could not be placed inline.
+    fn post_finding_comment(&self, _pr_number: PrNumber, _body: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// Post a reply to a PR review comment.
     fn reply_to_review_comment(
         &self,
@@ -696,6 +701,19 @@ impl SubmissionBackend for GitHubSubmission {
             format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies");
         run_gh_api_mutate(&endpoint, "POST", &[("body", body)])?;
         info!(pr_number = %pr_number, comment_id = %comment_id, "replied to review comment");
+        Ok(())
+    }
+
+    fn post_finding_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
+        let number_str = pr_number.to_string();
+        let output = Command::new("gh")
+            .args(["pr", "comment", &number_str, "--body", body])
+            .output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Submission(format!("gh pr comment failed: {stderr}")));
+        }
         Ok(())
     }
 

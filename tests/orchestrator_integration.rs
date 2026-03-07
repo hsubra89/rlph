@@ -46,6 +46,7 @@ struct SubmissionTracker {
     comments: Vec<(PrNumber, String)>,
     reviews: Vec<PostedReview>,
     file_comments: Vec<PostedFileComment>,
+    standalone_comments: Vec<(PrNumber, String)>,
     events: Vec<&'static str>,
 }
 
@@ -447,6 +448,15 @@ impl SubmissionBackend for MockSubmission {
             comments: comments.to_vec(),
         });
         tracker.events.push("file_comments");
+        Ok(())
+    }
+
+    fn post_finding_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
+        let mut tracker = self.tracker.lock().unwrap();
+        tracker
+            .standalone_comments
+            .push((pr_number, body.to_string()));
+        tracker.events.push("standalone_comment");
         Ok(())
     }
 
@@ -1601,7 +1611,7 @@ async fn test_review_only_needs_fix_completes_successfully() {
 }
 
 #[tokio::test]
-async fn test_review_only_fails_when_finding_file_is_missing_from_diff() {
+async fn test_review_only_posts_standalone_comment_when_finding_file_is_missing_from_diff() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(100, "Invalid review finding");
 
@@ -1645,18 +1655,27 @@ async fn test_review_only_fails_when_finding_file_is_missing_from_diff() {
         comment_pr_number: Some(PrNumber::new(100)),
     };
 
-    let err = orchestrator
+    orchestrator
         .run_review_for_existing_pr(invocation)
         .await
-        .unwrap_err();
-    let err = err.to_string();
-    assert!(err.contains("failed to prepare GitHub review comments"));
-    assert!(err.contains("missing-file"));
-    assert!(err.contains("src/missing.rs:50"));
+        .unwrap();
 
     let submission_data = sub_tracker.lock().unwrap();
-    assert!(submission_data.comments.is_empty());
-    assert!(submission_data.reviews.is_empty());
+    // src/missing.rs is not in the diff but src/main.rs is in the same directory,
+    // so the finding falls back to a file-level comment on the related file
+    assert!(
+        !submission_data.file_comments.is_empty(),
+        "expected file comments for related-file fallback, got {:?}",
+        submission_data.file_comments,
+    );
+    let file_comment = &submission_data.file_comments[0].comments[0];
+    assert_eq!(file_comment.path, "src/main.rs");
+    assert!(file_comment.body.contains("src/missing.rs:50"));
+    assert!(
+        file_comment
+            .body
+            .contains("which is not part of the current diff. It is shown here on a related file")
+    );
 }
 
 #[tokio::test]

@@ -1,6 +1,7 @@
 //! Maps review findings to exact GitHub review comment targets from unified diffs.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -292,6 +293,23 @@ impl DiffPositionMapper {
 
         Ok(ReviewCommentTarget::File { path: current_path })
     }
+
+    pub fn find_nearest_file(&self, file: &str) -> Option<String> {
+        let path = Path::new(file);
+        let mut dir = path.parent();
+        while let Some(current_dir) = dir {
+            let candidate = self.files_by_alias.values().find_map(|df| {
+                df.current_path.as_ref().filter(|p| {
+                    Path::new(p.as_str()).parent() == Some(current_dir) && p.as_str() != file
+                })
+            });
+            if let Some(found) = candidate {
+                return Some(found.clone());
+            }
+            dir = current_dir.parent();
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -566,5 +584,25 @@ index 1234567..0000000
             mapper.target_for("src/deleted.rs", 1).unwrap_err(),
             DiffPositionMapperError::NoCurrentPath("src/deleted.rs".to_string())
         );
+    }
+
+    #[test]
+    fn test_find_nearest_file_same_directory() {
+        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
+        // src/foo.rs is in the diff; looking for src/missing.rs should find a file in src/
+        let result = mapper.find_nearest_file("src/missing.rs");
+        assert!(result.is_some());
+        let found = result.unwrap();
+        assert!(
+            found.starts_with("src/"),
+            "expected src/ prefix, got {found}"
+        );
+    }
+
+    #[test]
+    fn test_find_nearest_file_no_match() {
+        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
+        let result = mapper.find_nearest_file("completely/different/path.rs");
+        assert!(result.is_none());
     }
 }

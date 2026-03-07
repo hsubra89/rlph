@@ -1,7 +1,6 @@
 //! Core orchestration loop: choose task → implement → review → submit.
 
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -837,6 +836,10 @@ impl<
                     self.submission
                         .submit_file_pr_review_comments(pr_num, &prepared_comments.file_comments)?;
                 }
+
+                for sf in &prepared_comments.standalone_findings {
+                    self.submission.post_finding_comment(pr_num, &sf.body)?;
+                }
             }
 
             self.submission
@@ -1010,26 +1013,12 @@ pub fn build_task_vars(
 struct PreparedReviewComments {
     inline_comments: Vec<InlineReviewComment>,
     file_comments: Vec<FileReviewComment>,
+    standalone_findings: Vec<StandaloneFinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct InvalidReviewCommentTarget {
-    finding_id: String,
-    file: String,
-    line: u32,
-    reason: String,
-}
-
-fn format_invalid_review_comment_targets(targets: &[InvalidReviewCommentTarget]) -> String {
-    let mut out = String::from("failed to prepare GitHub review comments:");
-    for target in targets {
-        let _ = write!(
-            out,
-            "\n- `{}` {}:{}: {}",
-            target.finding_id, target.file, target.line, target.reason
-        );
-    }
-    out
+struct StandaloneFinding {
+    body: String,
 }
 
 fn prepare_review_comments(
@@ -1046,7 +1035,6 @@ fn prepare_review_comments(
         .collect();
 
     let mut prepared = PreparedReviewComments::default();
-    let mut invalid_targets = Vec::new();
 
     for finding in findings {
         let dependency_descriptions: Vec<String> = finding
@@ -1093,22 +1081,39 @@ fn prepare_review_comments(
                     ),
                 });
             }
-            Err(e) => invalid_targets.push(InvalidReviewCommentTarget {
-                finding_id: finding.id.clone(),
-                file: finding.file.clone(),
-                line: finding.line,
-                reason: e.to_string(),
-            }),
+            Err(_) => {
+                if let Some(related_path) = mapper.find_nearest_file(&finding.file) {
+                    prepared.file_comments.push(FileReviewComment {
+                        finding_id: finding.id.clone(),
+                        original_file: finding.file.clone(),
+                        original_line: finding.line,
+                        path: related_path,
+                        body: render_inline_finding_comment_for_github(
+                            finding,
+                            &dependency_descriptions,
+                            Some(FallbackContext::RelatedFile {
+                                file: finding.file.clone(),
+                                line: finding.line,
+                            }),
+                        ),
+                    });
+                } else {
+                    prepared.standalone_findings.push(StandaloneFinding {
+                        body: render_inline_finding_comment_for_github(
+                            finding,
+                            &dependency_descriptions,
+                            Some(FallbackContext::Standalone {
+                                file: finding.file.clone(),
+                                line: finding.line,
+                            }),
+                        ),
+                    });
+                }
+            }
         }
     }
 
-    if invalid_targets.is_empty() {
-        Ok(prepared)
-    } else {
-        Err(Error::Orchestrator(format_invalid_review_comment_targets(
-            &invalid_targets,
-        )))
-    }
+    Ok(prepared)
 }
 
 /// Extract the issue number from a task ID like "gh-42".
@@ -1322,7 +1327,31 @@ mod tests {
     }
 
     #[test]
-    fn test_prepare_review_comments_errors_for_missing_file() {
+    fn test_prepare_review_comments_missing_file_produces_standalone_finding() {
+        let submission = InlineReviewTestSubmission {
+            diff: "diff --git a/src/lib.rs b/src/lib.rs\n@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3\n"
+                .to_string(),
+        };
+        let finding = ReviewFinding {
+            file: "other/missing.rs".to_string(),
+            line: 50,
+            description: "Issue in file not in diff".to_string(),
+            ..make_finding("other-file")
+        };
+
+        let result = prepare_review_comments(&submission, PrNumber::new(9), &[finding]).unwrap();
+        assert!(result.inline_comments.is_empty());
+        assert!(result.file_comments.is_empty());
+        assert_eq!(result.standalone_findings.len(), 1);
+        assert!(
+            result.standalone_findings[0].body.contains(
+                "applies to `other/missing.rs:50` which is not part of the current diff."
+            )
+        );
+    }
+
+    #[test]
+    fn test_prepare_review_comments_missing_file_with_related_file_in_diff() {
         let submission = InlineReviewTestSubmission {
             diff: "diff --git a/src/lib.rs b/src/lib.rs\n@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3\n"
                 .to_string(),
@@ -1330,14 +1359,17 @@ mod tests {
         let finding = ReviewFinding {
             file: "src/missing.rs".to_string(),
             line: 50,
-            description: "Issue in file not in diff".to_string(),
-            ..make_finding("other-file")
+            description: "Related issue".to_string(),
+            ..make_finding("related-file")
         };
 
-        let err = prepare_review_comments(&submission, PrNumber::new(9), &[finding]).unwrap_err();
-        let err = err.to_string();
-        assert!(err.contains("failed to prepare GitHub review comments"));
-        assert!(err.contains("other-file"));
-        assert!(err.contains("src/missing.rs"));
+        let result = prepare_review_comments(&submission, PrNumber::new(10), &[finding]).unwrap();
+        assert!(result.inline_comments.is_empty());
+        assert_eq!(result.file_comments.len(), 1);
+        assert_eq!(result.file_comments[0].path, "src/lib.rs");
+        assert!(result.file_comments[0].body.contains(
+            "applies to `src/missing.rs:50` which is not part of the current diff. It is shown here on a related file."
+        ));
+        assert!(result.standalone_findings.is_empty());
     }
 }

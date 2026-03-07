@@ -18,7 +18,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 ```
 
 - `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
-- `file`: path must match a file from `git diff {{base_branch}}...HEAD`. Use the current path for renamed files.
+- `file`: use the current path in the repository. For renamed files use the new path.
 - `line`: use a 1-based line number on the new/current side of the diff. Do not use deleted-line numbers or `0`.
 - `suggested_fixes`: at least one concrete, actionable fix the author can apply. Each entry is a short description of a distinct fix option.
 - `depends_on`: array of finding `id`s this finding is blocked by, or `null`.

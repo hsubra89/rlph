@@ -88,7 +88,7 @@ Add category to ReviewFinding, rewrite style review as sub-agent coordinator
 
 ## Instructions
 
-1. Run `git diff main...HEAD` to identify changed files. Only review changed code.
+1. Run `git diff main...HEAD` to identify changed files. Review the changed code and any existing code that may be affected by the changes.
 2. Check for logical bugs, off-by-one errors, incorrect conditions, missing edge cases.
 3. Verify error handling covers failure paths without silently swallowing errors.
 4. Check that tests exist for changed code and cover important branches.
@@ -97,7 +97,6 @@ Add category to ReviewFinding, rewrite style review as sub-agent coordinator
 7. Every finding MUST include at least one suggested fix in the `suggested_fixes` array. Do not report a finding if you cannot propose a concrete change.
 8. Do not report information-only observations. Every finding must be actionable — something the author should change.
 9. Consolidate closely related issues into a single finding rather than splitting them into multiple small findings. Use the description to cover all related aspects.
-10. Every finding's `file` must be a changed file from the diff, and every `line` must be a valid 1-based line number on the new/current side of that diff.
 
 ## Output
 
@@ -121,7 +120,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 ```
 
 - `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
-- `file`: path must match a file from `git diff {{base_branch}}...HEAD`. Use the current path for renamed files.
+- `file`: use the current path in the repository. For renamed files use the new path.
 - `line`: use a 1-based line number on the new/current side of the diff. Do not use deleted-line numbers or `0`.
 - `suggested_fixes`: at least one concrete, actionable fix the author can apply. Each entry is a short description of a distinct fix option.
 - `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
@@ -174,7 +173,7 @@ Add category to ReviewFinding, rewrite style review as sub-agent coordinator
 
 ## Instructions
 
-1. Run `git diff main...HEAD` to identify changed files. Only review changed code.
+1. Run `git diff main...HEAD` to identify changed files. Review the changed code and any existing code that may be affected by the changes.
 2. Check for injection vulnerabilities (command injection, SQL injection, XSS, etc.).
 3. Verify authentication and authorization are correctly enforced.
 4. Check for hardcoded secrets, credentials, or API keys.
@@ -184,7 +183,6 @@ Add category to ReviewFinding, rewrite style review as sub-agent coordinator
 8. Every finding MUST include at least one suggested fix in the `suggested_fixes` array. Do not report a finding if you cannot propose a concrete change.
 9. Do not report information-only observations. Every finding must be actionable — something the author should change.
 10. Consolidate closely related issues into a single finding rather than splitting them into multiple small findings. Use the description to cover all related aspects.
-11. Every finding's `file` must be a changed file from the diff, and every `line` must be a valid 1-based line number on the new/current side of that diff.
 
 ## Output
 
@@ -208,7 +206,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 ```
 
 - `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
-- `file`: path must match a file from `git diff {{base_branch}}...HEAD`. Use the current path for renamed files.
+- `file`: use the current path in the repository. For renamed files use the new path.
 - `line`: use a 1-based line number on the new/current side of the diff. Do not use deleted-line numbers or `0`.
 - `suggested_fixes`: at least one concrete, actionable fix the author can apply. Each entry is a short description of a distinct fix option.
 - `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
@@ -302,7 +300,7 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 ```
 
 - `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
-- `file`: path must match a file from `git diff {{base_branch}}...HEAD`. Use the current path for renamed files.
+- `file`: use the current path in the repository. For renamed files use the new path.
 - `line`: use a 1-based line number on the new/current side of the diff. Do not use deleted-line numbers or `0`.
 - `suggested_fixes`: at least one concrete, actionable fix the author can apply. Each entry is a short description of a distinct fix option.
 - `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
