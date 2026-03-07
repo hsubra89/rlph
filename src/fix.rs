@@ -398,11 +398,8 @@ pub fn fetch_and_parse_items(
         submission
             .fetch_pr_comments(pr_number)?
             .into_iter()
-            .map(|comment| PrReviewComment {
-                id: comment.id,
-                body: comment.body,
-                in_reply_to_id: comment.in_reply_to_id,
-            }),
+            .filter(|comment| comment.is_trusted())
+            .map(PrReviewComment::from),
     );
 
     // Only fetch reactions for comments that contain the finding marker
@@ -1318,7 +1315,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fetch_and_parse_items_includes_issue_comments() {
+    fn test_fetch_and_parse_items_includes_only_trusted_issue_comments() {
         struct MockSubmission {
             review_comments: Vec<PrReviewComment>,
             issue_comments: Vec<PrComment>,
@@ -1361,21 +1358,32 @@ mod tests {
         }
 
         let review_finding = make_finding("review");
-        let issue_finding = make_finding("issue");
+        let trusted_issue_finding = make_finding("issue-trusted");
+        let untrusted_issue_finding = make_finding("issue-untrusted");
         let review_comment = make_review_comment(100, &review_finding);
-        let issue_comment = serde_json::from_value(serde_json::json!({
+        let trusted_issue_comment = serde_json::from_value(serde_json::json!({
             "id": 200,
-            "body": make_review_comment(200, &issue_finding).body,
+            "body": make_review_comment(200, &trusted_issue_finding).body,
             "created_at": "1970-01-01T00:00:00Z",
             "in_reply_to_id": Option::<crate::ids::CommentId>::None,
+            "author_association": "OWNER",
         }))
-        .expect("issue comment fixture");
+        .expect("trusted issue comment fixture");
+        let untrusted_issue_comment = serde_json::from_value(serde_json::json!({
+            "id": 201,
+            "body": make_review_comment(201, &untrusted_issue_finding).body,
+            "created_at": "1970-01-01T00:00:00Z",
+            "in_reply_to_id": Option::<crate::ids::CommentId>::None,
+            "author_association": "NONE",
+        }))
+        .expect("untrusted issue comment fixture");
         let submission = MockSubmission {
             review_comments: vec![review_comment],
-            issue_comments: vec![issue_comment],
+            issue_comments: vec![trusted_issue_comment, untrusted_issue_comment],
             reactions: vec![
                 (CommentId::new(100), make_reactions(&[])),
                 (CommentId::new(200), make_reactions(&[("rocket", 7)])),
+                (CommentId::new(201), make_reactions(&[("rocket", 8)])),
             ],
         };
 
@@ -1389,9 +1397,19 @@ mod tests {
                 .any(|item| item.finding.id == "review" && item.state == FindingState::Pending)
         );
         assert!(
+            items.iter().any(
+                |item| item.finding.id == "issue-trusted" && item.state == FindingState::Queued
+            )
+        );
+        assert!(
             items
                 .iter()
-                .any(|item| item.finding.id == "issue" && item.state == FindingState::Queued)
+                .all(|item| item.finding.id != "issue-untrusted")
+        );
+        assert!(
+            comments
+                .iter()
+                .all(|comment| comment.id != CommentId::new(201))
         );
     }
 

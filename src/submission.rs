@@ -38,6 +38,16 @@ pub struct PrReviewComment {
     pub in_reply_to_id: Option<CommentId>,
 }
 
+impl From<PrComment> for PrReviewComment {
+    fn from(comment: PrComment) -> Self {
+        Self {
+            id: comment.id,
+            body: comment.body,
+            in_reply_to_id: comment.in_reply_to_id,
+        }
+    }
+}
+
 /// A GitHub reaction on a comment.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Reaction {
