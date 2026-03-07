@@ -30,6 +30,7 @@ use tokio::sync::watch;
 
 const APPROVED_AGGREGATOR_JSON: &str =
     r#"{"verdict":"approved","comment":"All looks good.","findings":[]}"#;
+const THREE_LINE_PR_DIFF: &str = "diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,3 @@\n+fn main() {}\n+let x = 1;\n+let y = 2;\n";
 
 // --- Shared tracking state ---
 
@@ -51,6 +52,14 @@ struct PostedReview {
     pr_number: PrNumber,
     event: PullRequestReviewEvent,
     comments: Vec<InlineReviewComment>,
+}
+
+fn push_review_comment(tracker: &Arc<Mutex<SubmissionTracker>>, pr_number: PrNumber, body: &str) {
+    tracker
+        .lock()
+        .unwrap()
+        .comments
+        .push((pr_number, body.to_string()));
 }
 
 // --- Mock implementations ---
@@ -397,11 +406,7 @@ impl SubmissionBackend for MockSubmission {
     }
 
     fn upsert_review_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
-        self.tracker
-            .lock()
-            .unwrap()
-            .comments
-            .push((pr_number, body.to_string()));
+        push_review_comment(&self.tracker, pr_number, body);
         Ok(())
     }
 
@@ -420,10 +425,7 @@ impl SubmissionBackend for MockSubmission {
     }
 
     fn fetch_pr_diff(&self, _pr_number: PrNumber) -> Result<String> {
-        Ok(
-            "diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,3 @@\n+fn main() {}\n+let x = 1;\n+let y = 2;\n"
-                .to_string(),
-        )
+        Ok(THREE_LINE_PR_DIFF.to_string())
     }
 }
 
@@ -459,11 +461,7 @@ impl SubmissionBackend for FailInlineReviewSubmission {
     }
 
     fn upsert_review_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
-        self.tracker
-            .lock()
-            .unwrap()
-            .comments
-            .push((pr_number, body.to_string()));
+        push_review_comment(&self.tracker, pr_number, body);
         Ok(())
     }
 
@@ -477,10 +475,7 @@ impl SubmissionBackend for FailInlineReviewSubmission {
     }
 
     fn fetch_pr_diff(&self, _pr_number: PrNumber) -> Result<String> {
-        Ok(
-            "diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,3 @@\n+fn main() {}\n+let x = 1;\n+let y = 2;\n"
-                .to_string(),
-        )
+        Ok(THREE_LINE_PR_DIFF.to_string())
     }
 }
 
