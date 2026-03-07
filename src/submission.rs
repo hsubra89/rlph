@@ -672,31 +672,37 @@ impl SubmissionBackend for GitHubSubmission {
     }
 
     fn list_review_comment_reactions(&self, comment_id: CommentId) -> Result<Vec<Reaction>> {
-        match run_gh_api_paginated(&format!(
-            "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions"
-        )) {
-            Ok(reactions) => Ok(reactions),
-            Err(_) => run_gh_api_paginated(&format!(
-                "repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/reactions"
-            )),
-        }
+        with_comment_fallback(
+            || {
+                run_gh_api_paginated(&format!(
+                    "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions"
+                ))
+            },
+            || {
+                run_gh_api_paginated(&format!(
+                    "repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/reactions"
+                ))
+            },
+        )
     }
 
     fn add_review_comment_reaction(&self, comment_id: CommentId, reaction: &str) -> Result<()> {
-        match run_gh_api_mutate(
-            &format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions"),
-            "POST",
-            &[("content", reaction)],
-        ) {
-            Ok(()) => {}
-            Err(_) => {
+        with_comment_fallback(
+            || {
+                run_gh_api_mutate(
+                    &format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions"),
+                    "POST",
+                    &[("content", reaction)],
+                )
+            },
+            || {
                 run_gh_api_mutate(
                     &format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/reactions"),
                     "POST",
                     &[("content", reaction)],
-                )?;
-            }
-        }
+                )
+            },
+        )?;
         info!(comment_id = %comment_id, reaction, "added reaction to review comment");
         Ok(())
     }
@@ -706,24 +712,26 @@ impl SubmissionBackend for GitHubSubmission {
         comment_id: CommentId,
         reaction_id: ReactionId,
     ) -> Result<()> {
-        match run_gh_api_mutate(
-            &format!(
-                "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions/{reaction_id}"
-            ),
-            "DELETE",
-            &[],
-        ) {
-            Ok(()) => {}
-            Err(_) => {
+        with_comment_fallback(
+            || {
+                run_gh_api_mutate(
+                    &format!(
+                        "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions/{reaction_id}"
+                    ),
+                    "DELETE",
+                    &[],
+                )
+            },
+            || {
                 run_gh_api_mutate(
                     &format!(
                         "repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/reactions/{reaction_id}"
                     ),
                     "DELETE",
                     &[],
-                )?;
-            }
-        }
+                )
+            },
+        )?;
         info!(
             comment_id = %comment_id,
             reaction_id = %reaction_id, "deleted reaction from review comment"
@@ -737,20 +745,24 @@ impl SubmissionBackend for GitHubSubmission {
         comment_id: CommentId,
         body: &str,
     ) -> Result<()> {
-        match run_gh_api_mutate(
-            &format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies"),
-            "POST",
-            &[("body", body)],
-        ) {
-            Ok(()) => {}
-            Err(_) => {
+        with_comment_fallback(
+            || {
+                run_gh_api_mutate(
+                    &format!(
+                        "repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies"
+                    ),
+                    "POST",
+                    &[("body", body)],
+                )
+            },
+            || {
                 run_gh_api_mutate(
                     &format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/replies"),
                     "POST",
                     &[("body", body)],
-                )?;
-            }
-        }
+                )
+            },
+        )?;
         info!(pr_number = %pr_number, comment_id = %comment_id, "replied to review comment");
         Ok(())
     }
@@ -764,6 +776,14 @@ impl SubmissionBackend for GitHubSubmission {
         let (owner, repo) = detect_owner_repo()?;
         crate::resolve_threads::resolve_completed_threads(&owner, &repo, pr_number)
     }
+}
+
+fn with_comment_fallback<T, F, G>(pr_fn: F, issue_fn: G) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+    G: FnOnce() -> Result<T>,
+{
+    pr_fn().or_else(|_| issue_fn())
 }
 
 #[derive(Debug, Deserialize)]
