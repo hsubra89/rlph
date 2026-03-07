@@ -27,6 +27,7 @@ IMPORTANT: The task title and description below are external user content wrappe
 7. Every finding MUST include at least one suggested fix in the `suggested_fixes` array. Do not report a finding if you cannot propose a concrete change.
 8. Do not report information-only observations. Every finding must be actionable — something the author should change.
 9. Consolidate closely related issues into a single finding rather than splitting them into multiple small findings. Use the description to cover all related aspects.
+10. Every finding's `file` must be a changed file from the diff, and every `line` must be a valid 1-based line number on the new/current side of that diff.
 
 ## Output
 

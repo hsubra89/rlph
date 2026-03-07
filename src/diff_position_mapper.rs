@@ -1,7 +1,6 @@
-//! Maps file line numbers to GitHub diff positions for inline review comments.
+//! Maps review findings to exact GitHub review comment targets from unified diffs.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -10,10 +9,12 @@ use regex::Regex;
 pub enum DiffPositionMapperError {
     #[error("diff parse error: {0}")]
     Parse(String),
+    #[error("invalid review line for {file}: {line}")]
+    InvalidLine { file: String, line: u32 },
     #[error("file not found in diff: {0}")]
     FileNotFound(String),
-    #[error("file has no mappable lines in diff: {0}")]
-    NoMappableLines(String),
+    #[error("file has no current commentable path in diff: {0}")]
+    NoCurrentPath(String),
 }
 
 static DIFF_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -21,49 +22,30 @@ static DIFF_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static HUNK_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@").expect("hunk header regex is valid")
+    Regex::new(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@").expect("hunk header regex is valid")
 });
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FallbackKind {
-    Exact,
-    Line,
-    File,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiffPosition {
-    pub file: String,
-    pub line: u32,
-    pub fallback: FallbackKind,
+pub enum ReviewCommentTarget {
+    Line { path: String, line: u32 },
+    File { path: String },
 }
 
 #[derive(Debug, Clone)]
 pub struct DiffPositionMapper {
-    file_hunks: HashMap<String, Vec<Hunk>>,
-    primary_paths: Vec<String>,
+    files_by_alias: HashMap<String, DiffFile>,
+}
+
+#[derive(Debug, Clone)]
+struct DiffFile {
+    current_path: Option<String>,
+    commentable_lines: HashSet<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Hunk {
-    start: u32,
-    end: u32,
-}
-
-impl Hunk {
-    fn contains(self, line: u32) -> bool {
-        (self.start..=self.end).contains(&line)
-    }
-
-    fn closest_line(self, line: u32) -> u32 {
-        if line < self.start {
-            self.start
-        } else if line > self.end {
-            self.end
-        } else {
-            line
-        }
-    }
+struct HunkCursor {
+    old_line: u32,
+    new_line: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -72,7 +54,9 @@ struct PendingFile {
     new_path: String,
     rename_from: Option<String>,
     rename_to: Option<String>,
-    hunks: Vec<Hunk>,
+    deleted: bool,
+    current_path: Option<String>,
+    commentable_lines: HashSet<u32>,
 }
 
 impl PendingFile {
@@ -82,7 +66,9 @@ impl PendingFile {
             new_path,
             rename_from: None,
             rename_to: None,
-            hunks: Vec::new(),
+            deleted: false,
+            current_path: None,
+            commentable_lines: HashSet::new(),
         }
     }
 
@@ -106,10 +92,35 @@ impl PendingFile {
             .clone()
             .unwrap_or_else(|| self.new_path.clone())
     }
+
+    fn resolved_current_path(&self) -> Option<String> {
+        if self.deleted {
+            return None;
+        }
+        self.current_path.clone().or_else(|| {
+            let primary = self.primary_path();
+            if primary == "/dev/null" {
+                None
+            } else {
+                Some(primary)
+            }
+        })
+    }
 }
 
 fn normalize_path(path: &str) -> String {
     path.trim().trim_matches('"').to_string()
+}
+
+fn normalize_patch_path(path: &str) -> String {
+    let path = normalize_path(path);
+    if path == "/dev/null" {
+        return path;
+    }
+    if let Some(stripped) = path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")) {
+        return stripped.to_string();
+    }
+    path
 }
 
 fn parse_u32(value: &str, context: &str) -> Result<u32, DiffPositionMapperError> {
@@ -118,35 +129,31 @@ fn parse_u32(value: &str, context: &str) -> Result<u32, DiffPositionMapperError>
     })
 }
 
-fn finalize_pending_file(
-    file: PendingFile,
-    file_hunks: &mut HashMap<String, Vec<Hunk>>,
-) -> (String, bool) {
-    let primary = file.primary_path();
+fn finalize_pending_file(file: PendingFile, files_by_alias: &mut HashMap<String, DiffFile>) {
     let aliases = file.aliases();
-    let mut hunks = file.hunks;
-    hunks.sort_by_key(|h| h.start);
-    let has_mappable_hunks = !hunks.is_empty();
     for alias in aliases {
-        file_hunks.insert(alias, hunks.clone());
+        files_by_alias.insert(
+            alias,
+            DiffFile {
+                current_path: file.resolved_current_path(),
+                commentable_lines: file.commentable_lines.clone(),
+            },
+        );
     }
-    (primary, has_mappable_hunks)
 }
 
 impl DiffPositionMapper {
     pub fn from_diff(diff: &str) -> Result<Self, DiffPositionMapperError> {
-        let mut file_hunks: HashMap<String, Vec<Hunk>> = HashMap::new();
-        let mut primary_paths: Vec<String> = Vec::new();
+        let mut files_by_alias: HashMap<String, DiffFile> = HashMap::new();
         let mut pending: Option<PendingFile> = None;
+        let mut cursor: Option<HunkCursor> = None;
 
         for line in diff.lines() {
             if let Some(caps) = DIFF_HEADER_RE.captures(line) {
                 if let Some(previous) = pending.take() {
-                    let (primary, has_hunks) = finalize_pending_file(previous, &mut file_hunks);
-                    if has_hunks {
-                        primary_paths.push(primary);
-                    }
+                    finalize_pending_file(previous, &mut files_by_alias);
                 }
+                cursor = None;
 
                 let old_path =
                     normalize_path(caps.get(1).expect("regex capture group exists").as_str());
@@ -165,156 +172,153 @@ impl DiffPositionMapper {
                 continue;
             }
             if let Some(rename_to) = line.strip_prefix("rename to ") {
-                current.rename_to = Some(normalize_path(rename_to));
+                let rename_to = normalize_path(rename_to);
+                current.current_path = Some(rename_to.clone());
+                current.rename_to = Some(rename_to);
+                continue;
+            }
+            if line == "deleted file mode" || line.starts_with("deleted file mode ") {
+                current.deleted = true;
+                current.current_path = None;
+                continue;
+            }
+            if let Some(path) = line.strip_prefix("+++ ") {
+                let path = normalize_patch_path(path);
+                if path == "/dev/null" {
+                    current.deleted = true;
+                    current.current_path = None;
+                } else {
+                    current.deleted = false;
+                    current.current_path = Some(path);
+                }
                 continue;
             }
             if let Some(caps) = HUNK_HEADER_RE.captures(line) {
-                let start = parse_u32(
+                let old_line = parse_u32(
                     caps.get(1).expect("regex capture group exists").as_str(),
-                    "hunk start",
+                    "hunk old start",
                 )?;
-                let count = if let Some(count_match) = caps.get(2) {
-                    parse_u32(count_match.as_str(), "hunk length")?
-                } else {
-                    1
-                };
-                if count == 0 {
-                    continue;
+                let new_line = parse_u32(
+                    caps.get(3).expect("regex capture group exists").as_str(),
+                    "hunk new start",
+                )?;
+                if let Some(count_match) = caps.get(2) {
+                    let _ = parse_u32(count_match.as_str(), "hunk old length")?;
                 }
-                let end = start.checked_add(count - 1).ok_or_else(|| {
-                    DiffPositionMapperError::Parse(format!(
-                        "hunk end overflow for start={start}, count={count}"
-                    ))
-                })?;
-                current.hunks.push(Hunk { start, end });
+                if let Some(count_match) = caps.get(4) {
+                    let _ = parse_u32(count_match.as_str(), "hunk new length")?;
+                }
+                cursor = Some(HunkCursor { old_line, new_line });
+                continue;
             }
+
+            let Some(mut hunk_cursor) = cursor else {
+                continue;
+            };
+
+            match line.as_bytes().first().copied() {
+                Some(b'+') if !line.starts_with("+++") => {
+                    current.commentable_lines.insert(hunk_cursor.new_line);
+                    hunk_cursor.new_line =
+                        hunk_cursor.new_line.checked_add(1).ok_or_else(|| {
+                            DiffPositionMapperError::Parse("new line overflow".to_string())
+                        })?;
+                }
+                Some(b' ') => {
+                    current.commentable_lines.insert(hunk_cursor.new_line);
+                    hunk_cursor.old_line =
+                        hunk_cursor.old_line.checked_add(1).ok_or_else(|| {
+                            DiffPositionMapperError::Parse("old line overflow".to_string())
+                        })?;
+                    hunk_cursor.new_line =
+                        hunk_cursor.new_line.checked_add(1).ok_or_else(|| {
+                            DiffPositionMapperError::Parse("new line overflow".to_string())
+                        })?;
+                }
+                Some(b'-') if !line.starts_with("---") => {
+                    hunk_cursor.old_line =
+                        hunk_cursor.old_line.checked_add(1).ok_or_else(|| {
+                            DiffPositionMapperError::Parse("old line overflow".to_string())
+                        })?;
+                }
+                Some(b'\\') => {}
+                _ => {}
+            }
+            cursor = Some(hunk_cursor);
         }
 
         if let Some(previous) = pending {
-            let (primary, has_hunks) = finalize_pending_file(previous, &mut file_hunks);
-            if has_hunks {
-                primary_paths.push(primary);
-            }
+            finalize_pending_file(previous, &mut files_by_alias);
         }
 
-        if !diff.trim().is_empty() && file_hunks.is_empty() {
+        if !diff.trim().is_empty() && files_by_alias.is_empty() {
             return Err(DiffPositionMapperError::Parse(
                 "diff did not contain any parseable file headers".to_string(),
             ));
         }
 
-        primary_paths.sort();
-        Ok(Self {
-            file_hunks,
-            primary_paths,
-        })
+        Ok(Self { files_by_alias })
     }
 
-    pub fn map(&self, file: &str, line: u32) -> Result<DiffPosition, DiffPositionMapperError> {
-        let normalized_file = normalize_path(file);
-        let hunks = self
-            .file_hunks
-            .get(&normalized_file)
-            .ok_or_else(|| DiffPositionMapperError::FileNotFound(normalized_file.clone()))?;
-
-        if hunks.is_empty() {
-            return Err(DiffPositionMapperError::NoMappableLines(normalized_file));
-        }
-
-        if hunks.iter().copied().any(|hunk| hunk.contains(line)) {
-            return Ok(DiffPosition {
-                file: normalized_file,
-                line,
-                fallback: FallbackKind::Exact,
-            });
-        }
-
-        let mut best_line = hunks[0].closest_line(line);
-        let mut best_distance = line.abs_diff(best_line);
-        for hunk in hunks[1..].iter().copied() {
-            let candidate = hunk.closest_line(line);
-            let distance = line.abs_diff(candidate);
-            if distance < best_distance || (distance == best_distance && candidate < best_line) {
-                best_distance = distance;
-                best_line = candidate;
-            }
-        }
-
-        let mapped_line = best_line;
-        Ok(DiffPosition {
-            file: normalized_file,
-            line: mapped_line,
-            fallback: FallbackKind::Line,
-        })
-    }
-
-    pub fn map_with_file_fallback(
+    pub fn target_for(
         &self,
         file: &str,
         line: u32,
-    ) -> Result<DiffPosition, DiffPositionMapperError> {
-        match self.map(file, line) {
-            Ok(pos) => Ok(pos),
-            Err(
-                e @ (DiffPositionMapperError::FileNotFound(_)
-                | DiffPositionMapperError::NoMappableLines(_)),
-            ) => {
-                if let Some(nearby) = self.find_nearest_file(file) {
-                    let hunks = self
-                        .file_hunks
-                        .get(&nearby)
-                        .expect("nearest file exists in file_hunks");
-                    let fallback_line = hunks[0].start;
-                    Ok(DiffPosition {
-                        file: nearby,
-                        line: fallback_line,
-                        fallback: FallbackKind::File,
-                    })
-                } else {
-                    Err(e)
-                }
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    fn find_nearest_file(&self, file: &str) -> Option<String> {
-        let path = Path::new(file);
-        let mut dir = path.parent();
-        while let Some(current_dir) = dir {
-            let candidate = self.primary_paths.iter().find(|p| {
-                Path::new(p.as_str()).parent() == Some(current_dir) && p.as_str() != file
+    ) -> Result<ReviewCommentTarget, DiffPositionMapperError> {
+        let normalized_file = normalize_path(file);
+        if line == 0 {
+            return Err(DiffPositionMapperError::InvalidLine {
+                file: normalized_file,
+                line,
             });
-            if let Some(found) = candidate {
-                return Some(found.clone());
-            }
-            dir = current_dir.parent();
         }
-        None
+
+        let diff_file = self
+            .files_by_alias
+            .get(&normalized_file)
+            .ok_or_else(|| DiffPositionMapperError::FileNotFound(normalized_file.clone()))?;
+
+        let current_path = diff_file
+            .current_path
+            .clone()
+            .ok_or_else(|| DiffPositionMapperError::NoCurrentPath(normalized_file.clone()))?;
+
+        if diff_file.commentable_lines.contains(&line) {
+            return Ok(ReviewCommentTarget::Line {
+                path: current_path,
+                line,
+            });
+        }
+
+        Ok(ReviewCommentTarget::File { path: current_path })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffPositionMapper, DiffPositionMapperError, FallbackKind};
+    use super::{DiffPositionMapper, DiffPositionMapperError, ReviewCommentTarget};
 
     const REALISTIC_UNIFIED_DIFF: &str =
         include_str!("../tests/fixtures/diff_position_mapper/realistic_unified.diff");
 
     #[test]
-    fn test_map_returns_exact_line_when_request_is_within_hunk() {
+    fn test_target_for_returns_exact_line_when_request_is_commentable() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
-        let mapped = mapper.map("src/foo.rs", 4).unwrap();
+        let mapped = mapper.target_for("src/foo.rs", 4).unwrap();
 
-        assert_eq!(mapped.file, "src/foo.rs");
-        assert_eq!(mapped.line, 4);
-        assert_eq!(mapped.fallback, FallbackKind::Exact);
+        assert_eq!(
+            mapped,
+            ReviewCommentTarget::Line {
+                path: "src/foo.rs".to_string(),
+                line: 4,
+            }
+        );
     }
 
     #[test]
-    fn test_map_returns_error_for_file_missing_from_diff() {
+    fn test_target_for_returns_error_for_file_missing_from_diff() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
-        let err = mapper.map("src/missing.rs", 10).unwrap_err();
+        let err = mapper.target_for("src/missing.rs", 10).unwrap_err();
 
         assert_eq!(
             err,
@@ -323,80 +327,129 @@ mod tests {
     }
 
     #[test]
-    fn test_map_uses_nearest_line_fallback_before_first_hunk() {
+    fn test_target_for_falls_back_to_file_comment_before_first_hunk() {
         let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
-        let mapped = mapper.map("src/foo.rs", 1).unwrap();
+        let mapped = mapper.target_for("src/foo.rs", 1).unwrap();
 
-        assert_eq!(mapped.line, 3);
-        assert_eq!(mapped.fallback, FallbackKind::Line);
-    }
-
-    #[test]
-    fn test_map_uses_nearest_line_fallback_between_hunks() {
-        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
-        let mapped = mapper.map("src/foo.rs", 10).unwrap();
-
-        assert_eq!(mapped.line, 7);
-        assert_eq!(mapped.fallback, FallbackKind::Line);
-    }
-
-    #[test]
-    fn test_map_uses_nearest_line_fallback_after_last_hunk() {
-        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
-        let mapped = mapper.map("src/foo.rs", 99).unwrap();
-
-        assert_eq!(mapped.line, 23);
-        assert_eq!(mapped.fallback, FallbackKind::Line);
-    }
-
-    #[test]
-    fn test_map_handles_first_and_last_lines_of_hunk() {
-        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
-
-        let first = mapper.map("src/foo.rs", 3).unwrap();
-        assert_eq!(first.line, 3);
-        assert_eq!(first.fallback, FallbackKind::Exact);
-
-        let last = mapper.map("src/foo.rs", 7).unwrap();
-        assert_eq!(last.line, 7);
-        assert_eq!(last.fallback, FallbackKind::Exact);
-    }
-
-    #[test]
-    fn test_map_handles_single_line_hunk() {
-        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
-
-        let exact = mapper.map("src/single.rs", 42).unwrap();
-        assert_eq!(exact.line, 42);
-        assert_eq!(exact.fallback, FallbackKind::Exact);
-
-        let fallback = mapper.map("src/single.rs", 44).unwrap();
-        assert_eq!(fallback.line, 42);
-        assert_eq!(fallback.fallback, FallbackKind::Line);
-    }
-
-    #[test]
-    fn test_map_handles_renamed_files() {
-        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
-
-        let mapped_new_path = mapper.map("src/new_name.rs", 8).unwrap();
-        assert_eq!(mapped_new_path.file, "src/new_name.rs");
-        assert_eq!(mapped_new_path.line, 8);
-        assert_eq!(mapped_new_path.fallback, FallbackKind::Exact);
-
-        let mapped_old_path = mapper.map("src/old_name.rs", 7).unwrap();
-        assert_eq!(mapped_old_path.file, "src/old_name.rs");
-        assert_eq!(mapped_old_path.line, 7);
-        assert_eq!(mapped_old_path.fallback, FallbackKind::Exact);
-    }
-
-    #[test]
-    fn test_map_reports_no_mappable_lines_for_deletions_only_hunks() {
-        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
-        let err = mapper.map("src/deletions_only.rs", 10).unwrap_err();
         assert_eq!(
-            err,
-            DiffPositionMapperError::NoMappableLines("src/deletions_only.rs".to_string())
+            mapped,
+            ReviewCommentTarget::File {
+                path: "src/foo.rs".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_target_for_falls_back_to_file_comment_between_hunks() {
+        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
+        let mapped = mapper.target_for("src/foo.rs", 10).unwrap();
+
+        assert_eq!(
+            mapped,
+            ReviewCommentTarget::File {
+                path: "src/foo.rs".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_target_for_falls_back_to_file_comment_after_last_hunk() {
+        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
+        let mapped = mapper.target_for("src/foo.rs", 99).unwrap();
+
+        assert_eq!(
+            mapped,
+            ReviewCommentTarget::File {
+                path: "src/foo.rs".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_target_for_handles_first_and_last_lines_of_hunk() {
+        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
+
+        let first = mapper.target_for("src/foo.rs", 3).unwrap();
+        assert_eq!(
+            first,
+            ReviewCommentTarget::Line {
+                path: "src/foo.rs".to_string(),
+                line: 3,
+            }
+        );
+
+        let last = mapper.target_for("src/foo.rs", 7).unwrap();
+        assert_eq!(
+            last,
+            ReviewCommentTarget::Line {
+                path: "src/foo.rs".to_string(),
+                line: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn test_target_for_handles_single_line_hunk() {
+        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
+
+        let exact = mapper.target_for("src/single.rs", 42).unwrap();
+        assert_eq!(
+            exact,
+            ReviewCommentTarget::Line {
+                path: "src/single.rs".to_string(),
+                line: 42,
+            }
+        );
+
+        let fallback = mapper.target_for("src/single.rs", 44).unwrap();
+        assert_eq!(
+            fallback,
+            ReviewCommentTarget::File {
+                path: "src/single.rs".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_target_for_handles_renamed_files() {
+        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
+
+        let mapped_new_path = mapper.target_for("src/new_name.rs", 8).unwrap();
+        assert_eq!(
+            mapped_new_path,
+            ReviewCommentTarget::Line {
+                path: "src/new_name.rs".to_string(),
+                line: 8,
+            }
+        );
+
+        let mapped_old_path = mapper.target_for("src/old_name.rs", 7).unwrap();
+        assert_eq!(
+            mapped_old_path,
+            ReviewCommentTarget::Line {
+                path: "src/new_name.rs".to_string(),
+                line: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn test_target_for_uses_file_comment_for_deletions_only_hunks_on_changed_file() {
+        let diff = "\
+diff --git a/src/deletions_only.rs b/src/deletions_only.rs
+index aaaaaaa..bbbbbbb 100644
+--- a/src/deletions_only.rs
++++ b/src/deletions_only.rs
+@@ -10,2 +10,0 @@
+-old1
+-old2
+";
+        let mapper = DiffPositionMapper::from_diff(diff).unwrap();
+        assert_eq!(
+            mapper.target_for("src/deletions_only.rs", 10).unwrap(),
+            ReviewCommentTarget::File {
+                path: "src/deletions_only.rs".to_string(),
+            }
         );
     }
 
@@ -419,14 +472,17 @@ mod tests {
 +line 2
 "#;
         let mapper = DiffPositionMapper::from_diff(diff).unwrap();
-        let mapped = mapper.map("src/file with spaces.rs", 2).unwrap();
-        assert_eq!(mapped.file, "src/file with spaces.rs");
-        assert_eq!(mapped.line, 2);
-        assert_eq!(mapped.fallback, FallbackKind::Exact);
+        assert_eq!(
+            mapper.target_for("src/file with spaces.rs", 2).unwrap(),
+            ReviewCommentTarget::Line {
+                path: "src/file with spaces.rs".to_string(),
+                line: 2,
+            }
+        );
     }
 
     #[test]
-    fn test_map_keeps_real_leading_a_path_component_distinct() {
+    fn test_target_for_keeps_real_leading_a_path_component_distinct() {
         let diff = r#"diff --git a/src/lib.rs b/src/lib.rs
 @@ -1,0 +1,1 @@
 +first
@@ -436,19 +492,25 @@ diff --git a/a/src/lib.rs b/a/src/lib.rs
 "#;
         let mapper = DiffPositionMapper::from_diff(diff).unwrap();
 
-        let mapped_root = mapper.map("src/lib.rs", 1).unwrap();
-        assert_eq!(mapped_root.file, "src/lib.rs");
-        assert_eq!(mapped_root.line, 1);
-        assert_eq!(mapped_root.fallback, FallbackKind::Exact);
+        assert_eq!(
+            mapper.target_for("src/lib.rs", 1).unwrap(),
+            ReviewCommentTarget::Line {
+                path: "src/lib.rs".to_string(),
+                line: 1,
+            }
+        );
 
-        let mapped_nested = mapper.map("a/src/lib.rs", 10).unwrap();
-        assert_eq!(mapped_nested.file, "a/src/lib.rs");
-        assert_eq!(mapped_nested.line, 10);
-        assert_eq!(mapped_nested.fallback, FallbackKind::Exact);
+        assert_eq!(
+            mapper.target_for("a/src/lib.rs", 10).unwrap(),
+            ReviewCommentTarget::Line {
+                path: "a/src/lib.rs".to_string(),
+                line: 10,
+            }
+        );
     }
 
     #[test]
-    fn test_map_keeps_real_leading_b_path_component_distinct() {
+    fn test_target_for_keeps_real_leading_b_path_component_distinct() {
         let diff = r#"diff --git a/src/main.rs b/src/main.rs
 @@ -1,0 +1,1 @@
 +first
@@ -458,71 +520,51 @@ diff --git a/b/src/main.rs b/b/src/main.rs
 "#;
         let mapper = DiffPositionMapper::from_diff(diff).unwrap();
 
-        let mapped_root = mapper.map("src/main.rs", 1).unwrap();
-        assert_eq!(mapped_root.file, "src/main.rs");
-        assert_eq!(mapped_root.line, 1);
-        assert_eq!(mapped_root.fallback, FallbackKind::Exact);
-
-        let mapped_nested = mapper.map("b/src/main.rs", 20).unwrap();
-        assert_eq!(mapped_nested.file, "b/src/main.rs");
-        assert_eq!(mapped_nested.line, 20);
-        assert_eq!(mapped_nested.fallback, FallbackKind::Exact);
-    }
-
-    #[test]
-    fn test_map_with_file_fallback_finds_sibling_file() {
-        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
-        let mapped = mapper.map_with_file_fallback("src/missing.rs", 50).unwrap();
-
-        assert_eq!(mapped.file, "src/foo.rs");
-        assert_eq!(mapped.line, 3);
-        assert_eq!(mapped.fallback, FallbackKind::File);
-    }
-
-    #[test]
-    fn test_map_with_file_fallback_traverses_up() {
-        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
-        let mapped = mapper
-            .map_with_file_fallback("src/deep/nested/missing.rs", 10)
-            .unwrap();
-
-        // No files in src/deep/nested/ or src/deep/, traverses up to src/ → picks src/foo.rs (first alphabetically)
-        assert_eq!(mapped.file, "src/foo.rs");
-        assert_eq!(mapped.line, 3);
-        assert_eq!(mapped.fallback, FallbackKind::File);
-    }
-
-    #[test]
-    fn test_map_with_file_fallback_errors_when_no_files_anywhere() {
-        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
-        let err = mapper
-            .map_with_file_fallback("completely/different/tree.rs", 1)
-            .unwrap_err();
+        assert_eq!(
+            mapper.target_for("src/main.rs", 1).unwrap(),
+            ReviewCommentTarget::Line {
+                path: "src/main.rs".to_string(),
+                line: 1,
+            }
+        );
 
         assert_eq!(
-            err,
-            DiffPositionMapperError::FileNotFound("completely/different/tree.rs".to_string())
+            mapper.target_for("b/src/main.rs", 20).unwrap(),
+            ReviewCommentTarget::Line {
+                path: "b/src/main.rs".to_string(),
+                line: 20,
+            }
         );
     }
 
     #[test]
-    fn test_map_with_file_fallback_skips_deletion_only_files() {
+    fn test_target_for_rejects_invalid_zero_line() {
+        let mapper = DiffPositionMapper::from_diff(REALISTIC_UNIFIED_DIFF).unwrap();
+        assert_eq!(
+            mapper.target_for("src/foo.rs", 0).unwrap_err(),
+            DiffPositionMapperError::InvalidLine {
+                file: "src/foo.rs".to_string(),
+                line: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn test_target_for_rejects_deleted_files_without_current_path() {
         let diff = "\
-diff --git a/src/deletions_only.rs b/src/deletions_only.rs
-@@ -10,2 +10,0 @@ fn gone() {
+diff --git a/src/deleted.rs b/src/deleted.rs
+deleted file mode 100644
+index 1234567..0000000
+--- a/src/deleted.rs
++++ /dev/null
+@@ -1,2 +0,0 @@
 -old1
 -old2
-diff --git a/src/real.rs b/src/real.rs
-@@ -1,0 +1,2 @@
-+a
-+b
 ";
         let mapper = DiffPositionMapper::from_diff(diff).unwrap();
-        let mapped = mapper.map_with_file_fallback("src/missing.rs", 5).unwrap();
-
-        // src/deletions_only.rs has no mappable hunks so it shouldn't be a fallback target
-        assert_eq!(mapped.file, "src/real.rs");
-        assert_eq!(mapped.line, 1);
-        assert_eq!(mapped.fallback, FallbackKind::File);
+        assert_eq!(
+            mapper.target_for("src/deleted.rs", 1).unwrap_err(),
+            DiffPositionMapperError::NoCurrentPath("src/deleted.rs".to_string())
+        );
     }
 }

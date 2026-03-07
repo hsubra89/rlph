@@ -336,7 +336,7 @@ pub fn render_inline_finding_comment_for_github(
         Some(FallbackContext::File { file, line }) => {
             write!(
                 body,
-                "\n\n> [!NOTE]\n> This finding applies to `{file}:{line}` but is shown here because that file is not in the diff."
+                "\n\n> [!NOTE]\n> This finding applies to `{file}:{line}` but is shown as a file-level comment because that location is not commentable in the diff."
             )
             .unwrap();
         }
@@ -1210,7 +1210,7 @@ mod tests {
         assert!(body.contains("### 🔴 CRITICAL (correctness)"));
         assert!(body.contains("`file-fallback` — Issue in missing file"));
         assert!(body.contains(
-            "> [!NOTE]\n> This finding applies to `src/missing.rs:42` but is shown here because that file is not in the diff."
+            "> [!NOTE]\n> This finding applies to `src/missing.rs:42` but is shown as a file-level comment because that location is not commentable in the diff."
         ));
     }
 

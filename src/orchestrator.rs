@@ -1,6 +1,7 @@
 //! Core orchestration loop: choose task → implement → review → submit.
 
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -11,8 +12,7 @@ use tracing::{info, warn};
 
 use crate::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
 use crate::deps::DependencyGraph;
-use crate::diff_position_mapper::DiffPositionMapper;
-use crate::diff_position_mapper::FallbackKind;
+use crate::diff_position_mapper::{DiffPositionMapper, ReviewCommentTarget};
 use crate::error::{Error, Result};
 use crate::ids::{IssueNumber, PrNumber};
 use crate::prompts::PromptEngine;
@@ -28,7 +28,8 @@ use crate::runner::{
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
 use crate::submission::{
-    InlineReviewComment, PullRequestReviewEvent, REVIEW_MARKER, SubmissionBackend,
+    FileReviewComment, InlineReviewComment, PullRequestReviewEvent, REVIEW_MARKER,
+    SubmissionBackend,
 };
 use crate::worktree::{WorktreeInfo, WorktreeManager};
 
@@ -818,18 +819,23 @@ impl<
             && !self.config.dry_run
         {
             if !agg_output.findings.is_empty() {
-                let inline_comments =
-                    build_inline_review_comments(&self.submission, pr_num, &agg_output.findings)?;
+                let prepared_comments =
+                    prepare_review_comments(&self.submission, pr_num, &agg_output.findings)?;
 
-                if !inline_comments.is_empty() {
+                if !prepared_comments.inline_comments.is_empty() {
                     // Always use COMMENT event: the GitHub API returns 422
                     // when the PR author uses REQUEST_CHANGES on their own PR.
                     let review_event = PullRequestReviewEvent::Comment;
                     self.submission.submit_inline_pr_review(
                         pr_num,
                         review_event,
-                        &inline_comments,
+                        &prepared_comments.inline_comments,
                     )?;
+                }
+
+                if !prepared_comments.file_comments.is_empty() {
+                    self.submission
+                        .submit_file_pr_review_comments(pr_num, &prepared_comments.file_comments)?;
                 }
             }
 
@@ -1000,11 +1006,37 @@ pub fn build_task_vars(
     ])
 }
 
-fn build_inline_review_comments(
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct PreparedReviewComments {
+    inline_comments: Vec<InlineReviewComment>,
+    file_comments: Vec<FileReviewComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InvalidReviewCommentTarget {
+    finding_id: String,
+    file: String,
+    line: u32,
+    reason: String,
+}
+
+fn format_invalid_review_comment_targets(targets: &[InvalidReviewCommentTarget]) -> String {
+    let mut out = String::from("failed to prepare GitHub review comments:");
+    for target in targets {
+        let _ = write!(
+            out,
+            "\n- `{}` {}:{}: {}",
+            target.finding_id, target.file, target.line, target.reason
+        );
+    }
+    out
+}
+
+fn prepare_review_comments(
     submission: &(impl SubmissionBackend + ?Sized),
     pr_number: PrNumber,
     findings: &[ReviewFinding],
-) -> Result<Vec<InlineReviewComment>> {
+) -> Result<PreparedReviewComments> {
     let diff = submission.fetch_pr_diff(pr_number)?;
     let mapper = DiffPositionMapper::from_diff(&diff)?;
 
@@ -1013,57 +1045,70 @@ fn build_inline_review_comments(
         .map(|finding| (finding.id.as_str(), finding))
         .collect();
 
-    Ok(findings
-        .iter()
-        .filter_map(|finding| {
-            let mapped = match mapper.map_with_file_fallback(&finding.file, finding.line) {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!(
-                        finding_id = %finding.id,
-                        file = %finding.file,
-                        error = %e,
-                        "skipping inline comment for unmappable finding"
-                    );
-                    return None;
-                }
-            };
-            let dependency_descriptions: Vec<String> = finding
-                .depends_on
-                .iter()
-                .map(|dep_id| {
-                    findings_by_id
-                        .get(dep_id.as_str())
-                        .map(|dep| format!("`{dep_id}`: {}", dep.description))
-                        .unwrap_or_else(|| format!("`{dep_id}`"))
-                })
-                .collect();
-            let dependency_descriptions: Vec<&str> =
-                dependency_descriptions.iter().map(|s| s.as_str()).collect();
+    let mut prepared = PreparedReviewComments::default();
+    let mut invalid_targets = Vec::new();
 
-            let fallback = match mapped.fallback {
-                FallbackKind::Exact => None,
-                FallbackKind::Line => Some(FallbackContext::Line(finding.line)),
-                FallbackKind::File => Some(FallbackContext::File {
-                    file: finding.file.clone(),
-                    line: finding.line,
-                }),
-            };
-
-            Some(InlineReviewComment {
-                finding_id: finding.id.clone(),
-                original_file: finding.file.clone(),
-                original_line: finding.line,
-                path: mapped.file,
-                line: mapped.line,
-                body: render_inline_finding_comment_for_github(
-                    finding,
-                    &dependency_descriptions,
-                    fallback,
-                ),
+    for finding in findings {
+        let dependency_descriptions: Vec<String> = finding
+            .depends_on
+            .iter()
+            .map(|dep_id| {
+                findings_by_id
+                    .get(dep_id.as_str())
+                    .map(|dep| format!("`{dep_id}`: {}", dep.description))
+                    .unwrap_or_else(|| format!("`{dep_id}`"))
             })
-        })
-        .collect())
+            .collect();
+        let dependency_descriptions: Vec<&str> =
+            dependency_descriptions.iter().map(|s| s.as_str()).collect();
+
+        match mapper.target_for(&finding.file, finding.line) {
+            Ok(ReviewCommentTarget::Line { path, line }) => {
+                prepared.inline_comments.push(InlineReviewComment {
+                    finding_id: finding.id.clone(),
+                    original_file: finding.file.clone(),
+                    original_line: finding.line,
+                    path,
+                    line,
+                    body: render_inline_finding_comment_for_github(
+                        finding,
+                        &dependency_descriptions,
+                        None,
+                    ),
+                });
+            }
+            Ok(ReviewCommentTarget::File { path }) => {
+                prepared.file_comments.push(FileReviewComment {
+                    finding_id: finding.id.clone(),
+                    original_file: finding.file.clone(),
+                    original_line: finding.line,
+                    path,
+                    body: render_inline_finding_comment_for_github(
+                        finding,
+                        &dependency_descriptions,
+                        Some(FallbackContext::File {
+                            file: finding.file.clone(),
+                            line: finding.line,
+                        }),
+                    ),
+                });
+            }
+            Err(e) => invalid_targets.push(InvalidReviewCommentTarget {
+                finding_id: finding.id.clone(),
+                file: finding.file.clone(),
+                line: finding.line,
+                reason: e.to_string(),
+            }),
+        }
+    }
+
+    if invalid_targets.is_empty() {
+        Ok(prepared)
+    } else {
+        Err(Error::Orchestrator(format_invalid_review_comment_targets(
+            &invalid_targets,
+        )))
+    }
 }
 
 /// Extract the issue number from a task ID like "gh-42".
@@ -1217,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_inline_review_comments_renders_dependency_prose() {
+    fn test_prepare_review_comments_renders_dependency_prose() {
         let submission = InlineReviewTestSubmission {
             diff:
                 "diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3\n"
@@ -1237,13 +1282,14 @@ mod tests {
             ..make_finding("follow-up")
         };
 
-        let comments = build_inline_review_comments(
+        let comments = prepare_review_comments(
             &submission,
             PrNumber::new(7),
             &[dep.clone(), finding.clone()],
         )
         .unwrap();
         let body = comments
+            .inline_comments
             .iter()
             .find(|c| c.body.contains("Use after free"))
             .expect("expected follow-up comment");
@@ -1254,7 +1300,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_inline_review_comments_adds_fallback_note() {
+    fn test_prepare_review_comments_adds_file_level_fallback_note() {
         let submission = InlineReviewTestSubmission {
             diff: "diff --git a/src/lib.rs b/src/lib.rs\n@@ -0,0 +10,2 @@\n+line10\n+line11\n"
                 .to_string(),
@@ -1266,17 +1312,17 @@ mod tests {
             ..make_finding("outside-hunk")
         };
 
-        let comments =
-            build_inline_review_comments(&submission, PrNumber::new(8), &[finding]).unwrap();
-        assert_eq!(comments.len(), 1);
-        assert_eq!(comments[0].line, 11);
-        assert!(comments[0].body.contains(
-            "applies to line 100 but is shown here because that line is not in the diff"
+        let comments = prepare_review_comments(&submission, PrNumber::new(8), &[finding]).unwrap();
+        assert!(comments.inline_comments.is_empty());
+        assert_eq!(comments.file_comments.len(), 1);
+        assert_eq!(comments.file_comments[0].path, "src/lib.rs");
+        assert!(comments.file_comments[0].body.contains(
+            "applies to `src/lib.rs:100` but is shown as a file-level comment because that location is not commentable in the diff"
         ));
     }
 
     #[test]
-    fn test_build_inline_review_comments_adds_file_fallback_note() {
+    fn test_prepare_review_comments_errors_for_missing_file() {
         let submission = InlineReviewTestSubmission {
             diff: "diff --git a/src/lib.rs b/src/lib.rs\n@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3\n"
                 .to_string(),
@@ -1288,13 +1334,10 @@ mod tests {
             ..make_finding("other-file")
         };
 
-        let comments =
-            build_inline_review_comments(&submission, PrNumber::new(9), &[finding]).unwrap();
-        assert_eq!(comments.len(), 1);
-        assert_eq!(comments[0].path, "src/lib.rs");
-        assert_eq!(comments[0].line, 1);
-        assert!(comments[0].body.contains(
-            "applies to `src/missing.rs:50` but is shown here because that file is not in the diff"
-        ));
+        let err = prepare_review_comments(&submission, PrNumber::new(9), &[finding]).unwrap_err();
+        let err = err.to_string();
+        assert!(err.contains("failed to prepare GitHub review comments"));
+        assert!(err.contains("other-file"));
+        assert!(err.contains("src/missing.rs"));
     }
 }
