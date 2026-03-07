@@ -66,6 +66,21 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         Arc::clone(&correction_runner),
         setup_script,
     );
+    let model_tag = config.fix.agent_model.as_deref().unwrap_or("(default)");
+    let mut extras = Vec::new();
+    if let Some(ref e) = config.fix.agent_effort {
+        extras.push(format!("effort={e}"));
+    }
+    if let Some(ref v) = config.fix.agent_variant {
+        extras.push(format!("variant={v}"));
+    }
+    let suffix = if extras.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", extras.join(", "))
+    };
+    eprintln!("[rlph] fix: {}@{}{}", model_tag, config.fix.runner, suffix);
+
     let poll_duration = config.poll_seconds;
 
     let mut completed: HashSet<String> = HashSet::new();

@@ -670,6 +670,24 @@ impl<
                 .review_factory
                 .create_phase_runner(phase_config, self.config.agent_timeout_retries);
 
+            let model_tag = phase_config.agent_model.as_deref().unwrap_or("(default)");
+            let mut extras = Vec::new();
+            if let Some(ref e) = phase_config.agent_effort {
+                extras.push(format!("effort={e}"));
+            }
+            if let Some(ref v) = phase_config.agent_variant {
+                extras.push(format!("variant={v}"));
+            }
+            let suffix = if extras.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", extras.join(", "))
+            };
+            eprintln!(
+                "[rlph] review phase \"{}\": {}@{}{}",
+                phase_config.name, model_tag, phase_config.runner, suffix
+            );
+
             let mut phase_vars = vars.clone();
             phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());
             phase_vars.insert("pr_number".to_string(), pr_number_str.clone());

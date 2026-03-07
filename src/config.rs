@@ -277,9 +277,16 @@ fn runner_default_model(runner: RunnerKind) -> Option<&'static str> {
 
 fn runner_default_effort(runner: RunnerKind) -> Option<&'static str> {
     match runner {
-        RunnerKind::Codex => None,
+        RunnerKind::Codex => Some("high"),
         RunnerKind::Claude => Some("high"),
         RunnerKind::OpenCode => None,
+    }
+}
+
+fn runner_default_variant(runner: RunnerKind) -> Option<&'static str> {
+    match runner {
+        RunnerKind::OpenCode => Some("high"),
+        RunnerKind::Claude | RunnerKind::Codex => None,
     }
 }
 
@@ -329,7 +336,10 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
     let global_effort = global_effort_override
         .clone()
         .or_else(|| default_effort.map(str::to_string));
-    let global_variant = global_variant_override.clone();
+    let default_variant = runner_default_variant(runner);
+    let global_variant = global_variant_override
+        .clone()
+        .or_else(|| default_variant.map(str::to_string));
     let global_timeout = build
         .and_then(|b| b.agent_timeout)
         .or(file.agent_timeout)
@@ -382,7 +392,10 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
                     .agent_effort
                     .or_else(|| global_effort_override.clone())
                     .or_else(|| runner_effort.map(str::to_string)),
-                agent_variant: p.agent_variant.or_else(|| global_variant_override.clone()),
+                agent_variant: p
+                    .agent_variant
+                    .or_else(|| global_variant_override.clone())
+                    .or_else(|| runner_default_variant(effective_runner).map(str::to_string)),
                 agent_timeout: p.agent_timeout.map(Duration::from_secs).or(global_timeout),
                 runner: effective_runner,
             })
@@ -413,7 +426,10 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
                     .agent_effort
                     .or_else(|| global_effort_override.clone())
                     .or_else(|| runner_effort.map(str::to_string)),
-                agent_variant: s.agent_variant.or_else(|| global_variant_override.clone()),
+                agent_variant: s
+                    .agent_variant
+                    .or_else(|| global_variant_override.clone())
+                    .or_else(|| runner_default_variant(effective_runner).map(str::to_string)),
                 agent_timeout: s.agent_timeout.map(Duration::from_secs).or(global_timeout),
                 runner: effective_runner,
             })
