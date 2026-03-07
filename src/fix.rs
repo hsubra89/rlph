@@ -255,9 +255,8 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                     run_batch_fix(shared, prepared_items, pr_number, worktree_path, fix_branch)
                         .await;
 
-                // Reset worktree to remote state for the next batch
-                if let Err(e) = wm.reset_to_remote(worktree_path, &shared.pr_branch) {
-                    warn!(error = %e, "failed to reset worktree between batches");
+                if !recover_shared_worktree(wm, worktree_path, &shared.pr_branch, fix_branch) {
+                    break;
                 }
 
                 for id in &batch_completed {
@@ -290,6 +289,74 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
             }
             ScheduleAction::Idle => {
                 break;
+            }
+        }
+    }
+}
+
+fn recover_shared_worktree(
+    wm: &WorktreeManager,
+    worktree_path: &Path,
+    pr_branch: &str,
+    fix_branch: &str,
+) -> bool {
+    match wm.reset_to_remote(worktree_path, pr_branch) {
+        Ok(()) => true,
+        Err(reset_error) => {
+            eprintln!(
+                "[rlph] Failed to reset shared fix worktree at {}: {reset_error}. Recreating it before the next batch.",
+                worktree_path.display()
+            );
+            warn!(
+                error = %reset_error,
+                path = %worktree_path.display(),
+                "failed to reset worktree between batches; recreating shared worktree"
+            );
+
+            if let Err(remove_error) = wm.remove(worktree_path) {
+                warn!(
+                    error = %remove_error,
+                    path = %worktree_path.display(),
+                    "failed to remove shared worktree before recreation"
+                );
+            }
+            if worktree_path.exists()
+                && let Err(remove_error) = std::fs::remove_dir_all(worktree_path)
+            {
+                eprintln!(
+                    "[rlph] Failed to remove broken shared fix worktree at {} before recreation: {remove_error}",
+                    worktree_path.display()
+                );
+                warn!(
+                    error = %remove_error,
+                    path = %worktree_path.display(),
+                    "failed to remove broken shared worktree directory before recreation"
+                );
+                return false;
+            }
+
+            match wm.create_fresh(fix_branch, pr_branch) {
+                Ok(_) => {
+                    info!(
+                        path = %worktree_path.display(),
+                        branch = fix_branch,
+                        "recreated shared fix worktree after reset failure"
+                    );
+                    true
+                }
+                Err(recreate_error) => {
+                    eprintln!(
+                        "[rlph] Failed to recreate shared fix worktree at {} after reset failure: {recreate_error}",
+                        worktree_path.display()
+                    );
+                    warn!(
+                        reset_error = %reset_error,
+                        recreate_error = %recreate_error,
+                        path = %worktree_path.display(),
+                        "failed to recreate shared worktree after reset failure"
+                    );
+                    false
+                }
             }
         }
     }
@@ -1073,6 +1140,8 @@ async fn push_to_pr_branch_with_retry(
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use super::*;
 
     use crate::fix_comment::{FindingState, build_fix_items_from_review_comments};
@@ -1081,6 +1150,39 @@ mod tests {
         NoopCorrectionRunner, NoopSubmission, make_finding, make_finding_critical,
         make_finding_with_deps, make_reactions, make_review_comment, make_test_config,
     };
+
+    fn run_git(cwd: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_repo() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        let repo_path = repo.path();
+
+        run_git(repo_path, &["init"]);
+        run_git(repo_path, &["config", "user.email", "test@test.com"]);
+        run_git(repo_path, &["config", "user.name", "Test"]);
+
+        std::fs::write(repo_path.join("README.md"), "# test").unwrap();
+        run_git(repo_path, &["add", "."]);
+        run_git(repo_path, &["commit", "-m", "init"]);
+        run_git(repo_path, &["branch", "-M", "main"]);
+
+        let repo_str = repo_path.to_str().unwrap();
+        run_git(repo_path, &["remote", "add", "origin", repo_str]);
+
+        repo
+    }
 
     #[test]
     fn test_fix_branch_name_is_valid() {
@@ -1440,6 +1542,35 @@ mod tests {
                     if finding_id == "crit-finding"
             ),
             "expected batch failure to preserve finding severity, got: {batch_error:?}"
+        );
+    }
+
+    #[test]
+    fn test_reset_failure_recreates_shared_worktree() {
+        let repo = init_git_repo();
+        let worktree_base = tempfile::tempdir().unwrap();
+        let wm = WorktreeManager::new(
+            repo.path().to_path_buf(),
+            worktree_base.path().to_path_buf(),
+            "main".to_string(),
+        );
+        let fix_branch = "rlph-fix-main";
+        let worktree_path = worktree_base.path().join(fix_branch);
+
+        std::fs::create_dir_all(&worktree_path).unwrap();
+        std::fs::write(worktree_path.join("leftover.txt"), "dirty").unwrap();
+
+        assert!(
+            recover_shared_worktree(&wm, &worktree_path, "main", fix_branch),
+            "expected worktree recovery to succeed"
+        );
+
+        assert!(worktree_path.join(".git").exists());
+        assert!(!worktree_path.join("leftover.txt").exists());
+        let status = git_in_dir(&worktree_path, &["status", "--porcelain"]).unwrap();
+        assert!(
+            status.trim().is_empty(),
+            "expected clean worktree, got: {status}"
         );
     }
 }
