@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -40,7 +41,7 @@ pub struct DiffPositionMapper {
 #[derive(Debug, Clone)]
 struct DiffFile {
     current_path: Option<String>,
-    commentable_lines: HashSet<u32>,
+    commentable_lines: Arc<HashSet<u32>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,12 +133,14 @@ fn parse_u32(value: &str, context: &str) -> Result<u32, DiffPositionMapperError>
 
 fn finalize_pending_file(file: PendingFile, files_by_alias: &mut HashMap<String, DiffFile>) {
     let aliases = file.aliases();
+    let resolved_current_path = file.resolved_current_path();
+    let commentable_lines = Arc::new(file.commentable_lines);
     for alias in aliases {
         files_by_alias.insert(
             alias,
             DiffFile {
-                current_path: file.resolved_current_path(),
-                commentable_lines: file.commentable_lines.clone(),
+                current_path: resolved_current_path.clone(),
+                commentable_lines: Arc::clone(&commentable_lines),
             },
         );
     }
