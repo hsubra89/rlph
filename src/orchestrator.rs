@@ -1231,6 +1231,7 @@ pub fn parse_issue_number(task_id: &str) -> Result<IssueNumber> {
 fn collect_existing_finding_ids(comments: &[PrComment]) -> HashSet<String> {
     comments
         .iter()
+        .filter(|comment| comment.is_trusted())
         .filter_map(|comment| extract_finding_id(&comment.body))
         .collect()
 }
