@@ -104,6 +104,34 @@ pub fn build_runner(
     }
 }
 
+/// Format a runner selection for human-readable logs.
+pub fn format_runner_display(
+    runner: RunnerKind,
+    model: Option<&str>,
+    effort: Option<&str>,
+    variant: Option<&str>,
+) -> String {
+    let model_tag = model.unwrap_or("(default)");
+    match (effort, variant) {
+        (None, None) => format!("{model_tag}@{runner}"),
+        _ => {
+            let mut extras = String::new();
+            if let Some(effort) = effort {
+                extras.push_str("effort=");
+                extras.push_str(effort);
+            }
+            if let Some(variant) = variant {
+                if !extras.is_empty() {
+                    extras.push_str(", ");
+                }
+                extras.push_str("variant=");
+                extras.push_str(variant);
+            }
+            format!("{model_tag}@{runner} ({extras})")
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct RunResult {
     pub exit_code: i32,
@@ -1334,6 +1362,22 @@ mod tests {
             r#"{"type":"user","session_id":"found-it"}"#.to_string(),
         ];
         assert_eq!(extract_session_id(&lines), Some("found-it".to_string()));
+    }
+
+    #[test]
+    fn test_format_runner_display_without_extras() {
+        assert_eq!(
+            format_runner_display(RunnerKind::Codex, Some("gpt-5"), None, None),
+            "gpt-5@codex"
+        );
+    }
+
+    #[test]
+    fn test_format_runner_display_with_effort_and_variant() {
+        assert_eq!(
+            format_runner_display(RunnerKind::OpenCode, None, Some("high"), Some("reasoning")),
+            "(default)@opencode (effort=high, variant=reasoning)"
+        );
     }
 
     #[test]

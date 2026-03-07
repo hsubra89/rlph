@@ -277,9 +277,16 @@ fn runner_default_model(runner: RunnerKind) -> Option<&'static str> {
 
 fn runner_default_effort(runner: RunnerKind) -> Option<&'static str> {
     match runner {
-        RunnerKind::Codex => None,
+        RunnerKind::Codex => Some("high"),
         RunnerKind::Claude => Some("high"),
         RunnerKind::OpenCode => None,
+    }
+}
+
+fn runner_default_variant(runner: RunnerKind) -> Option<&'static str> {
+    match runner {
+        RunnerKind::OpenCode => Some("high"),
+        RunnerKind::Claude | RunnerKind::Codex => None,
     }
 }
 
@@ -329,7 +336,10 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
     let global_effort = global_effort_override
         .clone()
         .or_else(|| default_effort.map(str::to_string));
-    let global_variant = global_variant_override.clone();
+    let default_variant = runner_default_variant(runner);
+    let global_variant = global_variant_override
+        .clone()
+        .or_else(|| default_variant.map(str::to_string));
     let global_timeout = build
         .and_then(|b| b.agent_timeout)
         .or(file.agent_timeout)
@@ -367,6 +377,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
             let runner_binary = runner_default_binary(effective_runner);
             let runner_model = runner_default_model(effective_runner);
             let runner_effort = runner_default_effort(effective_runner);
+            let runner_variant = runner_default_variant(effective_runner);
             Ok(ReviewPhaseConfig {
                 name: p.name,
                 prompt: p.prompt,
@@ -382,7 +393,10 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
                     .agent_effort
                     .or_else(|| global_effort_override.clone())
                     .or_else(|| runner_effort.map(str::to_string)),
-                agent_variant: p.agent_variant.or_else(|| global_variant_override.clone()),
+                agent_variant: p
+                    .agent_variant
+                    .or_else(|| global_variant_override.clone())
+                    .or_else(|| runner_variant.map(str::to_string)),
                 agent_timeout: p.agent_timeout.map(Duration::from_secs).or(global_timeout),
                 runner: effective_runner,
             })
@@ -399,6 +413,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
             let runner_binary = runner_default_binary(effective_runner);
             let runner_model = runner_default_model(effective_runner);
             let runner_effort = runner_default_effort(effective_runner);
+            let runner_variant = runner_default_variant(effective_runner);
             Ok(ReviewStepConfig {
                 prompt: s.prompt.unwrap_or_else(|| default_prompt.to_string()),
                 agent_binary: s
@@ -413,7 +428,10 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
                     .agent_effort
                     .or_else(|| global_effort_override.clone())
                     .or_else(|| runner_effort.map(str::to_string)),
-                agent_variant: s.agent_variant.or_else(|| global_variant_override.clone()),
+                agent_variant: s
+                    .agent_variant
+                    .or_else(|| global_variant_override.clone())
+                    .or_else(|| runner_variant.map(str::to_string)),
                 agent_timeout: s.agent_timeout.map(Duration::from_secs).or(global_timeout),
                 runner: effective_runner,
             })
@@ -869,6 +887,8 @@ worktree_dir = "/tmp/wt"
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.agent_binary, "codex");
         assert_eq!(config.agent_model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(config.agent_effort.as_deref(), Some("high"));
+        assert_eq!(config.agent_variant, None);
     }
 
     #[test]
@@ -1228,6 +1248,54 @@ prompt = "review-aggregate"
         assert_eq!(config.agent_binary, "opencode");
         assert_eq!(config.agent_model, None);
         assert_eq!(config.agent_effort, None);
+        assert_eq!(config.agent_variant.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn test_mixed_runner_defaults_do_not_leak_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+runner = "opencode"
+
+[[review_phases]]
+name = "default"
+prompt = "default-review"
+
+[[review_phases]]
+name = "override"
+prompt = "override-review"
+runner = "claude"
+
+[review_aggregate]
+prompt = "review-aggregate"
+
+[fix]
+prompt = "fix"
+runner = "claude"
+"#,
+        )
+        .unwrap();
+
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
+
+        assert_eq!(config.agent_variant.as_deref(), Some("high"));
+        assert_eq!(
+            config.review_phases[0].agent_variant.as_deref(),
+            Some("high")
+        );
+        assert_eq!(config.review_phases[1].runner, RunnerKind::Claude);
+        assert_eq!(config.review_phases[1].agent_variant, None);
+        assert_eq!(
+            config.review_aggregate.agent_variant.as_deref(),
+            Some("high")
+        );
+        assert_eq!(config.fix.runner, RunnerKind::Claude);
+        assert_eq!(config.fix.agent_variant, None);
     }
 
     #[test]

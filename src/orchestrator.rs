@@ -22,7 +22,8 @@ use crate::review_schema::{
     render_inline_finding_comment_for_github, render_summary_for_github,
 };
 use crate::runner::{
-    AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, resume_with_correction,
+    AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, format_runner_display,
+    resume_with_correction,
 };
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
@@ -669,6 +670,17 @@ impl<
             let phase_runner = self
                 .review_factory
                 .create_phase_runner(phase_config, self.config.agent_timeout_retries);
+
+            eprintln!(
+                "[rlph] review phase {}: {}",
+                phase_config.name,
+                format_runner_display(
+                    phase_config.runner,
+                    phase_config.agent_model.as_deref(),
+                    phase_config.agent_effort.as_deref(),
+                    phase_config.agent_variant.as_deref(),
+                )
+            );
 
             let mut phase_vars = vars.clone();
             phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());

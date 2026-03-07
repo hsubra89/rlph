@@ -31,7 +31,9 @@ use crate::prompts::PromptEngine;
 use crate::review_schema::{
     FINDING_MARKER, SchemaName, Severity, StandaloneFixOutput, parse_standalone_fix_output,
 };
-use crate::runner::{AgentRunner, AnyRunner, Phase, RunResult, build_runner};
+use crate::runner::{
+    AgentRunner, AnyRunner, Phase, RunResult, build_runner, format_runner_display,
+};
 use crate::submission::{PrReviewComment, Reaction, SubmissionBackend};
 use crate::worktree::{WorktreeManager, git_in_dir, resolve_setup_script, validate_branch_name};
 
@@ -66,6 +68,16 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         Arc::clone(&correction_runner),
         setup_script,
     );
+    eprintln!(
+        "[rlph] fix: {}",
+        format_runner_display(
+            config.fix.runner,
+            config.fix.agent_model.as_deref(),
+            config.fix.agent_effort.as_deref(),
+            config.fix.agent_variant.as_deref(),
+        )
+    );
+
     let poll_duration = config.poll_seconds;
 
     // Create a single shared worktree for the entire fix loop
