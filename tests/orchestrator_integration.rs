@@ -30,6 +30,7 @@ use tokio::sync::watch;
 
 const APPROVED_AGGREGATOR_JSON: &str =
     r#"{"verdict":"approved","comment":"All looks good.","findings":[]}"#;
+const THREE_LINE_PR_DIFF: &str = "diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,3 @@\n+fn main() {}\n+let x = 1;\n+let y = 2;\n";
 
 // --- Shared tracking state ---
 
@@ -51,6 +52,14 @@ struct PostedReview {
     pr_number: PrNumber,
     event: PullRequestReviewEvent,
     comments: Vec<InlineReviewComment>,
+}
+
+fn push_review_comment(tracker: &Arc<Mutex<SubmissionTracker>>, pr_number: PrNumber, body: &str) {
+    tracker
+        .lock()
+        .unwrap()
+        .comments
+        .push((pr_number, body.to_string()));
 }
 
 // --- Mock implementations ---
@@ -397,11 +406,7 @@ impl SubmissionBackend for MockSubmission {
     }
 
     fn upsert_review_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
-        self.tracker
-            .lock()
-            .unwrap()
-            .comments
-            .push((pr_number, body.to_string()));
+        push_review_comment(&self.tracker, pr_number, body);
         Ok(())
     }
 
@@ -420,10 +425,7 @@ impl SubmissionBackend for MockSubmission {
     }
 
     fn fetch_pr_diff(&self, _pr_number: PrNumber) -> Result<String> {
-        Ok(
-            "diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,3 @@\n+fn main() {}\n+let x = 1;\n+let y = 2;\n"
-                .to_string(),
-        )
+        Ok(THREE_LINE_PR_DIFF.to_string())
     }
 }
 
@@ -436,6 +438,44 @@ impl SubmissionBackend for FailSubmission {
 
     fn fetch_pr_diff(&self, _pr_number: PrNumber) -> Result<String> {
         Ok("diff --git a/src/main.rs b/src/main.rs\n@@ -0,0 +1,1 @@\n+fn main() {}\n".to_string())
+    }
+}
+
+struct FailInlineReviewSubmission {
+    tracker: Arc<Mutex<SubmissionTracker>>,
+}
+
+impl FailInlineReviewSubmission {
+    fn new(tracker: Arc<Mutex<SubmissionTracker>>) -> Self {
+        Self { tracker }
+    }
+}
+
+impl SubmissionBackend for FailInlineReviewSubmission {
+    fn submit(&self, _: &str, _: &str, _: &str, _: &str) -> Result<SubmitResult> {
+        unreachable!("not used in review-only tests")
+    }
+
+    fn find_existing_pr_for_issue(&self, _issue_number: IssueNumber) -> Result<Option<PrNumber>> {
+        Ok(None)
+    }
+
+    fn upsert_review_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
+        push_review_comment(&self.tracker, pr_number, body);
+        Ok(())
+    }
+
+    fn submit_inline_pr_review(
+        &self,
+        _pr_number: PrNumber,
+        _event: PullRequestReviewEvent,
+        _comments: &[InlineReviewComment],
+    ) -> Result<()> {
+        Err(Error::Submission("mock inline review failure".to_string()))
+    }
+
+    fn fetch_pr_diff(&self, _pr_number: PrNumber) -> Result<String> {
+        Ok(THREE_LINE_PR_DIFF.to_string())
     }
 }
 
@@ -1448,6 +1488,62 @@ async fn test_review_only_needs_fix_completes_successfully() {
     assert!(inline_comment.body.contains("### 🟡 WARNING"));
     assert!(inline_comment.body.contains("`issue-found` — issue"));
     assert!(inline_comment.body.contains(FINDING_MARKER));
+}
+
+#[tokio::test]
+async fn test_review_only_fails_when_inline_review_submission_fails() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let task = make_task(100, "Inline review submission failure");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = MockSource::new(vec![task.clone()], Arc::clone(&source_tracker));
+    let submission = FailInlineReviewSubmission::new(Arc::clone(&sub_tracker));
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let worktree_info = worktree_mgr
+        .create(IssueNumber::new(100), "review-inline-failure")
+        .unwrap();
+    let vars = make_review_vars(
+        &task,
+        repo_dir.path(),
+        &worktree_info.branch,
+        &worktree_info.path,
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+
+    let orchestrator = Orchestrator::new(
+        source,
+        MockRunner::new("gh-100"),
+        submission,
+        worktree_mgr,
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        make_config(false),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(NeverApproveReviewFactory);
+
+    let invocation = ReviewInvocation {
+        task_id_for_state: "pr-100".to_string(),
+        mark_in_review_task_id: None,
+        worktree_info,
+        vars,
+        comment_pr_number: Some(PrNumber::new(100)),
+    };
+
+    let err = orchestrator
+        .run_review_for_existing_pr(invocation)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("mock inline review failure"));
+
+    let submission_data = sub_tracker.lock().unwrap();
+    assert!(submission_data.comments.is_empty());
+    assert!(submission_data.reviews.is_empty());
 }
 
 // --- ProgressReporter output tests ---
