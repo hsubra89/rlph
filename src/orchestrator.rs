@@ -1,11 +1,12 @@
 //! Core orchestration loop: choose task → implement → review → submit.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+use serde_json;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
@@ -18,7 +19,7 @@ use crate::error::{Error, Result};
 use crate::ids::{IssueNumber, PrNumber};
 use crate::prompts::PromptEngine;
 use crate::review_schema::{
-    FallbackContext, ReviewFinding, SchemaName, Verdict, correction_prompt,
+    FallbackContext, ReviewFinding, SchemaName, Verdict, correction_prompt, extract_finding_json,
     parse_aggregator_output, parse_phase_output, render_findings_for_prompt,
     render_inline_finding_comment_for_github, render_summary_for_github,
 };
@@ -29,7 +30,7 @@ use crate::runner::{
 use crate::sources::{Task, TaskSource};
 use crate::state::StateManager;
 use crate::submission::{
-    FileReviewComment, InlineReviewComment, PullRequestReviewEvent, REVIEW_MARKER,
+    FileReviewComment, InlineReviewComment, PrComment, PullRequestReviewEvent, REVIEW_MARKER,
     SubmissionBackend,
 };
 use crate::worktree::{WorktreeInfo, WorktreeManager};
@@ -839,7 +840,21 @@ impl<
                         .submit_file_pr_review_comments(pr_num, &prepared_comments.file_comments)?;
                 }
 
+                let existing_finding_ids = match self.submission.fetch_pr_comments(pr_num) {
+                    Ok(existing_comments) => collect_existing_finding_ids(&existing_comments),
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "failed to fetch existing PR comments for standalone finding dedupe"
+                        );
+                        HashSet::new()
+                    }
+                };
+
                 for sf in &prepared_comments.standalone_findings {
+                    if existing_finding_ids.contains(&sf.finding_id) {
+                        continue;
+                    }
                     self.submission.post_finding_comment(pr_num, &sf.body)?;
                 }
             }
@@ -1020,6 +1035,7 @@ struct PreparedReviewComments {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StandaloneFinding {
+    finding_id: String,
     body: String,
 }
 
@@ -1119,6 +1135,7 @@ fn prepare_review_comments(
                             });
                         } else {
                             prepared.standalone_findings.push(StandaloneFinding {
+                                finding_id: finding.id.clone(),
                                 body: render_inline_finding_comment_for_github(
                                     finding,
                                     &dependency_descriptions,
@@ -1153,6 +1170,7 @@ fn prepare_review_comments(
                     });
                 } else {
                     prepared.standalone_findings.push(StandaloneFinding {
+                        finding_id: finding.id.clone(),
                         body: render_inline_finding_comment_for_github(
                             finding,
                             &dependency_descriptions,
@@ -1182,6 +1200,7 @@ fn prepare_review_comments(
                     });
                 } else {
                     prepared.standalone_findings.push(StandaloneFinding {
+                        finding_id: finding.id.clone(),
                         body: render_inline_finding_comment_for_github(
                             finding,
                             &dependency_descriptions,
@@ -1207,6 +1226,22 @@ pub fn parse_issue_number(task_id: &str) -> Result<IssueNumber> {
         .ok_or_else(|| {
             Error::Orchestrator(format!("invalid task id: {task_id}, expected gh-<number>"))
         })
+}
+
+fn collect_existing_finding_ids(comments: &[PrComment]) -> HashSet<String> {
+    comments
+        .iter()
+        .filter_map(|comment| extract_finding_id(&comment.body))
+        .collect()
+}
+
+fn extract_finding_id(body: &str) -> Option<String> {
+    body.lines().find_map(|line| {
+        let json = extract_finding_json(line)?;
+        serde_json::from_str::<ReviewFinding>(json)
+            .ok()
+            .map(|finding| finding.id)
+    })
 }
 
 #[cfg(test)]

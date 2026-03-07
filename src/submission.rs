@@ -19,6 +19,8 @@ pub struct PrComment {
     user_obj: Option<PrCommentUser>,
     pub body: String,
     pub created_at: String,
+    #[serde(default)]
+    pub in_reply_to_id: Option<CommentId>,
     /// GitHub author association: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, etc.
     #[serde(default)]
     pub author_association: Option<String>,
@@ -670,14 +672,31 @@ impl SubmissionBackend for GitHubSubmission {
     }
 
     fn list_review_comment_reactions(&self, comment_id: CommentId) -> Result<Vec<Reaction>> {
-        run_gh_api_paginated(&format!(
+        match run_gh_api_paginated(&format!(
             "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions"
-        ))
+        )) {
+            Ok(reactions) => Ok(reactions),
+            Err(_) => run_gh_api_paginated(&format!(
+                "repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/reactions"
+            )),
+        }
     }
 
     fn add_review_comment_reaction(&self, comment_id: CommentId, reaction: &str) -> Result<()> {
-        let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions");
-        run_gh_api_mutate(&endpoint, "POST", &[("content", reaction)])?;
+        match run_gh_api_mutate(
+            &format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions"),
+            "POST",
+            &[("content", reaction)],
+        ) {
+            Ok(()) => {}
+            Err(_) => {
+                run_gh_api_mutate(
+                    &format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/reactions"),
+                    "POST",
+                    &[("content", reaction)],
+                )?;
+            }
+        }
         info!(comment_id = %comment_id, reaction, "added reaction to review comment");
         Ok(())
     }
@@ -687,9 +706,24 @@ impl SubmissionBackend for GitHubSubmission {
         comment_id: CommentId,
         reaction_id: ReactionId,
     ) -> Result<()> {
-        let endpoint =
-            format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions/{reaction_id}");
-        run_gh_api_mutate(&endpoint, "DELETE", &[])?;
+        match run_gh_api_mutate(
+            &format!(
+                "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions/{reaction_id}"
+            ),
+            "DELETE",
+            &[],
+        ) {
+            Ok(()) => {}
+            Err(_) => {
+                run_gh_api_mutate(
+                    &format!(
+                        "repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/reactions/{reaction_id}"
+                    ),
+                    "DELETE",
+                    &[],
+                )?;
+            }
+        }
         info!(
             comment_id = %comment_id,
             reaction_id = %reaction_id, "deleted reaction from review comment"
@@ -703,9 +737,20 @@ impl SubmissionBackend for GitHubSubmission {
         comment_id: CommentId,
         body: &str,
     ) -> Result<()> {
-        let endpoint =
-            format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies");
-        run_gh_api_mutate(&endpoint, "POST", &[("body", body)])?;
+        match run_gh_api_mutate(
+            &format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies"),
+            "POST",
+            &[("body", body)],
+        ) {
+            Ok(()) => {}
+            Err(_) => {
+                run_gh_api_mutate(
+                    &format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/replies"),
+                    "POST",
+                    &[("body", body)],
+                )?;
+            }
+        }
         info!(pr_number = %pr_number, comment_id = %comment_id, "replied to review comment");
         Ok(())
     }
@@ -1149,6 +1194,7 @@ mod tests {
             user_obj: None,
             body: String::new(),
             created_at: String::new(),
+            in_reply_to_id: None,
             author_association: Some("OWNER".to_string()),
         };
         assert!(trusted.is_trusted());
@@ -1158,6 +1204,7 @@ mod tests {
             user_obj: None,
             body: String::new(),
             created_at: String::new(),
+            in_reply_to_id: None,
             author_association: Some("MEMBER".to_string()),
         };
         assert!(member.is_trusted());
@@ -1167,6 +1214,7 @@ mod tests {
             user_obj: None,
             body: String::new(),
             created_at: String::new(),
+            in_reply_to_id: None,
             author_association: Some("NONE".to_string()),
         };
         assert!(!external.is_trusted());
@@ -1176,6 +1224,7 @@ mod tests {
             user_obj: None,
             body: String::new(),
             created_at: String::new(),
+            in_reply_to_id: None,
             author_association: None,
         };
         assert!(!missing.is_trusted());
