@@ -206,10 +206,10 @@ impl DiffPositionMapper {
                     "hunk new start",
                 )?;
                 if let Some(count_match) = caps.get(2) {
-                    let _ = parse_u32(count_match.as_str(), "hunk old length")?;
+                    parse_u32(count_match.as_str(), "hunk old length")?;
                 }
                 if let Some(count_match) = caps.get(4) {
-                    let _ = parse_u32(count_match.as_str(), "hunk new length")?;
+                    parse_u32(count_match.as_str(), "hunk new length")?;
                 }
                 cursor = Some(HunkCursor { old_line, new_line });
                 continue;
