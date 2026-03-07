@@ -817,29 +817,24 @@ impl<
         if let Some(pr_num) = pr_number
             && !self.config.dry_run
         {
-            if let Err(e) = self.submission.upsert_review_comment(pr_num, &comment_body) {
-                warn!(error = %e, "failed to upsert summary review comment");
-            }
-
             if !agg_output.findings.is_empty() {
-                match build_inline_review_comments(&self.submission, pr_num, &agg_output.findings) {
-                    Ok(inline_comments) => {
-                        // Always use COMMENT event: the GitHub API returns 422
-                        // when the PR author uses REQUEST_CHANGES on their own PR.
-                        let review_event = PullRequestReviewEvent::Comment;
-                        if let Err(e) = self.submission.submit_inline_pr_review(
-                            pr_num,
-                            review_event,
-                            &inline_comments,
-                        ) {
-                            warn!(error = %e, "failed to post inline review comments");
-                        }
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "failed to build inline review comments");
-                    }
+                let inline_comments =
+                    build_inline_review_comments(&self.submission, pr_num, &agg_output.findings)?;
+
+                if !inline_comments.is_empty() {
+                    // Always use COMMENT event: the GitHub API returns 422
+                    // when the PR author uses REQUEST_CHANGES on their own PR.
+                    let review_event = PullRequestReviewEvent::Comment;
+                    self.submission.submit_inline_pr_review(
+                        pr_num,
+                        review_event,
+                        &inline_comments,
+                    )?;
                 }
             }
+
+            self.submission
+                .upsert_review_comment(pr_num, &comment_body)?;
 
             // Resolve old review threads after posting the new review so the
             // latest findings are visible even if resolution fails.
@@ -1056,6 +1051,9 @@ fn build_inline_review_comments(
             };
 
             Some(InlineReviewComment {
+                finding_id: finding.id.clone(),
+                original_file: finding.file.clone(),
+                original_line: finding.line,
                 path: mapped.file,
                 line: mapped.line,
                 body: render_inline_finding_comment_for_github(

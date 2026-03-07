@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use tracing::{debug, info};
 
 use crate::error::{Error, Result};
@@ -194,6 +195,9 @@ impl PullRequestReviewEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlineReviewComment {
+    pub finding_id: String,
+    pub original_file: String,
+    pub original_line: u32,
     pub path: String,
     pub line: u32,
     pub body: String,
@@ -482,8 +486,11 @@ impl SubmissionBackend for GitHubSubmission {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(Error::Submission(format!(
-                "gh api create review failed: {stderr} {stdout}"
+            return Err(Error::Submission(format_gh_review_submission_error(
+                "create review",
+                &format_attempted_line_review_comments(comments),
+                &stderr,
+                &stdout,
             )));
         }
 
@@ -577,6 +584,98 @@ impl SubmissionBackend for GitHubSubmission {
     fn resolve_completed_review_threads(&self, pr_number: PrNumber) -> Result<u32> {
         let (owner, repo) = detect_owner_repo()?;
         crate::resolve_threads::resolve_completed_threads(&owner, &repo, pr_number)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GhApiErrorResponse {
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    errors: Vec<Value>,
+    #[serde(default)]
+    documentation_url: Option<String>,
+    #[serde(default)]
+    status: Option<Value>,
+}
+
+fn format_attempted_line_review_comments(comments: &[InlineReviewComment]) -> Vec<String> {
+    comments
+        .iter()
+        .map(|comment| {
+            format!(
+                "`{}` original {}:{} -> line comment {}:{}",
+                comment.finding_id,
+                comment.original_file,
+                comment.original_line,
+                comment.path,
+                comment.line
+            )
+        })
+        .collect()
+}
+
+fn format_gh_review_submission_error(
+    action: &str,
+    attempted: &[String],
+    stderr: &str,
+    stdout: &str,
+) -> String {
+    let mut lines = vec![format!("gh api {action} failed")];
+    if !attempted.is_empty() {
+        lines.push("attempted comments:".to_string());
+        for item in attempted {
+            lines.push(format!("  - {item}"));
+        }
+    }
+
+    if let Some(parsed) = parse_gh_api_error(stderr).or_else(|| parse_gh_api_error(stdout)) {
+        if !parsed.message.trim().is_empty() {
+            lines.push(format!("github message: {}", parsed.message.trim()));
+        }
+        if !parsed.errors.is_empty() {
+            lines.push(format!(
+                "github errors: {}",
+                parsed
+                    .errors
+                    .iter()
+                    .map(format_gh_api_error_value)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
+        if let Some(status) = parsed.status {
+            lines.push(format!("status: {}", format_gh_api_error_value(&status)));
+        }
+        if let Some(url) = parsed.documentation_url
+            && !url.trim().is_empty()
+        {
+            lines.push(format!("documentation: {}", url.trim()));
+        }
+    } else {
+        let stderr = stderr.trim();
+        if !stderr.is_empty() {
+            lines.push(format!("stderr: {stderr}"));
+        }
+        let stdout = stdout.trim();
+        if !stdout.is_empty() {
+            lines.push(format!("stdout: {stdout}"));
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn parse_gh_api_error(text: &str) -> Option<GhApiErrorResponse> {
+    let start = text.find('{')?;
+    serde_json::from_str::<GhApiErrorResponse>(&text[start..]).ok()
+}
+
+fn format_gh_api_error_value(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Null => "null".to_string(),
+        _ => value.to_string(),
     }
 }
 
@@ -788,8 +887,9 @@ fn extract_issue_number_reference(body: &str) -> Option<IssueNumber> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PrComment, extract_issue_number_reference, parse_owner_repo_from_remote,
-        parse_pr_context_json, parse_pr_number_from_url, pr_body_references_issue,
+        InlineReviewComment, PrComment, extract_issue_number_reference,
+        format_gh_review_submission_error, parse_owner_repo_from_remote, parse_pr_context_json,
+        parse_pr_number_from_url, pr_body_references_issue,
     };
     use crate::ids::{CommentId, IssueNumber, PrNumber};
 
@@ -978,5 +1078,59 @@ mod tests {
     #[test]
     fn test_parse_owner_repo_unrecognised() {
         assert!(parse_owner_repo_from_remote("https://gitlab.com/acme/widget").is_err());
+    }
+
+    #[test]
+    fn test_format_gh_review_submission_error_parses_422_payload() {
+        let attempted = super::format_attempted_line_review_comments(&[InlineReviewComment {
+            finding_id: "line-finding".to_string(),
+            original_file: "src/main.rs".to_string(),
+            original_line: 10,
+            path: "src/main.rs".to_string(),
+            line: 12,
+            body: "body".to_string(),
+        }]);
+        let stderr = concat!(
+            "gh: Unprocessable Entity (HTTP 422)\n",
+            "{\"message\":\"Unprocessable Entity\",\"errors\":[\"Line could not be resolved\"],",
+            "\"documentation_url\":\"https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request\",",
+            "\"status\":\"422\"}"
+        );
+
+        let formatted = format_gh_review_submission_error("create review", &attempted, stderr, "");
+
+        assert!(formatted.contains("gh api create review failed"));
+        assert!(formatted.contains("line-finding"));
+        assert!(formatted.contains("original src/main.rs:10 -> line comment src/main.rs:12"));
+        assert!(formatted.contains("github message: Unprocessable Entity"));
+        assert!(formatted.contains("github errors: Line could not be resolved"));
+        assert!(formatted.contains("status: 422"));
+        assert!(formatted.contains(
+            "documentation: https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request"
+        ));
+    }
+
+    #[test]
+    fn test_format_gh_review_submission_error_falls_back_to_raw_output() {
+        let attempted = super::format_attempted_line_review_comments(&[InlineReviewComment {
+            finding_id: "line-finding".to_string(),
+            original_file: "src/main.rs".to_string(),
+            original_line: 10,
+            path: "src/main.rs".to_string(),
+            line: 12,
+            body: "body".to_string(),
+        }]);
+
+        let formatted = format_gh_review_submission_error(
+            "create review",
+            &attempted,
+            "gh: something went wrong",
+            "stdout detail",
+        );
+
+        assert!(formatted.contains("gh api create review failed"));
+        assert!(formatted.contains("line-finding"));
+        assert!(formatted.contains("stderr: gh: something went wrong"));
+        assert!(formatted.contains("stdout: stdout detail"));
     }
 }
