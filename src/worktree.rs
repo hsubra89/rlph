@@ -412,7 +412,7 @@ impl WorktreeManager {
             &["reset", "--hard", &format!("origin/{remote_branch}")],
         )
         .map_err(|e| Error::Worktree(format!("failed to reset worktree: {e}")))?;
-        git_in_dir(worktree_path, &["clean", "-fd"])
+        git_in_dir(worktree_path, &["clean", "-ffd"])
             .map_err(|e| Error::Worktree(format!("failed to clean worktree: {e}")))?;
         Ok(())
     }
