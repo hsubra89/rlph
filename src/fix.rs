@@ -70,8 +70,8 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
     // Create a single shared worktree for the entire fix loop
     let fix_branch = format!("rlph-fix-{}", WorktreeManager::slugify(pr_branch));
-    let wm = shared.make_worktree_manager();
-    let worktree_path = wm.create_fresh(&fix_branch, pr_branch)?.path;
+    let worktree_manager = shared.make_worktree_manager();
+    let worktree_path = worktree_manager.create_fresh(&fix_branch, pr_branch)?.path;
 
     let mut completed: HashSet<String> = HashSet::new();
     let mut failed: HashSet<String> = HashSet::new();
@@ -158,7 +158,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             &shutdown,
             &worktree_path,
             &fix_branch,
-            &wm,
+            &worktree_manager,
         )
         .await;
 
@@ -189,7 +189,7 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
 
     // Clean up the shared worktree
     info!(path = %worktree_path.display(), "cleaning up shared fix worktree");
-    if let Err(e) = wm.remove(&worktree_path) {
+    if let Err(e) = worktree_manager.remove(&worktree_path) {
         warn!(error = %e, "failed to clean up shared fix worktree");
     }
 
@@ -213,7 +213,7 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
     shutdown: &watch::Receiver<bool>,
     worktree_path: &Path,
     fix_branch: &str,
-    wm: &WorktreeManager,
+    worktree_manager: &WorktreeManager,
 ) {
     let mut needs_worktree_recovery = false;
 
@@ -254,7 +254,12 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                 }
 
                 if needs_worktree_recovery
-                    && !recover_shared_worktree(wm, worktree_path, &shared.pr_branch, fix_branch)
+                    && !recover_shared_worktree(
+                        worktree_manager,
+                        worktree_path,
+                        &shared.pr_branch,
+                        fix_branch,
+                    )
                 {
                     break;
                 }
@@ -300,12 +305,12 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
 }
 
 fn recover_shared_worktree(
-    wm: &WorktreeManager,
+    worktree_manager: &WorktreeManager,
     worktree_path: &Path,
     pr_branch: &str,
     fix_branch: &str,
 ) -> bool {
-    match wm.reset_to_remote(worktree_path, pr_branch) {
+    match worktree_manager.reset_to_remote(worktree_path, pr_branch) {
         Ok(()) => true,
         Err(reset_error) => {
             eprintln!(
@@ -318,7 +323,7 @@ fn recover_shared_worktree(
                 "failed to reset worktree between batches; recreating shared worktree"
             );
 
-            if let Err(remove_error) = wm.remove(worktree_path) {
+            if let Err(remove_error) = worktree_manager.remove(worktree_path) {
                 warn!(
                     error = %remove_error,
                     path = %worktree_path.display(),
@@ -340,7 +345,7 @@ fn recover_shared_worktree(
                 return false;
             }
 
-            match wm.create_fresh(fix_branch, pr_branch) {
+            match worktree_manager.create_fresh(fix_branch, pr_branch) {
                 Ok(_) => {
                     info!(
                         path = %worktree_path.display(),
@@ -1554,7 +1559,7 @@ mod tests {
     fn test_reset_failure_recreates_shared_worktree() {
         let repo = init_git_repo();
         let worktree_base = tempfile::tempdir().unwrap();
-        let wm = WorktreeManager::new(
+        let worktree_manager = WorktreeManager::new(
             repo.path().to_path_buf(),
             worktree_base.path().to_path_buf(),
             "main".to_string(),
@@ -1566,7 +1571,7 @@ mod tests {
         std::fs::write(worktree_path.join("leftover.txt"), "dirty").unwrap();
 
         assert!(
-            recover_shared_worktree(&wm, &worktree_path, "main", fix_branch),
+            recover_shared_worktree(&worktree_manager, &worktree_path, "main", fix_branch),
             "expected worktree recovery to succeed"
         );
 
