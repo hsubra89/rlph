@@ -887,6 +887,8 @@ worktree_dir = "/tmp/wt"
         let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
         assert_eq!(config.agent_binary, "codex");
         assert_eq!(config.agent_model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(config.agent_effort.as_deref(), Some("high"));
+        assert_eq!(config.agent_variant, None);
     }
 
     #[test]
@@ -1246,6 +1248,54 @@ prompt = "review-aggregate"
         assert_eq!(config.agent_binary, "opencode");
         assert_eq!(config.agent_model, None);
         assert_eq!(config.agent_effort, None);
+        assert_eq!(config.agent_variant.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn test_mixed_runner_defaults_do_not_leak_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join(".rlph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+runner = "opencode"
+
+[[review_phases]]
+name = "default"
+prompt = "default-review"
+
+[[review_phases]]
+name = "override"
+prompt = "override-review"
+runner = "claude"
+
+[review_aggregate]
+prompt = "review-aggregate"
+
+[fix]
+prompt = "fix"
+runner = "claude"
+"#,
+        )
+        .unwrap();
+
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        let config = Config::load_from(&cli, cli.build_args(), tmp.path()).unwrap();
+
+        assert_eq!(config.agent_variant.as_deref(), Some("high"));
+        assert_eq!(
+            config.review_phases[0].agent_variant.as_deref(),
+            Some("high")
+        );
+        assert_eq!(config.review_phases[1].runner, RunnerKind::Claude);
+        assert_eq!(config.review_phases[1].agent_variant, None);
+        assert_eq!(
+            config.review_aggregate.agent_variant.as_deref(),
+            Some("high")
+        );
+        assert_eq!(config.fix.runner, RunnerKind::Claude);
+        assert_eq!(config.fix.agent_variant, None);
     }
 
     #[test]
