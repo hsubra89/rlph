@@ -345,7 +345,7 @@ fn recover_shared_worktree(
                 return false;
             }
 
-            match worktree_manager.create_fresh(fix_branch, pr_branch) {
+            match worktree_manager.create_fresh_from_fetched_remote(fix_branch, pr_branch) {
                 Ok(_) => {
                     info!(
                         path = %worktree_path.display(),

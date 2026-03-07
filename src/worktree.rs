@@ -364,10 +364,29 @@ impl WorktreeManager {
     ///
     /// Removes any stale worktree or local branch with the same name first.
     pub fn create_fresh(&self, branch_name: &str, remote_branch: &str) -> Result<WorktreeInfo> {
+        self.create_fresh_from_remote(branch_name, remote_branch, true)
+    }
+
+    /// Create a fresh worktree from a remote branch that the caller already fetched.
+    pub(crate) fn create_fresh_from_fetched_remote(
+        &self,
+        branch_name: &str,
+        remote_branch: &str,
+    ) -> Result<WorktreeInfo> {
+        self.create_fresh_from_remote(branch_name, remote_branch, false)
+    }
+
+    fn create_fresh_from_remote(
+        &self,
+        branch_name: &str,
+        remote_branch: &str,
+        fetch_remote: bool,
+    ) -> Result<WorktreeInfo> {
         validate_branch_name(branch_name)?;
 
-        // Fetch latest remote branch
-        self.fetch_with_retry(remote_branch, FETCH_MAX_ATTEMPTS)?;
+        if fetch_remote {
+            self.fetch_with_retry(remote_branch, FETCH_MAX_ATTEMPTS)?;
+        }
 
         std::fs::create_dir_all(&self.base_dir).map_err(|e| {
             Error::Worktree(format!(
@@ -985,5 +1004,31 @@ mod tests {
             status.trim().is_empty(),
             "expected clean worktree after reset, got: {status}"
         );
+    }
+
+    #[test]
+    fn test_create_fresh_from_fetched_remote_skips_fetch() {
+        let repo = init_temp_repo();
+        let wt_base = tempfile::tempdir().unwrap();
+        let mgr = WorktreeManager::new(
+            repo.path().to_path_buf(),
+            wt_base.path().to_path_buf(),
+            "main".to_string(),
+        );
+
+        mgr.fetch_with_retry("main", FETCH_MAX_ATTEMPTS).unwrap();
+        run_git(
+            repo.path(),
+            &["remote", "set-url", "origin", "/path/that/does/not/exist"],
+        );
+
+        let info = mgr
+            .create_fresh_from_fetched_remote("rlph-fix-main", "main")
+            .unwrap();
+
+        assert!(info.path.join(".git").exists());
+        let head = git_in_dir(&info.path, &["rev-parse", "HEAD"]).unwrap();
+        let remote_head = git_in_dir(repo.path(), &["rev-parse", "origin/main"]).unwrap();
+        assert_eq!(head.trim(), remote_head.trim());
     }
 }
