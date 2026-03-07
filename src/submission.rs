@@ -593,9 +593,7 @@ struct GhApiErrorResponse {
     message: String,
     #[serde(default)]
     errors: Vec<Value>,
-    #[serde(default)]
     documentation_url: Option<String>,
-    #[serde(default)]
     status: Option<Value>,
 }
 
