@@ -10,6 +10,7 @@ use crate::ids::{IssueNumber, PrNumber};
 
 /// Convention path for the worktree setup script.
 const CONVENTION_SETUP_SCRIPT: &str = ".rlph/worktree-setup.sh";
+const FETCH_MAX_ATTEMPTS: u32 = 3;
 
 /// Resolve the worktree setup script path.
 ///
@@ -198,7 +199,7 @@ impl WorktreeManager {
         })?;
 
         // Fetch latest base branch from origin (mandatory, with retries)
-        self.fetch_with_retry(&self.base_branch, 3)?;
+        self.fetch_with_retry(&self.base_branch, FETCH_MAX_ATTEMPTS)?;
 
         // Start point is always origin/<base> since fetch above succeeded
         let start_point = format!("origin/{}", self.base_branch);
@@ -273,7 +274,7 @@ impl WorktreeManager {
             );
 
             // Fetch latest from origin so we don't review stale code
-            self.fetch_with_retry(branch, 3)?;
+            self.fetch_with_retry(branch, FETCH_MAX_ATTEMPTS)?;
 
             // Reset the worktree to the latest remote HEAD
             let remote_ref = format!("origin/{branch}");
@@ -304,7 +305,7 @@ impl WorktreeManager {
         })?;
 
         // Fetch latest branch from origin (mandatory, with retries)
-        self.fetch_with_retry(branch, 3)?;
+        self.fetch_with_retry(branch, FETCH_MAX_ATTEMPTS)?;
 
         let remote_ref = format!("origin/{branch}");
         let local_ref = format!("refs/heads/{local_branch}");
@@ -361,7 +362,7 @@ impl WorktreeManager {
         validate_branch_name(branch_name)?;
 
         // Fetch latest remote branch
-        self.fetch_with_retry(remote_branch, 3)?;
+        self.fetch_with_retry(remote_branch, FETCH_MAX_ATTEMPTS)?;
 
         std::fs::create_dir_all(&self.base_dir).map_err(|e| {
             Error::Worktree(format!(
@@ -406,7 +407,7 @@ impl WorktreeManager {
     /// Fetches the remote branch, hard-resets the worktree, and cleans untracked files
     /// so it's ready for the next fix session.
     pub fn reset_to_remote(&self, worktree_path: &Path, remote_branch: &str) -> Result<()> {
-        self.fetch_with_retry(remote_branch, 3)?;
+        self.fetch_with_retry(remote_branch, FETCH_MAX_ATTEMPTS)?;
         git_in_dir(
             worktree_path,
             &["reset", "--hard", &format!("origin/{remote_branch}")],
