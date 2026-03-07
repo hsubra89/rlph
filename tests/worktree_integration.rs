@@ -256,3 +256,29 @@ fn test_create_for_branch_reuses_existing() {
     assert_eq!(first.path, second.path);
     assert_eq!(first.branch, second.branch);
 }
+
+#[test]
+fn test_reset_to_remote_removes_nested_git_repositories() {
+    let repo = init_temp_repo();
+    let wt_base = TempDir::new().unwrap();
+    let mgr = WorktreeManager::new(
+        repo.path().to_path_buf(),
+        wt_base.path().to_path_buf(),
+        "main".to_string(),
+    );
+
+    let info = mgr.create_fresh("rlph-fix-main", "main").unwrap();
+    let nested_repo = info.path.join("nested-repo");
+    std::fs::create_dir_all(&nested_repo).unwrap();
+    run_git(&nested_repo, &["init"]);
+    std::fs::write(nested_repo.join("README.md"), "nested").unwrap();
+
+    assert!(nested_repo.join(".git").exists());
+
+    mgr.reset_to_remote(&info.path, "main").unwrap();
+
+    assert!(
+        !nested_repo.exists(),
+        "expected nested git repo to be removed during reset"
+    );
+}

@@ -68,6 +68,11 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
     );
     let poll_duration = config.poll_seconds;
 
+    // Create a single shared worktree for the entire fix loop
+    let fix_branch = WorktreeManager::fix_branch_name(pr_branch);
+    let worktree_manager = shared.make_worktree_manager();
+    let worktree_path = worktree_manager.create_fresh(&fix_branch, pr_branch)?.path;
+
     let mut completed: HashSet<String> = HashSet::new();
     let mut failed: HashSet<String> = HashSet::new();
     let mut retries: HashMap<String, u32> = HashMap::new();
@@ -151,6 +156,9 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
             prompt_engine,
             &mut reply_map,
             &shutdown,
+            &worktree_path,
+            &fix_branch,
+            &worktree_manager,
         )
         .await;
 
@@ -179,6 +187,12 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         "fix loop finished"
     );
 
+    // Clean up the shared worktree
+    info!(path = %worktree_path.display(), "cleaning up shared fix worktree");
+    if let Err(e) = worktree_manager.remove(&worktree_path) {
+        warn!(error = %e, "failed to clean up shared fix worktree");
+    }
+
     Ok(())
 }
 
@@ -197,7 +211,12 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
     prompt_engine: &PromptEngine,
     reply_map: &mut ReplyMap,
     shutdown: &watch::Receiver<bool>,
+    worktree_path: &Path,
+    fix_branch: &str,
+    worktree_manager: &WorktreeManager,
 ) {
+    let mut needs_worktree_recovery = false;
+
     loop {
         if *shutdown.borrow() {
             break;
@@ -220,7 +239,6 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                     if let Some(prepared) = lookup_and_prepare(
                         finding_id,
                         queued_items,
-                        pr_number,
                         &shared.fix_config,
                         prompt_engine,
                         reply_map,
@@ -235,8 +253,21 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                     continue;
                 }
 
+                if needs_worktree_recovery
+                    && !recover_shared_worktree(
+                        worktree_manager,
+                        worktree_path,
+                        &shared.pr_branch,
+                        fix_branch,
+                    )
+                {
+                    break;
+                }
+
                 let (batch_completed, batch_error) =
-                    run_batch_fix(shared, prepared_items, pr_number).await;
+                    run_batch_fix(shared, prepared_items, pr_number, worktree_path, fix_branch)
+                        .await;
+                needs_worktree_recovery = true;
 
                 for id in &batch_completed {
                     eprintln!("[rlph] Finding completed successfully: {id}");
@@ -268,6 +299,74 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
             }
             ScheduleAction::Idle => {
                 break;
+            }
+        }
+    }
+}
+
+fn recover_shared_worktree(
+    worktree_manager: &WorktreeManager,
+    worktree_path: &Path,
+    pr_branch: &str,
+    fix_branch: &str,
+) -> bool {
+    match worktree_manager.reset_to_remote(worktree_path, pr_branch) {
+        Ok(()) => true,
+        Err(reset_error) => {
+            eprintln!(
+                "[rlph] Failed to reset shared fix worktree at {}: {reset_error}. Recreating it before the next batch.",
+                worktree_path.display()
+            );
+            warn!(
+                error = %reset_error,
+                path = %worktree_path.display(),
+                "failed to reset worktree between batches; recreating shared worktree"
+            );
+
+            if let Err(remove_error) = worktree_manager.remove(worktree_path) {
+                warn!(
+                    error = %remove_error,
+                    path = %worktree_path.display(),
+                    "failed to remove shared worktree before recreation"
+                );
+            }
+            if let Err(remove_error) = std::fs::remove_dir_all(worktree_path)
+                && remove_error.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!(
+                    "[rlph] Failed to remove broken shared fix worktree at {} before recreation: {remove_error}",
+                    worktree_path.display()
+                );
+                warn!(
+                    error = %remove_error,
+                    path = %worktree_path.display(),
+                    "failed to remove broken shared worktree directory before recreation"
+                );
+                return false;
+            }
+
+            match worktree_manager.create_fresh_from_fetched_remote(fix_branch, pr_branch) {
+                Ok(_) => {
+                    info!(
+                        path = %worktree_path.display(),
+                        branch = fix_branch,
+                        "recreated shared fix worktree after reset failure"
+                    );
+                    true
+                }
+                Err(recreate_error) => {
+                    eprintln!(
+                        "[rlph] Failed to recreate shared fix worktree at {} after reset failure: {recreate_error}",
+                        worktree_path.display()
+                    );
+                    warn!(
+                        reset_error = %reset_error,
+                        recreate_error = %recreate_error,
+                        path = %worktree_path.display(),
+                        "failed to recreate shared worktree after reset failure"
+                    );
+                    false
+                }
             }
         }
     }
@@ -414,7 +513,6 @@ fn build_finding_vars(item: &FixItem) -> HashMap<String, String> {
 /// Validated and pre-rendered data for spawning a fix agent.
 struct PreparedFixItem {
     item: FixItem,
-    fix_branch: String,
     prompt: String,
     /// The GitHub review comment ID (for re-fetching fresh body at execution time).
     comment_id: CommentId,
@@ -429,7 +527,6 @@ struct PreparedFixItem {
 fn lookup_and_prepare(
     finding_id: &str,
     queued_items: &[FixItem],
-    pr_number: PrNumber,
     fix_config: &ReviewStepConfig,
     prompt_engine: &PromptEngine,
     reply_map: &mut ReplyMap,
@@ -445,30 +542,23 @@ fn lookup_and_prepare(
         return None;
     };
 
-    let prepared = prepare_fix_item(item, pr_number, fix_config, prompt_engine, reply_map);
+    let prepared = prepare_fix_item(item, fix_config, prompt_engine, reply_map);
     if prepared.is_none() {
         failed.insert(finding_id.to_owned());
     }
     prepared
 }
 
-/// Validate branch name, render the prompt, and log the spawn.
+/// Render the prompt and log the spawn.
 ///
-/// Returns `None` if the item should be skipped (invalid branch name or prompt
-/// rendering failure), with a warning already logged.
+/// Returns `None` if the item should be skipped (prompt rendering failure),
+/// with a warning already logged.
 fn prepare_fix_item(
     item: FixItem,
-    pr_number: PrNumber,
     fix_config: &ReviewStepConfig,
     prompt_engine: &PromptEngine,
     reply_map: &mut ReplyMap,
 ) -> Option<PreparedFixItem> {
-    let fix_branch = format!("rlph-fix-{pr_number}-{}", item.finding.id);
-    if let Err(e) = validate_branch_name(&fix_branch) {
-        warn!(finding_id = %item.finding.id, error = %e, "invalid fix branch name, skipping");
-        return None;
-    }
-
     let vars = build_finding_vars(&item);
     let prompt = match prompt_engine.render_phase(&fix_config.prompt, &vars) {
         Ok(p) => p,
@@ -491,7 +581,6 @@ fn prepare_fix_item(
 
     Some(PreparedFixItem {
         item,
-        fix_branch,
         prompt,
         comment_id,
         replies,
@@ -539,37 +628,11 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
     shared: &SharedFixState<S, C>,
     prepared_items: Vec<PreparedFixItem>,
     pr_number: PrNumber,
+    worktree_path: &Path,
+    fix_branch: &str,
 ) -> (HashSet<String>, Option<(String, Severity, Error)>) {
     let batch_size = prepared_items.len();
     let mut completed_ids = HashSet::new();
-
-    // Capture the first finding ID before we move prepared_items, so we can
-    // attribute worktree-creation failures to a specific finding.
-    let first_finding_id = prepared_items[0].item.finding.id.clone();
-    let first_finding_severity = prepared_items[0].item.finding.severity;
-
-    // Use the first item's fix_branch as the worktree branch for the whole batch
-    let batch_branch = prepared_items[0].fix_branch.clone();
-
-    // Create a single worktree for the batch
-    let wm = shared.make_worktree_manager();
-
-    let worktree_path = match wm.create_fresh(&batch_branch, &shared.pr_branch) {
-        Ok(info) => info.path,
-        Err(e) => {
-            return (
-                completed_ids,
-                Some((first_finding_id, first_finding_severity, e)),
-            );
-        }
-    };
-
-    info!(
-        batch_size,
-        branch = %batch_branch,
-        path = %worktree_path.display(),
-        "created batch worktree"
-    );
 
     // Build runner for the initial agent invocation
     let runner = build_fix_runner(&shared.fix_config, shared.agent_timeout_retries);
@@ -580,7 +643,6 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
         for (idx, prepared) in prepared_items.into_iter().enumerate() {
             let PreparedFixItem {
                 item,
-                fix_branch: _,
                 mut prompt,
                 comment_id,
                 replies,
@@ -603,7 +665,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             // Run agent (first finding) or resume session (subsequent findings)
             let run_result = if idx == 0 {
                 info!(%finding_id, "spawning batch fix agent");
-                runner.run(Phase::Fix, &prompt, &worktree_path).await
+                runner.run(Phase::Fix, &prompt, worktree_path).await
             } else {
                 let Some(ref sid) = session_id else {
                     let err = Error::Orchestrator(
@@ -618,7 +680,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
                     &shared.fix_config,
                     sid,
                     &prompt,
-                    &worktree_path,
+                    worktree_path,
                     Some("fix"),
                 )
                 .await
@@ -656,7 +718,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             let fix_output = match parse_fix_with_retry(
                 &run_result,
                 &shared.fix_config,
-                &worktree_path,
+                worktree_path,
                 &*shared.correction_runner,
             )
             .await
@@ -675,8 +737,8 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             let fix_result = match apply_fix_output(
                 fix_output,
                 &finding_id,
-                &worktree_path,
-                &batch_branch,
+                worktree_path,
+                fix_branch,
                 &shared.pr_branch,
                 &ConflictResolutionCtx {
                     session_id: session_id.as_deref(),
@@ -700,12 +762,6 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
         }
         None // all findings completed successfully
     };
-
-    // Always clean up the worktree
-    info!(path = %worktree_path.display(), "cleaning up batch worktree");
-    if let Err(e) = wm.remove(&worktree_path) {
-        warn!(error = %e, "failed to clean up batch worktree");
-    }
 
     (completed_ids, error)
 }
@@ -1103,6 +1159,29 @@ mod tests {
         make_finding_with_deps, make_reactions, make_review_comment, make_test_config,
     };
 
+    fn run_git(cwd: &Path, args: &[&str]) {
+        git_in_dir(cwd, args).unwrap_or_else(|e| panic!("git {:?} failed: {e}", args));
+    }
+
+    fn init_temp_repo() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        let repo_path = repo.path();
+
+        run_git(repo_path, &["init"]);
+        run_git(repo_path, &["config", "user.email", "test@test.com"]);
+        run_git(repo_path, &["config", "user.name", "Test"]);
+
+        std::fs::write(repo_path.join("README.md"), "# test").unwrap();
+        run_git(repo_path, &["add", "."]);
+        run_git(repo_path, &["commit", "-m", "init"]);
+        run_git(repo_path, &["branch", "-M", "main"]);
+
+        let repo_str = repo_path.to_str().unwrap();
+        run_git(repo_path, &["remote", "add", "origin", repo_str]);
+
+        repo
+    }
+
     #[test]
     fn test_fix_branch_name_is_valid() {
         let branch = "rlph-fix-42-sql-injection";
@@ -1391,9 +1470,9 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_prep_partial_failure() {
-        // "bad finding" contains a space → invalid branch name
-        // "good-a" and "good-b" are valid
+    fn test_batch_prep_all_succeed() {
+        // Branch validation is no longer per-finding (stable branch used),
+        // so all items prepare successfully regardless of finding ID characters.
         let items = vec![
             make_fix_item(make_finding("good-a"), 100),
             make_fix_item(make_finding("bad finding"), 200),
@@ -1409,13 +1488,7 @@ mod tests {
 
         for item in items {
             let finding_id = item.finding.id.clone();
-            match prepare_fix_item(
-                item,
-                PrNumber::new(42),
-                &fix_config,
-                &engine,
-                &mut reply_map,
-            ) {
+            match prepare_fix_item(item, &fix_config, &engine, &mut reply_map) {
                 Some(p) => prepared.push(p),
                 None => {
                     failed.insert(finding_id);
@@ -1423,29 +1496,23 @@ mod tests {
             }
         }
 
-        // Two items succeed, one fails
-        assert_eq!(prepared.len(), 2);
+        assert_eq!(prepared.len(), 3);
         assert_eq!(prepared[0].item.finding.id, "good-a");
-        assert_eq!(prepared[1].item.finding.id, "good-b");
-
-        assert_eq!(failed.len(), 1);
-        assert!(failed.contains("bad finding"));
+        assert_eq!(prepared[1].item.finding.id, "bad finding");
+        assert_eq!(prepared[2].item.finding.id, "good-b");
+        assert!(failed.is_empty());
     }
 
     #[tokio::test]
     async fn test_run_batch_fix_returns_failed_severity() {
         let repo_root = tempfile::tempdir().unwrap();
-        let config = make_test_config();
+        let mut config = make_test_config();
+        // Use a non-existent binary so the agent fails immediately
+        config.fix.agent_binary = "nonexistent-agent-binary".to_string();
         let engine = PromptEngine::new(None);
         let item = make_fix_item(make_finding_critical("crit-finding"), 100);
-        let prepared = prepare_fix_item(
-            item,
-            PrNumber::new(42),
-            &config.fix,
-            &engine,
-            &mut ReplyMap::new(),
-        )
-        .expect("item should prepare successfully");
+        let prepared = prepare_fix_item(item, &config.fix, &engine, &mut ReplyMap::new())
+            .expect("item should prepare successfully");
         let shared = SharedFixState::new(
             &config,
             "main",
@@ -1455,8 +1522,16 @@ mod tests {
             None,
         );
 
-        let (_completed, batch_error) =
-            run_batch_fix(&shared, vec![prepared], PrNumber::new(42)).await;
+        let wt_path = repo_root.path().join("fake-worktree");
+        std::fs::create_dir_all(&wt_path).unwrap();
+        let (_completed, batch_error) = run_batch_fix(
+            &shared,
+            vec![prepared],
+            PrNumber::new(42),
+            &wt_path,
+            "rlph-fix-main",
+        )
+        .await;
 
         assert!(
             matches!(
@@ -1465,6 +1540,35 @@ mod tests {
                     if finding_id == "crit-finding"
             ),
             "expected batch failure to preserve finding severity, got: {batch_error:?}"
+        );
+    }
+
+    #[test]
+    fn test_reset_failure_recreates_shared_worktree() {
+        let repo = init_temp_repo();
+        let worktree_base = tempfile::tempdir().unwrap();
+        let worktree_manager = WorktreeManager::new(
+            repo.path().to_path_buf(),
+            worktree_base.path().to_path_buf(),
+            "main".to_string(),
+        );
+        let fix_branch = "rlph-fix-main";
+        let worktree_path = worktree_base.path().join(fix_branch);
+
+        std::fs::create_dir_all(&worktree_path).unwrap();
+        std::fs::write(worktree_path.join("leftover.txt"), "dirty").unwrap();
+
+        assert!(
+            recover_shared_worktree(&worktree_manager, &worktree_path, "main", fix_branch),
+            "expected worktree recovery to succeed"
+        );
+
+        assert!(worktree_path.join(".git").exists());
+        assert!(!worktree_path.join("leftover.txt").exists());
+        let status = git_in_dir(&worktree_path, &["status", "--porcelain"]).unwrap();
+        assert!(
+            status.trim().is_empty(),
+            "expected clean worktree, got: {status}"
         );
     }
 }

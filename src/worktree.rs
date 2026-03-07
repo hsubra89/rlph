@@ -10,6 +10,7 @@ use crate::ids::{IssueNumber, PrNumber};
 
 /// Convention path for the worktree setup script.
 const CONVENTION_SETUP_SCRIPT: &str = ".rlph/worktree-setup.sh";
+const FETCH_MAX_ATTEMPTS: u32 = 3;
 
 /// Resolve the worktree setup script path.
 ///
@@ -134,6 +135,11 @@ impl WorktreeManager {
         format!("rlph-{issue_number}-{slug}")
     }
 
+    /// Generate the shared fix branch name for a PR branch.
+    pub fn fix_branch_name(pr_branch: &str) -> String {
+        format!("rlph-fix-{}", Self::slugify(pr_branch))
+    }
+
     /// Create a URL/title-safe slug from a string.
     pub fn slugify(title: &str) -> String {
         let slug: String = title
@@ -198,7 +204,7 @@ impl WorktreeManager {
         })?;
 
         // Fetch latest base branch from origin (mandatory, with retries)
-        self.fetch_with_retry(&self.base_branch, 3)?;
+        self.fetch_with_retry(&self.base_branch, FETCH_MAX_ATTEMPTS)?;
 
         // Start point is always origin/<base> since fetch above succeeded
         let start_point = format!("origin/{}", self.base_branch);
@@ -273,7 +279,7 @@ impl WorktreeManager {
             );
 
             // Fetch latest from origin so we don't review stale code
-            self.fetch_with_retry(branch, 3)?;
+            self.fetch_with_retry(branch, FETCH_MAX_ATTEMPTS)?;
 
             // Reset the worktree to the latest remote HEAD
             let remote_ref = format!("origin/{branch}");
@@ -304,7 +310,7 @@ impl WorktreeManager {
         })?;
 
         // Fetch latest branch from origin (mandatory, with retries)
-        self.fetch_with_retry(branch, 3)?;
+        self.fetch_with_retry(branch, FETCH_MAX_ATTEMPTS)?;
 
         let remote_ref = format!("origin/{branch}");
         let local_ref = format!("refs/heads/{local_branch}");
@@ -358,10 +364,29 @@ impl WorktreeManager {
     ///
     /// Removes any stale worktree or local branch with the same name first.
     pub fn create_fresh(&self, branch_name: &str, remote_branch: &str) -> Result<WorktreeInfo> {
+        self.create_fresh_from_remote(branch_name, remote_branch, true)
+    }
+
+    /// Create a fresh worktree from a remote branch that the caller already fetched.
+    pub(crate) fn create_fresh_from_fetched_remote(
+        &self,
+        branch_name: &str,
+        remote_branch: &str,
+    ) -> Result<WorktreeInfo> {
+        self.create_fresh_from_remote(branch_name, remote_branch, false)
+    }
+
+    fn create_fresh_from_remote(
+        &self,
+        branch_name: &str,
+        remote_branch: &str,
+        fetch_remote: bool,
+    ) -> Result<WorktreeInfo> {
         validate_branch_name(branch_name)?;
 
-        // Fetch latest remote branch
-        self.fetch_with_retry(remote_branch, 3)?;
+        if fetch_remote {
+            self.fetch_with_retry(remote_branch, FETCH_MAX_ATTEMPTS)?;
+        }
 
         std::fs::create_dir_all(&self.base_dir).map_err(|e| {
             Error::Worktree(format!(
@@ -399,6 +424,22 @@ impl WorktreeManager {
             path: canonical,
             branch: branch_name.to_string(),
         })
+    }
+
+    /// Reset an existing worktree to the latest remote branch state.
+    ///
+    /// Fetches the remote branch, hard-resets the worktree, and cleans untracked files
+    /// so it's ready for the next fix session.
+    pub fn reset_to_remote(&self, worktree_path: &Path, remote_branch: &str) -> Result<()> {
+        self.fetch_with_retry(remote_branch, FETCH_MAX_ATTEMPTS)?;
+        git_in_dir(
+            worktree_path,
+            &["reset", "--hard", &format!("origin/{remote_branch}")],
+        )
+        .map_err(|e| Error::Worktree(format!("failed to reset worktree: {e}")))?;
+        git_in_dir(worktree_path, &["clean", "-ffd"])
+            .map_err(|e| Error::Worktree(format!("failed to clean worktree: {e}")))?;
+        Ok(())
     }
 
     /// Run the setup script in the given worktree directory, if configured.
@@ -634,6 +675,29 @@ impl WorktreeManager {
 mod tests {
     use super::*;
 
+    fn run_git(cwd: &Path, args: &[&str]) {
+        git_in_dir(cwd, args).unwrap_or_else(|e| panic!("git {:?} failed: {e}", args));
+    }
+
+    fn init_temp_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+
+        run_git(path, &["init"]);
+        run_git(path, &["config", "user.email", "test@test.com"]);
+        run_git(path, &["config", "user.name", "Test"]);
+
+        std::fs::write(path.join("README.md"), "# initial\n").unwrap();
+        run_git(path, &["add", "."]);
+        run_git(path, &["commit", "-m", "init"]);
+        run_git(path, &["branch", "-M", "main"]);
+
+        let path_str = path.to_str().unwrap();
+        run_git(path, &["remote", "add", "origin", path_str]);
+
+        dir
+    }
+
     #[test]
     fn test_worktree_name() {
         assert_eq!(
@@ -643,6 +707,14 @@ mod tests {
         assert_eq!(
             WorktreeManager::worktree_name(IssueNumber::new(42), "fix-bug"),
             "rlph-42-fix-bug"
+        );
+    }
+
+    #[test]
+    fn test_fix_branch_name() {
+        assert_eq!(
+            WorktreeManager::fix_branch_name("feature/SQL Injection"),
+            "rlph-fix-feature-sql-injection"
         );
     }
 
@@ -884,5 +956,79 @@ mod tests {
 
         let result = resolve_setup_script(Some("scripts/../../escape.sh"), tmp.path()).unwrap();
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_reset_to_remote_restores_latest_remote_state() {
+        let repo = init_temp_repo();
+        let wt_base = tempfile::tempdir().unwrap();
+        let mgr = WorktreeManager::new(
+            repo.path().to_path_buf(),
+            wt_base.path().to_path_buf(),
+            "main".to_string(),
+        );
+
+        let info = mgr.create_fresh("rlph-fix-main", "main").unwrap();
+
+        std::fs::write(repo.path().join("README.md"), "# remote\n").unwrap();
+        std::fs::write(repo.path().join("remote-only.txt"), "from remote\n").unwrap();
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "remote update"]);
+
+        std::fs::write(info.path.join("README.md"), "# local dirty\n").unwrap();
+        std::fs::write(info.path.join("staged.txt"), "staged change\n").unwrap();
+        run_git(&info.path, &["add", "staged.txt"]);
+        std::fs::write(info.path.join("scratch.txt"), "untracked\n").unwrap();
+
+        let dirty_status = git_in_dir(&info.path, &["status", "--porcelain"]).unwrap();
+        assert!(
+            !dirty_status.trim().is_empty(),
+            "expected dirty worktree before reset"
+        );
+
+        mgr.reset_to_remote(&info.path, "main").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(info.path.join("README.md")).unwrap(),
+            "# remote\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(info.path.join("remote-only.txt")).unwrap(),
+            "from remote\n"
+        );
+        assert!(!info.path.join("staged.txt").exists());
+        assert!(!info.path.join("scratch.txt").exists());
+
+        let status = git_in_dir(&info.path, &["status", "--porcelain"]).unwrap();
+        assert!(
+            status.trim().is_empty(),
+            "expected clean worktree after reset, got: {status}"
+        );
+    }
+
+    #[test]
+    fn test_create_fresh_from_fetched_remote_skips_fetch() {
+        let repo = init_temp_repo();
+        let wt_base = tempfile::tempdir().unwrap();
+        let mgr = WorktreeManager::new(
+            repo.path().to_path_buf(),
+            wt_base.path().to_path_buf(),
+            "main".to_string(),
+        );
+
+        mgr.fetch_with_retry("main", FETCH_MAX_ATTEMPTS).unwrap();
+        run_git(
+            repo.path(),
+            &["remote", "set-url", "origin", "/path/that/does/not/exist"],
+        );
+
+        let info = mgr
+            .create_fresh_from_fetched_remote("rlph-fix-main", "main")
+            .unwrap();
+
+        assert!(info.path.join(".git").exists());
+        let head = git_in_dir(&info.path, &["rev-parse", "HEAD"]).unwrap();
+        let remote_head = git_in_dir(repo.path(), &["rev-parse", "origin/main"]).unwrap();
+        assert_eq!(head.trim(), remote_head.trim());
     }
 }
