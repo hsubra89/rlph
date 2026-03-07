@@ -21,7 +21,7 @@ use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult, Run
 use rlph::sources::{Task, TaskSource};
 use rlph::state::StateManager;
 use rlph::submission::{
-    InlineReviewComment, PullRequestReviewEvent, SubmissionBackend, SubmitResult,
+    FileReviewComment, InlineReviewComment, PullRequestReviewEvent, SubmissionBackend, SubmitResult,
 };
 use rlph::worktree::WorktreeManager;
 use tokio::sync::watch;
@@ -45,6 +45,9 @@ struct SubmissionTracker {
     submissions: Vec<(String, String, String, String)>,
     comments: Vec<(PrNumber, String)>,
     reviews: Vec<PostedReview>,
+    file_comments: Vec<PostedFileComment>,
+    standalone_comments: Vec<(PrNumber, String)>,
+    events: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +55,12 @@ struct PostedReview {
     pr_number: PrNumber,
     event: PullRequestReviewEvent,
     comments: Vec<InlineReviewComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PostedFileComment {
+    pr_number: PrNumber,
+    comments: Vec<FileReviewComment>,
 }
 
 fn push_review_comment(tracker: &Arc<Mutex<SubmissionTracker>>, pr_number: PrNumber, body: &str) {
@@ -406,7 +415,9 @@ impl SubmissionBackend for MockSubmission {
     }
 
     fn upsert_review_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
-        push_review_comment(&self.tracker, pr_number, body);
+        let mut tracker = self.tracker.lock().unwrap();
+        tracker.comments.push((pr_number, body.to_string()));
+        tracker.events.push("summary");
         Ok(())
     }
 
@@ -416,11 +427,36 @@ impl SubmissionBackend for MockSubmission {
         event: PullRequestReviewEvent,
         comments: &[InlineReviewComment],
     ) -> Result<()> {
-        self.tracker.lock().unwrap().reviews.push(PostedReview {
+        let mut tracker = self.tracker.lock().unwrap();
+        tracker.reviews.push(PostedReview {
             pr_number,
             event,
             comments: comments.to_vec(),
         });
+        tracker.events.push("line_review");
+        Ok(())
+    }
+
+    fn submit_file_pr_review_comments(
+        &self,
+        pr_number: PrNumber,
+        comments: &[FileReviewComment],
+    ) -> Result<()> {
+        let mut tracker = self.tracker.lock().unwrap();
+        tracker.file_comments.push(PostedFileComment {
+            pr_number,
+            comments: comments.to_vec(),
+        });
+        tracker.events.push("file_comments");
+        Ok(())
+    }
+
+    fn post_finding_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
+        let mut tracker = self.tracker.lock().unwrap();
+        tracker
+            .standalone_comments
+            .push((pr_number, body.to_string()));
+        tracker.events.push("standalone_comment");
         Ok(())
     }
 
@@ -547,6 +583,90 @@ impl ReviewRunnerFactory for NeverApproveReviewFactory {
                 let stdout = match phase {
                     Phase::ReviewAggregate => {
                         r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"id":"issue-found","file":"src/main.rs","line":1,"severity":"warning","description":"issue"}]}"#.to_string()
+                    }
+                    _ => String::new(),
+                };
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout,
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            })
+        })))
+    }
+}
+
+/// Review runner factory where aggregation returns a finding for a file outside the diff.
+struct InvalidFileReviewFactory;
+
+impl ReviewRunnerFactory for InvalidFileReviewFactory {
+    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async {
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: r#"{"findings":[{"id":"missing-file","file":"src/missing.rs","line":50,"severity":"warning","description":"issue outside diff"}]}"#.into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            })
+        })))
+    }
+
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
+            Box::pin(async move {
+                let stdout = match phase {
+                    Phase::ReviewAggregate => {
+                        r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"id":"missing-file","file":"src/missing.rs","line":50,"severity":"warning","description":"issue outside diff"}]}"#.to_string()
+                    }
+                    _ => String::new(),
+                };
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout,
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            })
+        })))
+    }
+}
+
+/// Review runner factory where one finding maps to an exact line and one falls back to a file comment.
+struct MixedPlacementReviewFactory;
+
+impl ReviewRunnerFactory for MixedPlacementReviewFactory {
+    fn create_phase_runner(&self, _phase: &ReviewPhaseConfig, _timeout_retries: u32) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|_phase, _prompt, _dir| {
+            Box::pin(async {
+                Ok(RunResult {
+                    exit_code: 0,
+                    stdout: r#"{"findings":[{"id":"line-finding","file":"src/main.rs","line":1,"severity":"warning","description":"line issue"},{"id":"file-finding","file":"src/main.rs","line":100,"severity":"warning","description":"file-level issue"}]}"#.into(),
+                    stderr: String::new(),
+                    session_id: None,
+                })
+            })
+        })))
+    }
+
+    fn create_step_runner(
+        &self,
+        _step: &ReviewStepConfig,
+        _timeout_retries: u32,
+        _name: &str,
+    ) -> AnyRunner {
+        AnyRunner::Callback(CallbackRunner::new(Arc::new(|phase, _prompt, _dir| {
+            Box::pin(async move {
+                let stdout = match phase {
+                    Phase::ReviewAggregate => {
+                        r#"{"verdict":"needs_fix","comment":"Issues found","findings":[{"id":"line-finding","file":"src/main.rs","line":1,"severity":"warning","description":"line issue"},{"id":"file-finding","file":"src/main.rs","line":100,"severity":"warning","description":"file-level issue"}]}"#.to_string()
                     }
                     _ => String::new(),
                 };
@@ -1491,21 +1611,21 @@ async fn test_review_only_needs_fix_completes_successfully() {
 }
 
 #[tokio::test]
-async fn test_review_only_fails_when_inline_review_submission_fails() {
+async fn test_review_only_posts_standalone_comment_when_finding_file_is_missing_from_diff() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
-    let task = make_task(100, "Inline review submission failure");
+    let task = make_task(100, "Invalid review finding");
 
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
     let source = MockSource::new(vec![task.clone()], Arc::clone(&source_tracker));
-    let submission = FailInlineReviewSubmission::new(Arc::clone(&sub_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
     let worktree_mgr = WorktreeManager::new(
         repo_dir.path().to_path_buf(),
         wt_dir.path().to_path_buf(),
         "main".to_string(),
     );
     let worktree_info = worktree_mgr
-        .create(IssueNumber::new(100), "review-inline-failure")
+        .create(IssueNumber::new(100), "review-invalid-finding")
         .unwrap();
     let vars = make_review_vars(
         &task,
@@ -1525,7 +1645,7 @@ async fn test_review_only_fails_when_inline_review_submission_fails() {
         make_config(false),
         repo_dir.path().to_path_buf(),
     )
-    .with_review_factory(NeverApproveReviewFactory);
+    .with_review_factory(InvalidFileReviewFactory);
 
     let invocation = ReviewInvocation {
         task_id_for_state: "pr-100".to_string(),
@@ -1533,6 +1653,74 @@ async fn test_review_only_fails_when_inline_review_submission_fails() {
         worktree_info,
         vars,
         comment_pr_number: Some(PrNumber::new(100)),
+    };
+
+    orchestrator
+        .run_review_for_existing_pr(invocation)
+        .await
+        .unwrap();
+
+    let submission_data = sub_tracker.lock().unwrap();
+    // src/missing.rs is not in the diff but src/main.rs is in the same directory,
+    // so the finding falls back to a file-level comment on the related file
+    assert!(
+        !submission_data.file_comments.is_empty(),
+        "expected file comments for related-file fallback, got {:?}",
+        submission_data.file_comments,
+    );
+    let file_comment = &submission_data.file_comments[0].comments[0];
+    assert_eq!(file_comment.path, "src/main.rs");
+    assert!(file_comment.body.contains("src/missing.rs:50"));
+    assert!(
+        file_comment
+            .body
+            .contains("which is not part of the current diff. It is shown here on a related file")
+    );
+}
+
+#[tokio::test]
+async fn test_review_only_fails_when_inline_review_submission_fails() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let task = make_task(101, "Inline review submission failure");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = MockSource::new(vec![task.clone()], Arc::clone(&source_tracker));
+    let submission = FailInlineReviewSubmission::new(Arc::clone(&sub_tracker));
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let worktree_info = worktree_mgr
+        .create(IssueNumber::new(101), "review-inline-failure")
+        .unwrap();
+    let vars = make_review_vars(
+        &task,
+        repo_dir.path(),
+        &worktree_info.branch,
+        &worktree_info.path,
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+
+    let orchestrator = Orchestrator::new(
+        source,
+        MockRunner::new("gh-101"),
+        submission,
+        worktree_mgr,
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        make_config(false),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(NeverApproveReviewFactory);
+
+    let invocation = ReviewInvocation {
+        task_id_for_state: "pr-101".to_string(),
+        mark_in_review_task_id: None,
+        worktree_info,
+        vars,
+        comment_pr_number: Some(PrNumber::new(101)),
     };
 
     let err = orchestrator
@@ -1544,6 +1732,79 @@ async fn test_review_only_fails_when_inline_review_submission_fails() {
     let submission_data = sub_tracker.lock().unwrap();
     assert!(submission_data.comments.is_empty());
     assert!(submission_data.reviews.is_empty());
+}
+
+#[tokio::test]
+async fn test_review_only_posts_line_and_file_comments_before_summary() {
+    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
+    let task = make_task(102, "Mixed review findings");
+
+    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
+    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
+    let source = MockSource::new(vec![task.clone()], Arc::clone(&source_tracker));
+    let submission = MockSubmission::new(Arc::clone(&sub_tracker), None);
+    let worktree_mgr = WorktreeManager::new(
+        repo_dir.path().to_path_buf(),
+        wt_dir.path().to_path_buf(),
+        "main".to_string(),
+    );
+    let worktree_info = worktree_mgr
+        .create(IssueNumber::new(102), "review-mixed-findings")
+        .unwrap();
+    let vars = make_review_vars(
+        &task,
+        repo_dir.path(),
+        &worktree_info.branch,
+        &worktree_info.path,
+    );
+    let state_dir = repo_dir.path().join(".rlph-test-state");
+
+    let orchestrator = Orchestrator::new(
+        source,
+        MockRunner::new("gh-102"),
+        submission,
+        worktree_mgr,
+        StateManager::new(&state_dir),
+        PromptEngine::new(None),
+        make_config(false),
+        repo_dir.path().to_path_buf(),
+    )
+    .with_review_factory(MixedPlacementReviewFactory);
+
+    let invocation = ReviewInvocation {
+        task_id_for_state: "pr-102".to_string(),
+        mark_in_review_task_id: None,
+        worktree_info,
+        vars,
+        comment_pr_number: Some(PrNumber::new(102)),
+    };
+
+    orchestrator
+        .run_review_for_existing_pr(invocation)
+        .await
+        .unwrap();
+
+    let submission_data = sub_tracker.lock().unwrap();
+    assert_eq!(submission_data.reviews.len(), 1);
+    assert_eq!(submission_data.reviews[0].comments.len(), 1);
+    assert_eq!(submission_data.reviews[0].comments[0].path, "src/main.rs");
+    assert_eq!(submission_data.reviews[0].comments[0].line, 1);
+
+    assert_eq!(submission_data.file_comments.len(), 1);
+    assert_eq!(submission_data.file_comments[0].comments.len(), 1);
+    assert_eq!(
+        submission_data.file_comments[0].comments[0].path,
+        "src/main.rs"
+    );
+    assert!(submission_data.file_comments[0].comments[0].body.contains(
+        "applies to `src/main.rs:100` but is shown as a file-level comment because that location is not commentable in the diff"
+    ));
+
+    assert_eq!(submission_data.comments.len(), 1);
+    assert_eq!(
+        submission_data.events,
+        vec!["line_review", "file_comments", "summary"]
+    );
 }
 
 // --- ProgressReporter output tests ---

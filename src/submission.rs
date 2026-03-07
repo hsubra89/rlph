@@ -19,6 +19,8 @@ pub struct PrComment {
     user_obj: Option<PrCommentUser>,
     pub body: String,
     pub created_at: String,
+    #[serde(default)]
+    pub in_reply_to_id: Option<CommentId>,
     /// GitHub author association: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, etc.
     #[serde(default)]
     pub author_association: Option<String>,
@@ -34,6 +36,16 @@ pub struct PrReviewComment {
     /// If this comment is a reply to another review comment.
     #[serde(default)]
     pub in_reply_to_id: Option<CommentId>,
+}
+
+impl From<PrComment> for PrReviewComment {
+    fn from(comment: PrComment) -> Self {
+        Self {
+            id: comment.id,
+            body: comment.body,
+            in_reply_to_id: comment.in_reply_to_id,
+        }
+    }
 }
 
 /// A GitHub reaction on a comment.
@@ -110,6 +122,15 @@ pub trait SubmissionBackend: Send + Sync {
         Ok(())
     }
 
+    /// Post one or more file-level PR review comments.
+    fn submit_file_pr_review_comments(
+        &self,
+        _pr_number: PrNumber,
+        _comments: &[FileReviewComment],
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Fetch the full PR diff used for inline comment line mapping.
     fn fetch_pr_diff(&self, _pr_number: PrNumber) -> Result<String> {
         Ok(String::new())
@@ -164,6 +185,11 @@ pub trait SubmissionBackend: Send + Sync {
         Ok(0)
     }
 
+    /// Post a standalone PR comment for a finding that could not be placed inline.
+    fn post_finding_comment(&self, _pr_number: PrNumber, _body: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// Post a reply to a PR review comment.
     fn reply_to_review_comment(
         &self,
@@ -203,6 +229,15 @@ pub struct InlineReviewComment {
     pub body: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileReviewComment {
+    pub finding_id: String,
+    pub original_file: String,
+    pub original_line: u32,
+    pub path: String,
+    pub body: String,
+}
+
 #[derive(Debug, Serialize)]
 struct ReviewCreateRequest {
     body: String,
@@ -216,6 +251,14 @@ struct ReviewInlineCommentRequest {
     line: u32,
     side: String,
     body: String,
+}
+
+#[derive(Debug, Serialize)]
+struct FileReviewCommentRequest {
+    body: String,
+    commit_id: String,
+    path: String,
+    subject_type: String,
 }
 
 /// GitHub PR submission via `gh` CLI.
@@ -357,6 +400,21 @@ impl GitHubSubmission {
         parse_pr_context_json(&stdout)
             .map_err(|e| Error::Submission(format!("failed to parse gh pr view output: {e}")))
     }
+
+    fn gh_post_pr_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
+        let number_str = pr_number.to_string();
+        let output = Command::new("gh")
+            .args(["pr", "comment", &number_str, "--body", body])
+            .output()
+            .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Submission(format!("gh pr comment failed: {stderr}")));
+        }
+
+        Ok(())
+    }
 }
 
 impl SubmissionBackend for GitHubSubmission {
@@ -419,16 +477,7 @@ impl SubmissionBackend for GitHubSubmission {
                 "updated review comment on PR"
             );
         } else {
-            let number_str = pr_number.to_string();
-            let output = Command::new("gh")
-                .args(["pr", "comment", &number_str, "--body", body])
-                .output()
-                .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(Error::Submission(format!("gh pr comment failed: {stderr}")));
-            }
+            self.gh_post_pr_comment(pr_number, body)?;
 
             info!(pr_number = %pr_number, "created review comment on PR");
         }
@@ -488,7 +537,7 @@ impl SubmissionBackend for GitHubSubmission {
             let stdout = String::from_utf8_lossy(&output.stdout);
             return Err(Error::Submission(format_gh_review_submission_error(
                 "create review",
-                comments,
+                &format_attempted_line_review_comments(comments),
                 &stderr,
                 &stdout,
             )));
@@ -499,6 +548,71 @@ impl SubmissionBackend for GitHubSubmission {
             comments = comments.len(),
             event = event.as_api_value(),
             "created batched inline PR review"
+        );
+        Ok(())
+    }
+
+    fn submit_file_pr_review_comments(
+        &self,
+        pr_number: PrNumber,
+        comments: &[FileReviewComment],
+    ) -> Result<()> {
+        if comments.is_empty() {
+            return Ok(());
+        }
+
+        let commit_id = fetch_pr_head_sha(pr_number)?;
+        let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments");
+
+        for comment in comments {
+            let payload = FileReviewCommentRequest {
+                body: comment.body.clone(),
+                commit_id: commit_id.clone(),
+                path: comment.path.clone(),
+                subject_type: "file".to_string(),
+            };
+            let request_body = serde_json::to_vec(&payload).map_err(|e| {
+                Error::Submission(format!("failed to serialize file review payload: {e}"))
+            })?;
+
+            let mut child = Command::new("gh")
+                .args(["api", &endpoint, "-X", "POST", "--input", "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| Error::Submission("failed to open stdin for gh api".to_string()))?;
+            stdin.write_all(&request_body).map_err(|e| {
+                Error::Submission(format!("failed to write file review payload: {e}"))
+            })?;
+            drop(stdin);
+
+            let output = child
+                .wait_with_output()
+                .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let attempted = vec![format_attempted_file_review_comment(comment)];
+                return Err(Error::Submission(format_gh_review_submission_error(
+                    "create file review comment",
+                    &attempted,
+                    &stderr,
+                    &stdout,
+                )));
+            }
+        }
+
+        info!(
+            pr_number = %pr_number,
+            comments = comments.len(),
+            "created file-level PR review comments"
         );
         Ok(())
     }
@@ -541,14 +655,37 @@ impl SubmissionBackend for GitHubSubmission {
     }
 
     fn list_review_comment_reactions(&self, comment_id: CommentId) -> Result<Vec<Reaction>> {
-        run_gh_api_paginated(&format!(
-            "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions"
-        ))
+        with_comment_fallback(
+            || {
+                run_gh_api_paginated(&format!(
+                    "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions"
+                ))
+            },
+            || {
+                run_gh_api_paginated(&format!(
+                    "repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/reactions"
+                ))
+            },
+        )
     }
 
     fn add_review_comment_reaction(&self, comment_id: CommentId, reaction: &str) -> Result<()> {
-        let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions");
-        run_gh_api_mutate(&endpoint, "POST", &[("content", reaction)])?;
+        with_comment_fallback(
+            || {
+                run_gh_api_mutate(
+                    &format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions"),
+                    "POST",
+                    &[("content", reaction)],
+                )
+            },
+            || {
+                run_gh_api_mutate(
+                    &format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/reactions"),
+                    "POST",
+                    &[("content", reaction)],
+                )
+            },
+        )?;
         info!(comment_id = %comment_id, reaction, "added reaction to review comment");
         Ok(())
     }
@@ -558,9 +695,26 @@ impl SubmissionBackend for GitHubSubmission {
         comment_id: CommentId,
         reaction_id: ReactionId,
     ) -> Result<()> {
-        let endpoint =
-            format!("repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions/{reaction_id}");
-        run_gh_api_mutate(&endpoint, "DELETE", &[])?;
+        with_comment_fallback(
+            || {
+                run_gh_api_mutate(
+                    &format!(
+                        "repos/{{owner}}/{{repo}}/pulls/comments/{comment_id}/reactions/{reaction_id}"
+                    ),
+                    "DELETE",
+                    &[],
+                )
+            },
+            || {
+                run_gh_api_mutate(
+                    &format!(
+                        "repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/reactions/{reaction_id}"
+                    ),
+                    "DELETE",
+                    &[],
+                )
+            },
+        )?;
         info!(
             comment_id = %comment_id,
             reaction_id = %reaction_id, "deleted reaction from review comment"
@@ -574,10 +728,30 @@ impl SubmissionBackend for GitHubSubmission {
         comment_id: CommentId,
         body: &str,
     ) -> Result<()> {
-        let endpoint =
-            format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies");
-        run_gh_api_mutate(&endpoint, "POST", &[("body", body)])?;
+        with_comment_fallback(
+            || {
+                run_gh_api_mutate(
+                    &format!(
+                        "repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies"
+                    ),
+                    "POST",
+                    &[("body", body)],
+                )
+            },
+            || {
+                run_gh_api_mutate(
+                    &format!("repos/{{owner}}/{{repo}}/issues/comments/{comment_id}/replies"),
+                    "POST",
+                    &[("body", body)],
+                )
+            },
+        )?;
         info!(pr_number = %pr_number, comment_id = %comment_id, "replied to review comment");
+        Ok(())
+    }
+
+    fn post_finding_comment(&self, pr_number: PrNumber, body: &str) -> Result<()> {
+        self.gh_post_pr_comment(pr_number, body)?;
         Ok(())
     }
 
@@ -587,34 +761,60 @@ impl SubmissionBackend for GitHubSubmission {
     }
 }
 
+fn with_comment_fallback<T, F, G>(pr_fn: F, issue_fn: G) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+    G: FnOnce() -> Result<T>,
+{
+    pr_fn().or_else(|_| issue_fn())
+}
+
 #[derive(Debug, Deserialize)]
 struct GhApiErrorResponse {
     #[serde(default)]
     message: String,
     #[serde(default)]
     errors: Vec<Value>,
+    #[serde(default)]
     documentation_url: Option<String>,
-    status: Option<String>,
+    #[serde(default)]
+    status: Option<Value>,
+}
+
+fn format_attempted_line_review_comments(comments: &[InlineReviewComment]) -> Vec<String> {
+    comments
+        .iter()
+        .map(|comment| {
+            format!(
+                "`{}` original {}:{} -> line comment {}:{}",
+                comment.finding_id,
+                comment.original_file,
+                comment.original_line,
+                comment.path,
+                comment.line
+            )
+        })
+        .collect()
+}
+
+fn format_attempted_file_review_comment(comment: &FileReviewComment) -> String {
+    format!(
+        "`{}` original {}:{} -> file comment {}",
+        comment.finding_id, comment.original_file, comment.original_line, comment.path
+    )
 }
 
 fn format_gh_review_submission_error(
     action: &str,
-    attempted: &[InlineReviewComment],
+    attempted: &[String],
     stderr: &str,
     stdout: &str,
 ) -> String {
     let mut lines = vec![format!("gh api {action} failed")];
     if !attempted.is_empty() {
         lines.push("attempted comments:".to_string());
-        for comment in attempted {
-            lines.push(format!(
-                "  - `{}` original {}:{} -> line comment {}:{}",
-                comment.finding_id,
-                comment.original_file,
-                comment.original_line,
-                comment.path,
-                comment.line
-            ));
+        for item in attempted {
+            lines.push(format!("  - {item}"));
         }
     }
 
@@ -623,17 +823,18 @@ fn format_gh_review_submission_error(
             lines.push(format!("github message: {}", parsed.message.trim()));
         }
         if !parsed.errors.is_empty() {
-            let mut errors = String::new();
-            for (idx, error) in parsed.errors.iter().enumerate() {
-                if idx > 0 {
-                    errors.push_str("; ");
-                }
-                errors.push_str(&format_gh_api_error_value(error));
-            }
-            lines.push(format!("github errors: {}", errors));
+            lines.push(format!(
+                "github errors: {}",
+                parsed
+                    .errors
+                    .iter()
+                    .map(format_gh_api_error_value)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
         }
         if let Some(status) = parsed.status {
-            lines.push(format!("status: {}", status.trim()));
+            lines.push(format!("status: {}", format_gh_api_error_value(&status)));
         }
         if let Some(url) = parsed.documentation_url
             && !url.trim().is_empty()
@@ -655,8 +856,13 @@ fn format_gh_review_submission_error(
 }
 
 fn parse_gh_api_error(text: &str) -> Option<GhApiErrorResponse> {
-    let start = text.find('{')?;
-    serde_json::from_str::<GhApiErrorResponse>(&text[start..]).ok()
+    let text = text.trim();
+    serde_json::from_str::<GhApiErrorResponse>(text)
+        .ok()
+        .or_else(|| {
+            let start = text.find('{')?;
+            serde_json::from_str::<GhApiErrorResponse>(&text[start..]).ok()
+        })
 }
 
 fn format_gh_api_error_value(value: &Value) -> String {
@@ -665,6 +871,38 @@ fn format_gh_api_error_value(value: &Value) -> String {
         Value::Null => "null".to_string(),
         _ => value.to_string(),
     }
+}
+
+/// Fetch the HEAD commit SHA for a pull request.
+fn fetch_pr_head_sha(pr_number: PrNumber) -> Result<String> {
+    let number_str = pr_number.to_string();
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &number_str,
+            "--json",
+            "headRefOid",
+            "--jq",
+            ".headRefOid",
+        ])
+        .output()
+        .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Submission(format!(
+            "failed to fetch PR head SHA: {stderr}"
+        )));
+    }
+
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if sha.is_empty() {
+        return Err(Error::Submission(format!(
+            "PR #{pr_number}: empty headRefOid"
+        )));
+    }
+    Ok(sha)
 }
 
 /// Detect the GitHub repository owner and name from the local git remote URL.
@@ -875,7 +1113,7 @@ fn extract_issue_number_reference(body: &str) -> Option<IssueNumber> {
 #[cfg(test)]
 mod tests {
     use super::{
-        InlineReviewComment, PrComment, extract_issue_number_reference,
+        FileReviewComment, InlineReviewComment, PrComment, extract_issue_number_reference,
         format_gh_review_submission_error, parse_owner_repo_from_remote, parse_pr_context_json,
         parse_pr_number_from_url, pr_body_references_issue,
     };
@@ -996,6 +1234,7 @@ mod tests {
             user_obj: None,
             body: String::new(),
             created_at: String::new(),
+            in_reply_to_id: None,
             author_association: Some("OWNER".to_string()),
         };
         assert!(trusted.is_trusted());
@@ -1005,6 +1244,7 @@ mod tests {
             user_obj: None,
             body: String::new(),
             created_at: String::new(),
+            in_reply_to_id: None,
             author_association: Some("MEMBER".to_string()),
         };
         assert!(member.is_trusted());
@@ -1014,6 +1254,7 @@ mod tests {
             user_obj: None,
             body: String::new(),
             created_at: String::new(),
+            in_reply_to_id: None,
             author_association: Some("NONE".to_string()),
         };
         assert!(!external.is_trusted());
@@ -1023,6 +1264,7 @@ mod tests {
             user_obj: None,
             body: String::new(),
             created_at: String::new(),
+            in_reply_to_id: None,
             author_association: None,
         };
         assert!(!missing.is_trusted());
@@ -1068,44 +1310,48 @@ mod tests {
         assert!(parse_owner_repo_from_remote("https://gitlab.com/acme/widget").is_err());
     }
 
-    fn sample_inline_review_comment() -> InlineReviewComment {
-        InlineReviewComment {
-            finding_id: "line-finding".to_string(),
-            original_file: "src/main.rs".to_string(),
-            original_line: 10,
-            path: "src/main.rs".to_string(),
-            line: 12,
-            body: "body".to_string(),
-        }
-    }
-
     #[test]
     fn test_format_gh_review_submission_error_parses_422_payload() {
-        let attempted = [sample_inline_review_comment()];
+        let attempted = vec![format!(
+            "{}",
+            super::format_attempted_file_review_comment(&FileReviewComment {
+                finding_id: "missing-file".to_string(),
+                original_file: "src/missing.rs".to_string(),
+                original_line: 50,
+                path: "src/missing.rs".to_string(),
+                body: "body".to_string(),
+            })
+        )];
         let stderr = concat!(
             "gh: Unprocessable Entity (HTTP 422)\n",
             "{\"message\":\"Unprocessable Entity\",\"errors\":[\"Line could not be resolved\"],",
             "\"documentation_url\":\"https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request\",",
             "\"status\":\"422\"}"
         );
-
         let formatted = format_gh_review_submission_error("create review", &attempted, stderr, "");
 
         assert!(formatted.contains("gh api create review failed"));
-        assert!(formatted.contains("line-finding"));
-        assert!(formatted.contains("original src/main.rs:10 -> line comment src/main.rs:12"));
+        assert!(formatted.contains("missing-file"));
+        assert!(formatted.contains("src/missing.rs:50"));
         assert!(formatted.contains("github message: Unprocessable Entity"));
         assert!(formatted.contains("github errors: Line could not be resolved"));
         assert!(formatted.contains("status: 422"));
-        assert!(formatted.contains(
-            "documentation: https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request"
-        ));
+        assert!(formatted.contains("documentation: https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request"));
     }
 
     #[test]
     fn test_format_gh_review_submission_error_falls_back_to_raw_output() {
-        let attempted = [sample_inline_review_comment()];
-
+        let attempted = vec![format!(
+            "{}",
+            super::format_attempted_line_review_comments(&[InlineReviewComment {
+                finding_id: "line-finding".to_string(),
+                original_file: "src/main.rs".to_string(),
+                original_line: 10,
+                path: "src/main.rs".to_string(),
+                line: 12,
+                body: "body".to_string(),
+            }])[0]
+        )];
         let formatted = format_gh_review_submission_error(
             "create review",
             &attempted,

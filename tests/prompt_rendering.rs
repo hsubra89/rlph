@@ -88,7 +88,7 @@ Add category to ReviewFinding, rewrite style review as sub-agent coordinator
 
 ## Instructions
 
-1. Run `git diff main...HEAD` to identify changed files. Only review changed code.
+1. Run `git diff main...HEAD` to identify changed files. Review the changed code and any existing code that may be affected by the changes.
 2. Check for logical bugs, off-by-one errors, incorrect conditions, missing edge cases.
 3. Verify error handling covers failure paths without silently swallowing errors.
 4. Check that tests exist for changed code and cover important branches.
@@ -120,6 +120,9 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 ```
 
 - `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
+- `file`: use the current path in the repository. For renamed files use the new path.
+- `line`: use a 1-based line number on the new/current side of the diff. Do not use deleted-line numbers or `0`.
+- `description`: use backticks around code references (function names, variable names, type names, file paths) for readability.
 - `suggested_fixes`: at least one concrete, actionable fix the author can apply. Each entry is a short description of a distinct fix option.
 - `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
 - Every finding must be actionable — do not report information-only observations. If you cannot propose a concrete fix, do not report it.
@@ -171,7 +174,7 @@ Add category to ReviewFinding, rewrite style review as sub-agent coordinator
 
 ## Instructions
 
-1. Run `git diff main...HEAD` to identify changed files. Only review changed code.
+1. Run `git diff main...HEAD` to identify changed files. Review the changed code and any existing code that may be affected by the changes.
 2. Check for injection vulnerabilities (command injection, SQL injection, XSS, etc.).
 3. Verify authentication and authorization are correctly enforced.
 4. Check for hardcoded secrets, credentials, or API keys.
@@ -204,6 +207,9 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 ```
 
 - `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
+- `file`: use the current path in the repository. For renamed files use the new path.
+- `line`: use a 1-based line number on the new/current side of the diff. Do not use deleted-line numbers or `0`.
+- `description`: use backticks around code references (function names, variable names, type names, file paths) for readability.
 - `suggested_fixes`: at least one concrete, actionable fix the author can apply. Each entry is a short description of a distinct fix option.
 - `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
 - Every finding must be actionable — do not report information-only observations. If you cannot propose a concrete fix, do not report it.
@@ -269,6 +275,7 @@ Add category to ReviewFinding, rewrite style review as sub-agent coordinator
    - Every finding MUST include at least one suggested fix in the `suggested_fixes` array. Do not report a finding without a concrete change to propose.
    - Do not report information-only observations. Every finding must be actionable — something the author should change.
    - Consolidate closely related issues into a single finding rather than splitting them into multiple small findings. Use the description to cover all related aspects.
+   - Every finding's `file` must be a changed file from the diff, and every `line` must be a valid 1-based line number on the new/current side of that diff.
 
 3. Validate each sub-agent's findings and map out dependencies between them if any.
 4. Aggregate all valid findings into a single `findings` array and return it.
@@ -295,6 +302,9 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 ```
 
 - `id`: short slugified identifier (lowercase, hyphens, max 50 chars).
+- `file`: use the current path in the repository. For renamed files use the new path.
+- `line`: use a 1-based line number on the new/current side of the diff. Do not use deleted-line numbers or `0`.
+- `description`: use backticks around code references (function names, variable names, type names, file paths) for readability.
 - `suggested_fixes`: at least one concrete, actionable fix the author can apply. Each entry is a short description of a distinct fix option.
 - `depends_on`: array of finding `id`s this finding is blocked by, or `null`.
 - Every finding must be actionable — do not report information-only observations. If you cannot propose a concrete fix, do not report it.
@@ -303,7 +313,6 @@ Respond with a single JSON object (no markdown fences, no commentary outside the
 
 - `severity`: `\"warning\"` or `\"info\"` only. Even `\"info\"` findings must be actionable.
 - `category`: one of `\"style\"`, `\"reuse\"`, `\"quality\"`, `\"efficiency\"`.
-
 ";
 
     assert_eq!(result, expected);

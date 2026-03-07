@@ -286,8 +286,9 @@ pub fn render_summary_for_github(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FallbackContext {
-    Line(u32),
     File { file: String, line: u32 },
+    RelatedFile { file: String, line: u32 },
+    Standalone { file: String, line: u32 },
 }
 
 /// Render a single inline PR review comment body for one finding.
@@ -326,17 +327,24 @@ pub fn render_inline_finding_comment_for_github(
     }
 
     match &fallback {
-        Some(FallbackContext::Line(target_line)) => {
-            write!(
-                body,
-                "\n\n> [!NOTE]\n> This finding applies to line {target_line} but is shown here because that line is not in the diff."
-            )
-            .unwrap();
-        }
         Some(FallbackContext::File { file, line }) => {
             write!(
                 body,
-                "\n\n> [!NOTE]\n> This finding applies to `{file}:{line}` but is shown here because that file is not in the diff."
+                "\n\n> [!NOTE]\n> This finding applies to `{file}:{line}` but is shown as a file-level comment because that location is not commentable in the diff."
+            )
+            .unwrap();
+        }
+        Some(FallbackContext::RelatedFile { file, line }) => {
+            write!(
+                body,
+                "\n\n> [!NOTE]\n> This finding applies to `{file}:{line}` which is not part of the current diff. It is shown here on a related file."
+            )
+            .unwrap();
+        }
+        Some(FallbackContext::Standalone { file, line }) => {
+            write!(
+                body,
+                "\n\n> [!NOTE]\n> This finding applies to `{file}:{line}` which is not part of the current diff."
             )
             .unwrap();
         }
@@ -1157,37 +1165,6 @@ mod tests {
     }
 
     #[test]
-    fn test_render_inline_finding_comment_with_dependency_and_line_fallback_note() {
-        let finding = ReviewFinding {
-            depends_on: vec!["check-null".to_string()],
-            ..finding(
-                "dep-finding",
-                "src/main.rs",
-                88,
-                Severity::Warning,
-                "Potential null dereference",
-                Some("correctness"),
-            )
-        };
-
-        let body = render_inline_finding_comment_for_github(
-            &finding,
-            &["Missing null guard in constructor"],
-            Some(FallbackContext::Line(88)),
-        );
-
-        assert!(body.contains("### 🟡 WARNING (correctness)"));
-        assert!(body.contains("`dep-finding` — Potential null dereference"));
-        assert!(body.contains("> 🚧 **Depends on:**\n> Missing null guard in constructor"));
-        assert!(body.contains(
-            "> [!NOTE]\n> This finding applies to line 88 but is shown here because that line is not in the diff."
-        ));
-        let json = extract_finding_json(&body).expect("finding marker is present");
-        let parsed: ReviewFinding = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.id, "dep-finding");
-    }
-
-    #[test]
     fn test_render_inline_finding_comment_with_file_fallback_note() {
         let finding = finding(
             "file-fallback",
@@ -1210,8 +1187,64 @@ mod tests {
         assert!(body.contains("### 🔴 CRITICAL (correctness)"));
         assert!(body.contains("`file-fallback` — Issue in missing file"));
         assert!(body.contains(
-            "> [!NOTE]\n> This finding applies to `src/missing.rs:42` but is shown here because that file is not in the diff."
+            "> [!NOTE]\n> This finding applies to `src/missing.rs:42` but is shown as a file-level comment because that location is not commentable in the diff."
         ));
+    }
+
+    #[test]
+    fn test_render_inline_finding_comment_with_related_file_fallback_note() {
+        let finding = finding(
+            "related-fallback",
+            "src/other.rs",
+            10,
+            Severity::Warning,
+            "Issue in related file",
+            Some("correctness"),
+        );
+
+        let body = render_inline_finding_comment_for_github(
+            &finding,
+            &[],
+            Some(FallbackContext::RelatedFile {
+                file: "src/other.rs".to_string(),
+                line: 10,
+            }),
+        );
+
+        assert!(body.contains("### 🟡 WARNING (correctness)"));
+        assert!(body.contains("`related-fallback` — Issue in related file"));
+        assert!(body.contains(
+            "> [!NOTE]\n> This finding applies to `src/other.rs:10` which is not part of the current diff. It is shown here on a related file."
+        ));
+    }
+
+    #[test]
+    fn test_render_inline_finding_comment_with_standalone_fallback_note() {
+        let finding = finding(
+            "standalone-fallback",
+            "src/unrelated.rs",
+            99,
+            Severity::Critical,
+            "Standalone issue",
+            Some("security"),
+        );
+
+        let body = render_inline_finding_comment_for_github(
+            &finding,
+            &[],
+            Some(FallbackContext::Standalone {
+                file: "src/unrelated.rs".to_string(),
+                line: 99,
+            }),
+        );
+
+        assert!(body.contains("### 🔴 CRITICAL (security)"));
+        assert!(body.contains("`standalone-fallback` — Standalone issue"));
+        assert!(body.contains(
+            "> [!NOTE]\n> This finding applies to `src/unrelated.rs:99` which is not part of the current diff."
+        ));
+        // Should NOT contain "related file" text
+        assert!(!body.contains("related file"));
     }
 
     #[test]

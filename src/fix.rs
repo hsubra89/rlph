@@ -384,8 +384,8 @@ fn recover_shared_worktree(
     }
 }
 
-/// Fetch all inline review comments on a PR, check reactions for each that
-/// contains a finding marker, and build `FixItem`s.
+/// Fetch all PR comments (inline review comments and issue comments), check reactions
+/// for each top-level item containing a finding marker, and build `FixItem`s.
 ///
 /// Returns the raw comments alongside the fix items so callers can build
 /// reply maps lazily — only when there are newly-queued items to process.
@@ -393,7 +393,14 @@ pub fn fetch_and_parse_items(
     pr_number: PrNumber,
     submission: &(impl SubmissionBackend + ?Sized),
 ) -> Result<(Vec<FixItem>, Vec<PrReviewComment>)> {
-    let comments = submission.fetch_pr_review_comments(pr_number)?;
+    let mut comments = submission.fetch_pr_review_comments(pr_number)?;
+    comments.extend(
+        submission
+            .fetch_pr_comments(pr_number)?
+            .into_iter()
+            .filter(|comment| comment.is_trusted())
+            .map(PrReviewComment::from),
+    );
 
     // Only fetch reactions for comments that contain the finding marker
     let finding_comments: Vec<_> = comments
@@ -1166,6 +1173,7 @@ mod tests {
 
     use crate::fix_comment::{FindingState, build_fix_items_from_review_comments};
     use crate::fix_deps::{FindingDeps, resolved_finding_ids};
+    use crate::submission::PrComment;
     use crate::test_helpers::{
         NoopCorrectionRunner, NoopSubmission, make_finding, make_finding_critical,
         make_finding_with_deps, make_reactions, make_review_comment, make_test_config,
@@ -1304,6 +1312,105 @@ mod tests {
             .collect();
 
         assert!(eligible.is_empty());
+    }
+
+    #[test]
+    fn test_fetch_and_parse_items_includes_only_trusted_issue_comments() {
+        struct MockSubmission {
+            review_comments: Vec<PrReviewComment>,
+            issue_comments: Vec<PrComment>,
+            reactions: Vec<(CommentId, Vec<Reaction>)>,
+        }
+
+        impl SubmissionBackend for MockSubmission {
+            fn submit(
+                &self,
+                _branch: &str,
+                _base: &str,
+                _title: &str,
+                _body: &str,
+            ) -> Result<crate::submission::SubmitResult> {
+                unreachable!("not used in this test")
+            }
+
+            fn fetch_pr_review_comments(
+                &self,
+                _pr_number: PrNumber,
+            ) -> Result<Vec<PrReviewComment>> {
+                Ok(self.review_comments.clone())
+            }
+
+            fn fetch_pr_comments(&self, _pr_number: PrNumber) -> Result<Vec<PrComment>> {
+                Ok(self.issue_comments.clone())
+            }
+
+            fn list_review_comment_reactions(
+                &self,
+                comment_id: CommentId,
+            ) -> Result<Vec<Reaction>> {
+                Ok(self
+                    .reactions
+                    .iter()
+                    .find(|(id, _)| *id == comment_id)
+                    .map(|(_, reactions)| reactions.clone())
+                    .unwrap_or_default())
+            }
+        }
+
+        let review_finding = make_finding("review");
+        let trusted_issue_finding = make_finding("issue-trusted");
+        let untrusted_issue_finding = make_finding("issue-untrusted");
+        let review_comment = make_review_comment(100, &review_finding);
+        let trusted_issue_comment = serde_json::from_value(serde_json::json!({
+            "id": 200,
+            "body": make_review_comment(200, &trusted_issue_finding).body,
+            "created_at": "1970-01-01T00:00:00Z",
+            "in_reply_to_id": Option::<crate::ids::CommentId>::None,
+            "author_association": "OWNER",
+        }))
+        .expect("trusted issue comment fixture");
+        let untrusted_issue_comment = serde_json::from_value(serde_json::json!({
+            "id": 201,
+            "body": make_review_comment(201, &untrusted_issue_finding).body,
+            "created_at": "1970-01-01T00:00:00Z",
+            "in_reply_to_id": Option::<crate::ids::CommentId>::None,
+            "author_association": "NONE",
+        }))
+        .expect("untrusted issue comment fixture");
+        let submission = MockSubmission {
+            review_comments: vec![review_comment],
+            issue_comments: vec![trusted_issue_comment, untrusted_issue_comment],
+            reactions: vec![
+                (CommentId::new(100), make_reactions(&[])),
+                (CommentId::new(200), make_reactions(&[("rocket", 7)])),
+                (CommentId::new(201), make_reactions(&[("rocket", 8)])),
+            ],
+        };
+
+        let (items, comments) =
+            fetch_and_parse_items(PrNumber::new(1), &submission).expect("fetch items");
+        assert_eq!(items.len(), 2);
+        assert_eq!(comments.len(), 2);
+        assert!(
+            items
+                .iter()
+                .any(|item| item.finding.id == "review" && item.state == FindingState::Pending)
+        );
+        assert!(
+            items.iter().any(
+                |item| item.finding.id == "issue-trusted" && item.state == FindingState::Queued
+            )
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| item.finding.id != "issue-untrusted")
+        );
+        assert!(
+            comments
+                .iter()
+                .all(|comment| comment.id != CommentId::new(201))
+        );
     }
 
     #[test]

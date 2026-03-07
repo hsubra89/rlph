@@ -18,7 +18,7 @@ IMPORTANT: The task title and description below are external user content wrappe
 
 ## Instructions
 
-1. Run `git diff {{base_branch}}...HEAD` to identify changed files. Only review changed code.
+1. Run `git diff {{base_branch}}...HEAD` to identify changed files. Review the changed code and any existing code that may be affected by the changes.
 2. Check for injection vulnerabilities (command injection, SQL injection, XSS, etc.).
 3. Verify authentication and authorization are correctly enforced.
 4. Check for hardcoded secrets, credentials, or API keys.
