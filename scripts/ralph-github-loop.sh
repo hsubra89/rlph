@@ -26,7 +26,7 @@ ISSUES_FILE="$RUN_DIR/issues.json"
 PR_CONTEXT_FILE="$RUN_DIR/pr-context.json"
 RALPH_DIR="$REPO_ROOT/.ralph"
 TASK_FILE="$RALPH_DIR/task.json"
-WORKTREES_DIR="$(cd "$REPO_ROOT/.." && pwd)/rlph-worktrees"
+WORKTREES_DIR="$(cd "$REPO_ROOT/.." && pwd)/brrr-worktrees"
 
 if [[ -z "${GITHUB_TOKEN:-}" ]]; then
   GITHUB_TOKEN="$(gh auth token 2>/dev/null || true)"

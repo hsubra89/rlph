@@ -27,8 +27,8 @@ fmt:
 
 # TypeScript build
 ts-build:
-    pnpm --filter '@rlph/*' run build
+    pnpm --filter '@brrr/*' run build
 
 # TypeScript dev server
 ts-dev:
-    pnpm --filter @rlph/server run dev
+    pnpm --filter @brrr/server run dev

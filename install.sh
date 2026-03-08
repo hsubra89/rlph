@@ -1,10 +1,10 @@
 #!/bin/sh
-# install.sh — install rlph from GitHub Releases
-# Usage: curl -fsSL https://raw.githubusercontent.com/hsubra89/rlph/main/install.sh | sh
+# install.sh — install brrr from GitHub Releases
+# Usage: curl -fsSL https://raw.githubusercontent.com/hsubra89/brrr/main/install.sh | sh
 set -eu
 
-REPO="hsubra89/rlph"
-INSTALL_DIR="${RLPH_INSTALL_DIR:-$HOME/.rlph/bin}"
+REPO="hsubra89/brrr"
+INSTALL_DIR="${BRRR_INSTALL_DIR:-$HOME/.brrr/bin}"
 
 # --- helpers ----------------------------------------------------------------
 
@@ -98,7 +98,7 @@ main() {
     info "Latest release: ${bold}${tag}${reset}"
 
     # Build archive URL
-    archive="rlph-${tag}-${target}.tar.gz"
+    archive="brrr-${tag}-${target}.tar.gz"
     url="https://github.com/${REPO}/releases/download/${tag}/${archive}"
 
     # Temp dir with cleanup
@@ -112,19 +112,19 @@ main() {
     tar -xzf "${tmpdir}/${archive}" -C "$tmpdir"
 
     # Install binary (archive contains a subdirectory)
-    extracted_dir="${tmpdir}/rlph-${tag}-${target}"
+    extracted_dir="${tmpdir}/brrr-${tag}-${target}"
     mkdir -p "$INSTALL_DIR"
-    mv "${extracted_dir}/rlph" "${INSTALL_DIR}/rlph"
-    chmod +x "${INSTALL_DIR}/rlph"
+    mv "${extracted_dir}/brrr" "${INSTALL_DIR}/brrr"
+    chmod +x "${INSTALL_DIR}/brrr"
 
-    ok "Installed rlph ${tag} to ${INSTALL_DIR}/rlph"
+    ok "Installed brrr ${tag} to ${INSTALL_DIR}/brrr"
 
     # PATH hint
     case ":${PATH}:" in
         *":${INSTALL_DIR}:"*) ;;
         *)
             printf "\n"
-            info "Add rlph to your PATH by adding this to your shell profile:"
+            info "Add brrr to your PATH by adding this to your shell profile:"
             printf "\n  ${bold}export PATH=\"%s:\$PATH\"${reset}\n\n" "$INSTALL_DIR"
             ;;
     esac

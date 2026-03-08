@@ -1,10 +1,10 @@
-# rlph
+# brrr
 
 Mixed-language monorepo: Rust CLI (`crates/`) + TypeScript packages (`packages/`).
 
 ## Layout
 
-- `crates/rlph/` — Rust binary crate (edition 2024). Autonomous AI dev-loop CLI.
+- `crates/brrr/` — Rust binary crate (edition 2024). Autonomous AI dev-loop CLI.
 - `packages/` — TypeScript packages (pnpm workspace).
 - `justfile` — Unified task runner.
 

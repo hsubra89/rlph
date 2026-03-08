@@ -1,0 +1,2312 @@
+//! Agent runner abstraction: build CLI commands, handle timeout and resume.
+
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde::Deserialize;
+use tokio::sync::mpsc;
+use tracing::{info, warn};
+
+use crate::error::{Error, Result};
+use crate::process::{ProcessConfig, spawn_and_stream};
+
+/// Which agent backend to dispatch to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunnerKind {
+    Claude,
+    Codex,
+    OpenCode,
+}
+
+impl fmt::Display for RunnerKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RunnerKind::Claude => write!(f, "claude"),
+            RunnerKind::Codex => write!(f, "codex"),
+            RunnerKind::OpenCode => write!(f, "opencode"),
+        }
+    }
+}
+
+impl FromStr for RunnerKind {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "claude" => Ok(RunnerKind::Claude),
+            "codex" => Ok(RunnerKind::Codex),
+            "opencode" => Ok(RunnerKind::OpenCode),
+            other => Err(Error::ConfigValidation(format!(
+                "unknown runner: {other} (expected: claude, codex, opencode)"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Phase {
+    Choose,
+    Implement,
+    Review,
+    ReviewAggregate,
+    Fix,
+}
+
+impl fmt::Display for Phase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Phase::Choose => write!(f, "choose"),
+            Phase::Implement => write!(f, "implement"),
+            Phase::Review => write!(f, "review"),
+            Phase::ReviewAggregate => write!(f, "review-aggregate"),
+            Phase::Fix => write!(f, "fix"),
+        }
+    }
+}
+
+/// Build an `AnyRunner` from config values.
+pub fn build_runner(
+    runner: RunnerKind,
+    agent_binary: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    variant: Option<&str>,
+    timeout: Option<Duration>,
+    timeout_retries: u32,
+) -> AnyRunner {
+    match runner {
+        RunnerKind::Codex => AnyRunner::Codex(CodexRunner::new(
+            agent_binary.to_string(),
+            model.map(str::to_string),
+            effort.map(str::to_string),
+            timeout,
+            timeout_retries,
+        )),
+        RunnerKind::Claude => AnyRunner::Claude(ClaudeRunner::new(
+            agent_binary.to_string(),
+            model.map(str::to_string),
+            effort.map(str::to_string),
+            timeout,
+            timeout_retries,
+        )),
+        RunnerKind::OpenCode => AnyRunner::OpenCode(OpencodeRunner::new(
+            agent_binary.to_string(),
+            model.map(str::to_string),
+            variant.map(str::to_string),
+            timeout,
+            timeout_retries,
+        )),
+    }
+}
+
+/// Format a runner selection for human-readable logs.
+pub fn format_runner_display(
+    runner: RunnerKind,
+    model: Option<&str>,
+    effort: Option<&str>,
+    variant: Option<&str>,
+) -> String {
+    let model_tag = model.unwrap_or("(default)");
+    match (effort, variant) {
+        (None, None) => format!("{model_tag}@{runner}"),
+        _ => {
+            let mut extras = String::new();
+            if let Some(effort) = effort {
+                extras.push_str("effort=");
+                extras.push_str(effort);
+            }
+            if let Some(variant) = variant {
+                if !extras.is_empty() {
+                    extras.push_str(", ");
+                }
+                extras.push_str("variant=");
+                extras.push_str(variant);
+            }
+            format!("{model_tag}@{runner} ({extras})")
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RunResult {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub session_id: Option<String>,
+}
+
+pub trait AgentRunner {
+    /// Run the agent for a given phase with a prompt in a working directory.
+    fn run(
+        &self,
+        phase: Phase,
+        prompt: &str,
+        working_dir: &Path,
+    ) -> impl std::future::Future<Output = Result<RunResult>> + Send;
+}
+
+/// Build the base Claude CLI flags shared by all command builders.
+///
+/// Returns: `[--print, --verbose, --output-format, stream-json, --dangerously-skip-permissions]`
+/// plus optional `--model` and `--effort`.
+fn base_claude_args(model: Option<&str>, effort: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "--print".to_string(),
+        "--verbose".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+    ];
+
+    if let Some(model) = model {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+
+    if let Some(effort) = effort {
+        args.push("--effort".to_string());
+        args.push(effort.to_string());
+    }
+
+    args
+}
+
+/// Claude runner — invokes the claude CLI directly.
+pub struct ClaudeRunner {
+    agent_binary: String,
+    model: Option<String>,
+    effort: Option<String>,
+    timeout: Option<Duration>,
+    max_timeout_retries: u32,
+    /// When set, stream formatted agent messages to stderr with this prefix.
+    stream_prefix: Option<String>,
+}
+
+impl ClaudeRunner {
+    pub fn new(
+        agent_binary: String,
+        model: Option<String>,
+        effort: Option<String>,
+        timeout: Option<Duration>,
+        max_timeout_retries: u32,
+    ) -> Self {
+        Self {
+            agent_binary,
+            model,
+            effort,
+            timeout,
+            max_timeout_retries,
+            stream_prefix: None,
+        }
+    }
+
+    /// Build the command and arguments for a given phase and prompt.
+    pub fn build_command(&self, prompt: &str) -> (String, Vec<String>) {
+        let mut args = base_claude_args(self.model.as_deref(), self.effort.as_deref());
+        args.push("-p".to_string());
+        args.push(prompt.to_string());
+        (self.agent_binary.clone(), args)
+    }
+
+    /// Build a resume command for a timed-out session.
+    pub fn build_resume_command(&self, session_id: &str) -> (String, Vec<String>) {
+        let mut args = base_claude_args(self.model.as_deref(), self.effort.as_deref());
+        args.push("--resume".to_string());
+        args.push(session_id.to_string());
+        (self.agent_binary.clone(), args)
+    }
+}
+
+/// Extract session_id from stream-json stdout lines.
+///
+/// Scans lines for JSON objects with a top-level `session_id` field.
+/// Returns the last one found (most recent).
+pub fn extract_session_id(stdout_lines: &[String]) -> Option<String> {
+    let mut last_id = None;
+    for line in stdout_lines {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+            && let Some(id) = val.get("session_id").and_then(|v| v.as_str())
+            && !id.is_empty()
+        {
+            last_id = Some(id.to_string());
+        }
+    }
+    last_id
+}
+
+/// Extract the final human-readable result from Claude stream-json output.
+///
+/// Claude emits many JSON events when using `--output-format stream-json`.
+/// The useful summary is stored in `{"type":"result","result":"..."}`.
+/// If found, returning this keeps downstream prompts/comments compact.
+fn extract_claude_result(stdout_lines: &[String]) -> Option<String> {
+    let mut last_result: Option<String> = None;
+    for line in stdout_lines {
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if val.get("type").and_then(|v| v.as_str()) == Some("result")
+            && let Some(result) = val.get("result").and_then(|v| v.as_str())
+        {
+            last_result = Some(result.to_string());
+        }
+    }
+    last_result
+}
+
+/// Icons for stream formatter output.
+const ICON_CHECK: &str = "✔";
+const ICON_CROSS: &str = "✘";
+const ICON_PLAY: &str = "▶";
+
+/// Default context window size for Claude and Codex runners.
+const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
+
+/// Convert a raw token total into a context-window percentage (0–100).
+///
+/// Returns `None` when `total` is zero.
+fn token_pct(total: u64, context_window: u64) -> Option<f64> {
+    if total == 0 {
+        return None;
+    }
+    let pct = total as f64 / context_window as f64 * 100.0;
+    Some(pct.min(100.0))
+}
+
+/// Format an optional context-usage percentage as a display tag (e.g. `" 42%"`).
+///
+/// Returns an empty string when `pct` is `None`.
+fn format_pct_tag(pct: Option<f64>) -> String {
+    pct.map(|p| format!(" {p:.0}%")).unwrap_or_default()
+}
+
+/// Extract context usage percentage from an assistant event's `message.usage`.
+///
+/// Computes (input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+/// + output_tokens) / context_window * 100.
+fn extract_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f64> {
+    let usage = val.pointer("/message/usage")?;
+    let tok = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+    let total = tok("input_tokens")
+        + tok("cache_creation_input_tokens")
+        + tok("cache_read_input_tokens")
+        + tok("output_tokens");
+    token_pct(total, context_window)
+}
+
+/// Format a single Claude stream-json event line, emitting output via tracing.
+///
+/// `context_pct` is the latest known context usage percentage.
+///
+/// Returns `(wrote, updated_pct)` — whether any output was written, and the
+/// (possibly refreshed) context usage percentage for the caller to store.
+fn format_claude_line(prefix: &str, line: &str, context_pct: Option<f64>) -> (bool, Option<f64>) {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+        return (false, context_pct);
+    };
+    let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
+        return (false, context_pct);
+    };
+    if event_type != "assistant" {
+        return (false, context_pct);
+    }
+    // Only update context % from root agent events (parent_tool_use_id absent or null).
+    let is_subagent = val.get("parent_tool_use_id").is_some_and(|v| !v.is_null());
+    let context_pct = if is_subagent {
+        context_pct
+    } else {
+        extract_context_pct(&val, DEFAULT_CONTEXT_WINDOW).or(context_pct)
+    };
+    let pct_tag = format_pct_tag(context_pct);
+    let Some(content) = val.pointer("/message/content").and_then(|v| v.as_array()) else {
+        return (false, context_pct);
+    };
+    let mut wrote = false;
+    for block in content {
+        let Some(block_type) = block.get("type").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        match block_type {
+            "text" => {
+                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                    for text_line in text.lines() {
+                        info!(target: "brrr::stream", "[{prefix}{pct_tag}] {text_line}");
+                    }
+                    wrote = true;
+                }
+            }
+            "tool_use" => {
+                if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                    info!(target: "brrr::stream", "[{prefix}{pct_tag}] {ICON_PLAY} {name}");
+                    wrote = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    (wrote, context_pct)
+}
+
+/// Spawn a task that reads Claude stream-json lines from a channel and emits
+/// formatted agent messages via `tracing` with target `brrr::stream`.
+///
+/// Extracts text content from `assistant` events and tool names from `tool_use`
+/// content blocks. All other event types are silently skipped.
+fn spawn_claude_stream_formatter(
+    prefix: String,
+    mut rx: mpsc::UnboundedReceiver<String>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut context_pct: Option<f64> = None;
+        while let Some(line) = rx.recv().await {
+            let (_wrote, updated_pct) = format_claude_line(&prefix, &line, context_pct);
+            context_pct = updated_pct;
+        }
+    })
+}
+
+impl AgentRunner for ClaudeRunner {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        let log_prefix = format!("agent:{phase}");
+        let max_attempts = 1 + self.max_timeout_retries;
+        let mut all_stdout: Vec<String> = Vec::new();
+        let mut all_stderr: Vec<String> = Vec::new();
+
+        // Set up streaming channel if a stream prefix is configured.
+        let (stdout_tx, stream_handle) = if let Some(ref prefix) = self.stream_prefix {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let handle = spawn_claude_stream_formatter(prefix.clone(), rx);
+            (Some(tx), Some(handle))
+        } else {
+            (None, None)
+        };
+
+        let result = 'attempts: {
+            for attempt in 0..max_attempts {
+                let (command, args) = if attempt == 0 {
+                    self.build_command(prompt)
+                } else {
+                    // On retry, try to resume from session_id in previous output.
+                    let session_id = match extract_session_id(&all_stdout) {
+                        Some(id) => id,
+                        None => {
+                            warn!(prefix = %log_prefix, attempt, "timeout retry: no session_id found, cannot resume");
+                            break 'attempts Err(Error::AgentRunner(
+                                "agent timed out and no session_id found for resume".to_string(),
+                            ));
+                        }
+                    };
+                    info!(target: "brrr::stream", "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{max_attempts})", attempt + 1);
+                    self.build_resume_command(&session_id)
+                };
+
+                let config = ProcessConfig {
+                    command,
+                    args,
+                    working_dir: working_dir.to_path_buf(),
+                    timeout: self.timeout,
+                    log_prefix: log_prefix.clone(),
+                    stream_output: false,
+                    env: vec![],
+                    stdin_data: None,
+                    quiet: true,
+                    stdout_tx: stdout_tx.clone(),
+                };
+
+                match spawn_and_stream(config).await {
+                    Ok(output) => {
+                        all_stdout.extend(output.stdout_lines);
+                        all_stderr.extend(output.stderr_lines);
+
+                        let stdout = extract_claude_result(&all_stdout)
+                            .unwrap_or_else(|| all_stdout.join("\n"));
+                        let stderr = all_stderr.join("\n");
+
+                        if let Some(sig) = output.signal {
+                            break 'attempts Err(Error::AgentRunner(format!(
+                                "agent killed by signal {sig}"
+                            )));
+                        }
+
+                        if output.exit_code != 0 {
+                            break 'attempts Err(Error::AgentRunner(format!(
+                                "agent exited with code {}",
+                                output.exit_code
+                            )));
+                        }
+
+                        let session_id = extract_session_id(&all_stdout);
+
+                        break 'attempts Ok(RunResult {
+                            exit_code: output.exit_code,
+                            stdout,
+                            stderr,
+                            session_id,
+                        });
+                    }
+                    Err(Error::ProcessTimeout {
+                        timeout,
+                        stdout_lines,
+                        stderr_lines,
+                    }) => {
+                        all_stdout.extend(stdout_lines);
+                        all_stderr.extend(stderr_lines);
+                        warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
+                        // Continue to next attempt (or fall through if last).
+                    }
+                    Err(e) => break 'attempts Err(e),
+                }
+            }
+
+            // All attempts exhausted.
+            Err(Error::AgentRunner(format!(
+                "agent timed out after {max_attempts} attempts"
+            )))
+        };
+
+        // Drop the sender so the stream formatter sees channel closure,
+        // then await it to ensure all buffered messages are flushed to stderr.
+        drop(stdout_tx);
+        if let Some(handle) = stream_handle {
+            let _ = handle.await;
+        }
+
+        result
+    }
+}
+
+/// Build a Claude resume-with-prompt command for an existing session.
+///
+/// Unlike `build_resume_command` (which just resumes), this sends a new user message
+/// to the session — used to send correction prompts for malformed JSON recovery.
+pub fn build_claude_resume_with_prompt_command(
+    agent_binary: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    session_id: &str,
+    prompt: &str,
+) -> (String, Vec<String>) {
+    let mut args = base_claude_args(model, effort);
+    args.push("--resume".to_string());
+    args.push(session_id.to_string());
+    args.push("-p".to_string());
+    args.push(prompt.to_string());
+    (agent_binary.to_string(), args)
+}
+
+/// Build a Codex resume-with-prompt command for an existing thread.
+///
+/// Uses `codex exec resume <thread_id> -` with the correction prompt
+/// delivered via stdin.
+pub fn build_codex_resume_with_prompt_command(
+    agent_binary: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    thread_id: &str,
+) -> (String, Vec<String>) {
+    let mut args = base_codex_args(model, effort);
+    args.push("resume".to_string());
+    args.push(thread_id.to_string());
+    args.push("-".to_string());
+    (agent_binary.to_string(), args)
+}
+
+/// Resume an existing agent session with a correction prompt.
+///
+/// Sends a new user message to the session (e.g., a JSON correction prompt)
+/// and returns the agent's new output. Used by the orchestrator to recover
+/// from malformed JSON without restarting the entire agent.
+///
+/// The `runner_type` parameter selects the appropriate command builder and
+/// result extractor: `Claude` uses Claude CLI flags, `Codex` uses Codex
+/// CLI flags with stdin delivery, `OpenCode` uses the OpenCode CLI.
+#[allow(clippy::too_many_arguments)]
+pub async fn resume_with_correction(
+    runner_type: RunnerKind,
+    agent_binary: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    variant: Option<&str>,
+    session_id: &str,
+    correction_prompt: &str,
+    working_dir: &Path,
+    timeout: Option<Duration>,
+    stream_prefix: Option<&str>,
+) -> Result<RunResult> {
+    let (command, args, stdin_data) = match runner_type {
+        RunnerKind::Codex => {
+            let (cmd, a) =
+                build_codex_resume_with_prompt_command(agent_binary, model, effort, session_id);
+            (cmd, a, Some(correction_prompt.to_string()))
+        }
+        RunnerKind::Claude => {
+            let (cmd, a) = build_claude_resume_with_prompt_command(
+                agent_binary,
+                model,
+                effort,
+                session_id,
+                correction_prompt,
+            );
+            (cmd, a, None)
+        }
+        RunnerKind::OpenCode => {
+            let (cmd, a) = build_opencode_resume_with_prompt_command(
+                agent_binary,
+                model,
+                variant,
+                session_id,
+                correction_prompt,
+            );
+            (cmd, a, None)
+        }
+    };
+
+    // Set up streaming channel when a stream prefix is provided, matching
+    // the behaviour of the primary `AgentRunner::run` path.
+    let (stdout_tx, stream_handle) = match (stream_prefix, runner_type) {
+        (Some(prefix), RunnerKind::Codex) => {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let handle = spawn_codex_stream_formatter(prefix.to_string(), rx);
+            (Some(tx), Some(handle))
+        }
+        (Some(prefix), RunnerKind::Claude) => {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let handle = spawn_claude_stream_formatter(prefix.to_string(), rx);
+            (Some(tx), Some(handle))
+        }
+        _ => (None, None),
+    };
+
+    let config = ProcessConfig {
+        command,
+        args,
+        working_dir: working_dir.to_path_buf(),
+        timeout,
+        log_prefix: "agent:correction".to_string(),
+        stream_output: false,
+        env: vec![],
+        stdin_data,
+        quiet: true,
+        stdout_tx: stdout_tx.clone(),
+    };
+
+    let output = spawn_and_stream(config).await;
+
+    // Drop the sender so the stream formatter sees channel closure,
+    // then await it to ensure all buffered messages are flushed to stderr.
+    drop(stdout_tx);
+    if let Some(handle) = stream_handle {
+        let _ = handle.await;
+    }
+
+    let output = output?;
+
+    let (stdout, session_id) = match runner_type {
+        RunnerKind::Codex => (
+            extract_codex_result(&output.stdout_lines)
+                .unwrap_or_else(|| output.stdout_lines.join("\n")),
+            extract_thread_id(&output.stdout_lines),
+        ),
+        RunnerKind::Claude => (
+            extract_claude_result(&output.stdout_lines)
+                .unwrap_or_else(|| output.stdout_lines.join("\n")),
+            extract_session_id(&output.stdout_lines),
+        ),
+        RunnerKind::OpenCode => (
+            extract_opencode_result(&output.stdout_lines)
+                .unwrap_or_else(|| output.stdout_lines.join("\n")),
+            extract_opencode_session_id(&output.stdout_lines),
+        ),
+    };
+    let stderr = output.stderr_lines.join("\n");
+
+    if let Some(sig) = output.signal {
+        return Err(Error::AgentRunner(format!(
+            "correction agent killed by signal {sig}"
+        )));
+    }
+
+    if output.exit_code != 0 {
+        return Err(Error::AgentRunner(format!(
+            "correction agent exited with code {}",
+            output.exit_code
+        )));
+    }
+
+    Ok(RunResult {
+        exit_code: output.exit_code,
+        stdout,
+        stderr,
+        session_id,
+    })
+}
+
+/// Type alias for a callback function used in `CallbackRunner`.
+pub type RunnerCallbackFn = dyn Fn(
+        Phase,
+        String,
+        PathBuf,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<RunResult>> + Send>>
+    + Send
+    + Sync;
+
+/// A runner backed by a callback function, primarily for testing.
+pub struct CallbackRunner {
+    callback: Arc<RunnerCallbackFn>,
+}
+
+impl CallbackRunner {
+    pub fn new(callback: Arc<RunnerCallbackFn>) -> Self {
+        Self { callback }
+    }
+}
+
+impl AgentRunner for CallbackRunner {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        let fut = (self.callback)(phase, prompt.to_string(), working_dir.to_path_buf());
+        fut.await
+    }
+}
+
+/// Enum dispatching to either Claude, Codex, OpenCode, or callback runner.
+pub enum AnyRunner {
+    Claude(ClaudeRunner),
+    Codex(CodexRunner),
+    OpenCode(OpencodeRunner),
+    Callback(CallbackRunner),
+}
+
+impl AnyRunner {
+    /// Enable streaming of formatted agent messages to stderr with the given prefix.
+    pub fn with_stream_prefix(mut self, prefix: String) -> Self {
+        match self {
+            AnyRunner::Claude(ref mut r) => r.stream_prefix = Some(prefix),
+            AnyRunner::Codex(ref mut r) => r.stream_prefix = Some(prefix),
+            _ => {}
+        }
+        self
+    }
+}
+
+impl AgentRunner for AnyRunner {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        match self {
+            AnyRunner::Claude(r) => r.run(phase, prompt, working_dir).await,
+            AnyRunner::Codex(r) => r.run(phase, prompt, working_dir).await,
+            AnyRunner::OpenCode(r) => r.run(phase, prompt, working_dir).await,
+            AnyRunner::Callback(r) => r.run(phase, prompt, working_dir).await,
+        }
+    }
+}
+
+/// Build the base OpenCode CLI flags shared by all command builders.
+///
+/// Returns: `["run", "--format", "json"]` plus optional `--model` and `--variant`.
+fn base_opencode_args(model: Option<&str>, variant: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "run".to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+    ];
+
+    if let Some(model) = model {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+
+    if let Some(variant) = variant {
+        args.push("--variant".to_string());
+        args.push(variant.to_string());
+    }
+
+    args
+}
+
+/// OpenCode runner — invokes the opencode CLI.
+pub struct OpencodeRunner {
+    agent_binary: String,
+    model: Option<String>,
+    variant: Option<String>,
+    timeout: Option<Duration>,
+    max_timeout_retries: u32,
+}
+
+impl OpencodeRunner {
+    pub fn new(
+        agent_binary: String,
+        model: Option<String>,
+        variant: Option<String>,
+        timeout: Option<Duration>,
+        max_timeout_retries: u32,
+    ) -> Self {
+        Self {
+            agent_binary,
+            model,
+            variant,
+            timeout,
+            max_timeout_retries,
+        }
+    }
+
+    /// Build the command and arguments for a given prompt.
+    pub fn build_command(&self, prompt: &str) -> (String, Vec<String>) {
+        let mut args = base_opencode_args(self.model.as_deref(), self.variant.as_deref());
+        args.push(prompt.to_string());
+        (self.agent_binary.clone(), args)
+    }
+
+    /// Build a resume command for a timed-out session (prompt-less continue).
+    pub fn build_resume_command(&self, session_id: &str) -> (String, Vec<String>) {
+        let mut args = base_opencode_args(self.model.as_deref(), self.variant.as_deref());
+        args.push("--session".to_string());
+        args.push(session_id.to_string());
+        (self.agent_binary.clone(), args)
+    }
+}
+
+impl AgentRunner for OpencodeRunner {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        let log_prefix = format!("agent:{phase}");
+        let max_attempts = 1 + self.max_timeout_retries;
+        let mut all_stdout: Vec<String> = Vec::new();
+        let mut all_stderr: Vec<String> = Vec::new();
+
+        for attempt in 0..max_attempts {
+            let (command, args) = if attempt == 0 {
+                self.build_command(prompt)
+            } else {
+                let session_id = match extract_opencode_session_id(&all_stdout) {
+                    Some(id) => id,
+                    None => {
+                        warn!(prefix = %log_prefix, attempt, "timeout retry: no sessionID found, cannot resume");
+                        return Err(Error::AgentRunner(
+                            "agent timed out and no sessionID found for resume".to_string(),
+                        ));
+                    }
+                };
+                info!(target: "brrr::stream", "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{max_attempts})", attempt + 1);
+                self.build_resume_command(&session_id)
+            };
+
+            let config = ProcessConfig {
+                command,
+                args,
+                working_dir: working_dir.to_path_buf(),
+                timeout: self.timeout,
+                log_prefix: log_prefix.clone(),
+                stream_output: false,
+                env: vec![],
+                stdin_data: None,
+                quiet: true,
+                stdout_tx: None,
+            };
+
+            match spawn_and_stream(config).await {
+                Ok(output) => {
+                    all_stdout.extend(output.stdout_lines);
+                    all_stderr.extend(output.stderr_lines);
+
+                    let stdout = extract_opencode_result(&all_stdout)
+                        .unwrap_or_else(|| all_stdout.join("\n"));
+                    let stderr = all_stderr.join("\n");
+
+                    if let Some(sig) = output.signal {
+                        return Err(Error::AgentRunner(format!("agent killed by signal {sig}")));
+                    }
+
+                    if output.exit_code != 0 {
+                        return Err(Error::AgentRunner(format!(
+                            "agent exited with code {}",
+                            output.exit_code
+                        )));
+                    }
+
+                    let session_id = extract_opencode_session_id(&all_stdout);
+
+                    return Ok(RunResult {
+                        exit_code: output.exit_code,
+                        stdout,
+                        stderr,
+                        session_id,
+                    });
+                }
+                Err(Error::ProcessTimeout {
+                    timeout,
+                    stdout_lines,
+                    stderr_lines,
+                }) => {
+                    all_stdout.extend(stdout_lines);
+                    all_stderr.extend(stderr_lines);
+                    warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(Error::AgentRunner(format!(
+            "agent timed out after {max_attempts} attempts"
+        )))
+    }
+}
+
+/// Extract sessionID from OpenCode JSON output lines.
+///
+/// Scans lines for JSON objects with a top-level `sessionID` field (camelCase).
+/// Returns the last one found (most recent).
+pub fn extract_opencode_session_id(stdout_lines: &[String]) -> Option<String> {
+    let mut last_id = None;
+    for line in stdout_lines {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+            && let Some(id) = val.get("sessionID").and_then(|v| v.as_str())
+            && !id.is_empty()
+        {
+            last_id = Some(id.to_string());
+        }
+    }
+    last_id
+}
+
+/// Extract the final human-readable result from OpenCode JSON output.
+///
+/// OpenCode emits JSON events with `{"type":"text","part":{"type":"text","text":"..."}}`.
+/// Returns the last `part.text` from `type == "text"` events.
+fn extract_opencode_result(stdout_lines: &[String]) -> Option<String> {
+    let mut last_text: Option<String> = None;
+    for line in stdout_lines {
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if val.get("type").and_then(|v| v.as_str()) == Some("text")
+            && let Some(part) = val.get("part")
+            && let Some(text) = part.get("text").and_then(|v| v.as_str())
+        {
+            last_text = Some(text.to_string());
+        }
+    }
+    last_text
+}
+
+/// Build an OpenCode resume-with-prompt command for an existing session.
+///
+/// Sends a new user message to the session via `--session <id>` plus a positional prompt.
+pub fn build_opencode_resume_with_prompt_command(
+    agent_binary: &str,
+    model: Option<&str>,
+    variant: Option<&str>,
+    session_id: &str,
+    prompt: &str,
+) -> (String, Vec<String>) {
+    let mut args = base_opencode_args(model, variant);
+    args.push("--session".to_string());
+    args.push(session_id.to_string());
+    args.push(prompt.to_string());
+    (agent_binary.to_string(), args)
+}
+
+/// Build the base Codex CLI flags shared by all command builders.
+///
+/// Returns: `["exec", "--dangerously-bypass-approvals-and-sandbox", "--json"]`
+/// plus optional `--model` and `--config model_reasoning_effort`.
+fn base_codex_args(model: Option<&str>, effort: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "exec".to_string(),
+        "--dangerously-bypass-approvals-and-sandbox".to_string(),
+        "--json".to_string(),
+    ];
+
+    if let Some(model) = model {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+
+    if let Some(effort) = effort {
+        args.push("--config".to_string());
+        args.push(format!("model_reasoning_effort=\"{effort}\""));
+    }
+
+    args
+}
+
+/// Extract thread_id from Codex JSON output lines.
+///
+/// Scans lines for JSON objects with a top-level `thread_id` field.
+/// Returns the last one found (most recent).
+pub fn extract_thread_id(stdout_lines: &[String]) -> Option<String> {
+    let mut last_id = None;
+    for line in stdout_lines {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+            && let Some(id) = val.get("thread_id").and_then(|v| v.as_str())
+            && !id.is_empty()
+        {
+            last_id = Some(id.to_string());
+        }
+    }
+    last_id
+}
+
+/// Extract the final human-readable result from Codex JSON output.
+///
+/// Codex emits JSON events when using `--json`. The useful output is in
+/// `{"type":"item.completed","item":{"type":"agent_message","text":"..."}}`.
+/// Concatenates all agent_message texts, returning the last one found.
+fn extract_codex_result(stdout_lines: &[String]) -> Option<String> {
+    let mut last_text: Option<String> = None;
+    for line in stdout_lines {
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(item) = val.get("item")
+            && item.get("type").and_then(|v| v.as_str()) == Some("agent_message")
+            && let Some(text) = item.get("text").and_then(|v| v.as_str())
+        {
+            last_text = Some(text.to_string());
+        }
+    }
+    last_text
+}
+
+/// Extract context usage percentage from a Codex `turn.completed` event's top-level `usage`.
+///
+/// Computes (input_tokens + output_tokens) / context_window * 100.
+/// Note: input_tokens already includes cached tokens (cached_input_tokens is a subset).
+fn extract_codex_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f64> {
+    let usage = val.get("usage")?;
+    let tok = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+    let total = tok("input_tokens") + tok("output_tokens");
+    token_pct(total, context_window)
+}
+
+/// Format a single Codex JSON event line, emitting output via tracing.
+///
+/// `context_pct` is the latest known context usage percentage.
+///
+/// Note: Codex emits `turn.completed` (which carries token usage) *after* all
+/// `item.completed` events in a turn, so the percentage shown on output lines
+/// reflects the *previous* turn's usage. First-turn items show no percentage.
+/// This differs from the Claude runner where usage arrives per-message.
+///
+/// Returns `(wrote, updated_pct)` — whether any output was written, and the
+/// (possibly refreshed) context usage percentage for the caller to store.
+fn format_codex_line(prefix: &str, line: &str, context_pct: Option<f64>) -> (bool, Option<f64>) {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+        return (false, context_pct);
+    };
+    let Some(event_type) = val.get("type").and_then(|v| v.as_str()) else {
+        return (false, context_pct);
+    };
+    let pct_tag = format_pct_tag(context_pct);
+    match event_type {
+        "turn.completed" => {
+            let context_pct =
+                extract_codex_context_pct(&val, DEFAULT_CONTEXT_WINDOW).or(context_pct);
+            (false, context_pct)
+        }
+        "item.completed" => {
+            let Some(item) = val.get("item") else {
+                return (false, context_pct);
+            };
+            let Some(item_type) = item.get("type").and_then(|v| v.as_str()) else {
+                return (false, context_pct);
+            };
+            match item_type {
+                "agent_message" => {
+                    if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                        for text_line in text.lines() {
+                            info!(target: "brrr::stream", "[{prefix}{pct_tag}] {text_line}");
+                        }
+                        return (true, context_pct);
+                    }
+                }
+                "command_execution" => {
+                    if let Some(cmd) = item.get("command").and_then(|v| v.as_str()) {
+                        let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                        let icon = if status == "completed" {
+                            ICON_CHECK
+                        } else {
+                            ICON_CROSS
+                        };
+                        for cmd_line in cmd.lines() {
+                            info!(target: "brrr::stream", "[{prefix}{pct_tag}] {icon} {cmd_line}");
+                        }
+                        return (true, context_pct);
+                    }
+                }
+                _ => {}
+            }
+            (false, context_pct)
+        }
+        "item.started" => {
+            let Some(item) = val.get("item") else {
+                return (false, context_pct);
+            };
+            if item.get("type").and_then(|v| v.as_str()) == Some("command_execution")
+                && let Some(cmd) = item.get("command").and_then(|v| v.as_str())
+            {
+                for cmd_line in cmd.lines() {
+                    info!(target: "brrr::stream", "[{prefix}{pct_tag}] {ICON_PLAY} {cmd_line}");
+                }
+                return (true, context_pct);
+            }
+            (false, context_pct)
+        }
+        _ => (false, context_pct),
+    }
+}
+
+/// Spawn a task that reads Codex JSON event lines from a channel and emits
+/// formatted agent messages via `tracing` with target `brrr::stream`.
+///
+/// Extracts text from `item.completed` agent_message events and command names
+/// from `item.started` command_execution events.
+fn spawn_codex_stream_formatter(
+    prefix: String,
+    mut rx: mpsc::UnboundedReceiver<String>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut context_pct: Option<f64> = None;
+        while let Some(line) = rx.recv().await {
+            let (_wrote, updated_pct) = format_codex_line(&prefix, &line, context_pct);
+            context_pct = updated_pct;
+        }
+    })
+}
+
+/// Codex runner — invokes the OpenAI Codex CLI.
+pub struct CodexRunner {
+    agent_binary: String,
+    model: Option<String>,
+    effort: Option<String>,
+    timeout: Option<Duration>,
+    max_timeout_retries: u32,
+    stream_prefix: Option<String>,
+}
+
+impl CodexRunner {
+    pub fn new(
+        agent_binary: String,
+        model: Option<String>,
+        effort: Option<String>,
+        timeout: Option<Duration>,
+        max_timeout_retries: u32,
+    ) -> Self {
+        Self {
+            agent_binary,
+            model,
+            effort,
+            timeout,
+            max_timeout_retries,
+            stream_prefix: None,
+        }
+    }
+
+    /// Build the command and arguments for codex invocation.
+    pub fn build_command(&self) -> (String, Vec<String>) {
+        let mut args = base_codex_args(self.model.as_deref(), self.effort.as_deref());
+        args.push("-".to_string());
+        (self.agent_binary.clone(), args)
+    }
+
+    /// Build a resume command for a timed-out session.
+    /// Uses `codex exec resume --last` which resumes the most recent session
+    /// scoped to the current working directory.
+    pub fn build_resume_command(&self) -> (String, Vec<String>) {
+        let mut args = base_codex_args(self.model.as_deref(), self.effort.as_deref());
+        args.push("resume".to_string());
+        args.push("--last".to_string());
+        (self.agent_binary.clone(), args)
+    }
+}
+
+impl AgentRunner for CodexRunner {
+    async fn run(&self, phase: Phase, prompt: &str, working_dir: &Path) -> Result<RunResult> {
+        let log_prefix = format!("agent:{phase}");
+        let max_attempts = 1 + self.max_timeout_retries;
+        let mut all_stdout: Vec<String> = Vec::new();
+        let mut all_stderr: Vec<String> = Vec::new();
+
+        // Set up streaming channel if a stream prefix is configured.
+        let (stdout_tx, stream_handle) = if let Some(ref prefix) = self.stream_prefix {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let handle = spawn_codex_stream_formatter(prefix.clone(), rx);
+            (Some(tx), Some(handle))
+        } else {
+            (None, None)
+        };
+
+        let result = 'attempts: {
+            for attempt in 0..max_attempts {
+                let (command, args, stdin_data) = if attempt == 0 {
+                    let (cmd, a) = self.build_command();
+                    (cmd, a, Some(prompt.to_string()))
+                } else {
+                    info!(target: "brrr::stream", "[{log_prefix}] resuming timed-out session (attempt {}/{max_attempts})", attempt + 1);
+                    let (cmd, a) = self.build_resume_command();
+                    (cmd, a, None)
+                };
+
+                let config = ProcessConfig {
+                    command,
+                    args,
+                    working_dir: working_dir.to_path_buf(),
+                    timeout: self.timeout,
+                    log_prefix: log_prefix.clone(),
+                    stream_output: false,
+                    env: vec![],
+                    stdin_data,
+                    quiet: true,
+                    stdout_tx: stdout_tx.clone(),
+                };
+
+                match spawn_and_stream(config).await {
+                    Ok(output) => {
+                        all_stdout.extend(output.stdout_lines);
+                        all_stderr.extend(output.stderr_lines);
+
+                        let stdout = extract_codex_result(&all_stdout)
+                            .unwrap_or_else(|| all_stdout.join("\n"));
+                        let stderr = all_stderr.join("\n");
+
+                        if let Some(sig) = output.signal {
+                            break 'attempts Err(Error::AgentRunner(format!(
+                                "agent killed by signal {sig}"
+                            )));
+                        }
+
+                        if output.exit_code != 0 {
+                            break 'attempts Err(Error::AgentRunner(format!(
+                                "agent exited with code {}",
+                                output.exit_code
+                            )));
+                        }
+
+                        let session_id = extract_thread_id(&all_stdout);
+
+                        break 'attempts Ok(RunResult {
+                            exit_code: output.exit_code,
+                            stdout,
+                            stderr,
+                            session_id,
+                        });
+                    }
+                    Err(Error::ProcessTimeout {
+                        timeout,
+                        stdout_lines,
+                        stderr_lines,
+                    }) => {
+                        all_stdout.extend(stdout_lines);
+                        all_stderr.extend(stderr_lines);
+                        warn!(prefix = %log_prefix, attempt = attempt + 1, ?timeout, buffered = all_stdout.len(), "attempt timed out");
+                    }
+                    Err(e) => break 'attempts Err(e),
+                }
+            }
+
+            Err(Error::AgentRunner(format!(
+                "agent timed out after {max_attempts} attempts"
+            )))
+        };
+
+        // Drop the sender so the stream formatter sees channel closure,
+        // then await it to ensure all buffered messages are flushed to stderr.
+        drop(stdout_tx);
+        if let Some(handle) = stream_handle {
+            let _ = handle.await;
+        }
+
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_command_defaults() {
+        let runner = ClaudeRunner::new("claude".to_string(), None, None, None, 2);
+        let (cmd, args) = runner.build_command("do something");
+        assert_eq!(cmd, "claude");
+        assert!(args.contains(&"--print".to_string()));
+        assert!(args.contains(&"--output-format".to_string()));
+        assert!(args.contains(&"stream-json".to_string()));
+        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"do something".to_string()));
+        // No --model when not configured
+        assert!(!args.contains(&"--model".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_with_model() {
+        let runner = ClaudeRunner::new(
+            "claude".to_string(),
+            Some("opus".to_string()),
+            None,
+            None,
+            2,
+        );
+        let (_cmd, args) = runner.build_command("pick a task");
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"opus".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_custom_binary() {
+        let runner = ClaudeRunner::new("/usr/local/bin/my-agent".to_string(), None, None, None, 2);
+        let (cmd, _args) = runner.build_command("review code");
+        assert_eq!(cmd, "/usr/local/bin/my-agent");
+    }
+
+    #[test]
+    fn test_build_resume_command_has_resume_flag() {
+        let runner = ClaudeRunner::new("claude".to_string(), None, None, None, 2);
+        let (_cmd, args) = runner.build_resume_command("sess-abc-123");
+        assert!(args.contains(&"--resume".to_string()));
+        assert!(args.contains(&"sess-abc-123".to_string()));
+        // Must NOT have -p flag
+        assert!(!args.contains(&"-p".to_string()));
+        // Must still have common flags
+        assert!(args.contains(&"--print".to_string()));
+        assert!(args.contains(&"--verbose".to_string()));
+        assert!(args.contains(&"--output-format".to_string()));
+        assert!(args.contains(&"stream-json".to_string()));
+        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn test_build_resume_command_with_model() {
+        let runner = ClaudeRunner::new(
+            "claude".to_string(),
+            Some("opus".to_string()),
+            None,
+            None,
+            2,
+        );
+        let (_cmd, args) = runner.build_resume_command("sess-xyz");
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"opus".to_string()));
+        assert!(args.contains(&"--resume".to_string()));
+        assert!(args.contains(&"sess-xyz".to_string()));
+    }
+
+    #[test]
+    fn test_extract_session_id_from_stream_json() {
+        let lines = vec![
+            r#"{"type":"user","message":{"role":"user"},"session_id":"abc-123"}"#.to_string(),
+            r#"{"type":"assistant","message":{"role":"assistant"},"session_id":"abc-123"}"#
+                .to_string(),
+        ];
+        assert_eq!(extract_session_id(&lines), Some("abc-123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_session_id_returns_last() {
+        let lines = vec![
+            r#"{"session_id":"first"}"#.to_string(),
+            r#"{"session_id":"second"}"#.to_string(),
+        ];
+        assert_eq!(extract_session_id(&lines), Some("second".to_string()));
+    }
+
+    #[test]
+    fn test_extract_session_id_none_for_empty() {
+        assert_eq!(extract_session_id(&[]), None);
+    }
+
+    #[test]
+    fn test_extract_session_id_none_for_non_json() {
+        let lines = vec!["not json".to_string(), "also not json".to_string()];
+        assert_eq!(extract_session_id(&lines), None);
+    }
+
+    #[test]
+    fn test_extract_session_id_none_for_empty_id() {
+        let lines = vec![r#"{"session_id":""}"#.to_string()];
+        assert_eq!(extract_session_id(&lines), None);
+    }
+
+    #[test]
+    fn test_extract_session_id_skips_missing_field() {
+        let lines = vec![
+            r#"{"type":"system","message":"hello"}"#.to_string(),
+            r#"{"type":"user","session_id":"found-it"}"#.to_string(),
+        ];
+        assert_eq!(extract_session_id(&lines), Some("found-it".to_string()));
+    }
+
+    #[test]
+    fn test_format_runner_display_without_extras() {
+        assert_eq!(
+            format_runner_display(RunnerKind::Codex, Some("gpt-5"), None, None),
+            "gpt-5@codex"
+        );
+    }
+
+    #[test]
+    fn test_format_runner_display_with_effort_and_variant() {
+        assert_eq!(
+            format_runner_display(RunnerKind::OpenCode, None, Some("high"), Some("reasoning")),
+            "(default)@opencode (effort=high, variant=reasoning)"
+        );
+    }
+
+    #[test]
+    fn test_extract_claude_result_prefers_result_event() {
+        let lines = vec![
+            r#"{"type":"system","session_id":"abc"}"#.to_string(),
+            r#"{"type":"assistant","message":"thinking"}"#.to_string(),
+            r#"{"type":"result","result":"REVIEW_APPROVED"}"#.to_string(),
+        ];
+        assert_eq!(
+            extract_claude_result(&lines).as_deref(),
+            Some("REVIEW_APPROVED")
+        );
+    }
+
+    #[test]
+    fn test_extract_claude_result_returns_last_result_event() {
+        let lines = vec![
+            r#"{"type":"result","result":"first"}"#.to_string(),
+            r#"{"type":"result","result":"second"}"#.to_string(),
+        ];
+        assert_eq!(extract_claude_result(&lines).as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn test_extract_claude_result_none_without_result_event() {
+        let lines = vec![
+            r#"{"type":"system","session_id":"abc"}"#.to_string(),
+            r#"{"type":"assistant","message":"noop"}"#.to_string(),
+        ];
+        assert_eq!(extract_claude_result(&lines), None);
+    }
+
+    #[test]
+    fn test_phase_display() {
+        assert_eq!(Phase::Choose.to_string(), "choose");
+        assert_eq!(Phase::Implement.to_string(), "implement");
+        assert_eq!(Phase::Review.to_string(), "review");
+        assert_eq!(Phase::ReviewAggregate.to_string(), "review-aggregate");
+        assert_eq!(Phase::Fix.to_string(), "fix");
+    }
+
+    #[test]
+    fn test_build_runner_claude() {
+        let runner = build_runner(
+            RunnerKind::Claude,
+            "claude",
+            Some("opus"),
+            Some("high"),
+            None,
+            None,
+            2,
+        );
+        assert!(matches!(runner, AnyRunner::Claude(_)));
+    }
+
+    #[test]
+    fn test_build_runner_codex() {
+        let runner = build_runner(
+            RunnerKind::Codex,
+            "codex",
+            Some("gpt-5.4"),
+            None,
+            None,
+            None,
+            2,
+        );
+        assert!(matches!(runner, AnyRunner::Codex(_)));
+    }
+
+    #[test]
+    fn test_build_runner_opencode() {
+        let runner = build_runner(
+            RunnerKind::OpenCode,
+            "opencode",
+            None,
+            None,
+            Some("high"),
+            None,
+            2,
+        );
+        assert!(matches!(runner, AnyRunner::OpenCode(_)));
+    }
+
+    #[test]
+    fn test_codex_build_command_defaults() {
+        let runner = CodexRunner::new("codex".to_string(), None, None, None, 2);
+        let (cmd, args) = runner.build_command();
+        assert_eq!(cmd, "codex");
+        assert!(args.contains(&"exec".to_string()));
+        assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(args.contains(&"--json".to_string()));
+        assert!(args.contains(&"-".to_string()));
+        assert!(!args.contains(&"--model".to_string()));
+    }
+
+    #[test]
+    fn test_codex_build_command_with_model() {
+        let runner = CodexRunner::new("codex".to_string(), Some("o3".to_string()), None, None, 2);
+        let (_cmd, args) = runner.build_command();
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"o3".to_string()));
+    }
+
+    #[test]
+    fn test_codex_build_command_custom_binary() {
+        let runner = CodexRunner::new("/usr/local/bin/codex".to_string(), None, None, None, 2);
+        let (cmd, _args) = runner.build_command();
+        assert_eq!(cmd, "/usr/local/bin/codex");
+    }
+
+    #[test]
+    fn test_codex_build_resume_command() {
+        let runner = CodexRunner::new("codex".to_string(), None, None, None, 2);
+        let (cmd, args) = runner.build_resume_command();
+        assert_eq!(cmd, "codex");
+        assert!(args.contains(&"exec".to_string()));
+        assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(args.contains(&"--json".to_string()));
+        assert!(args.contains(&"resume".to_string()));
+        assert!(args.contains(&"--last".to_string()));
+        // Must NOT have `-` stdin marker
+        assert!(!args.contains(&"-".to_string()));
+    }
+
+    #[test]
+    fn test_codex_build_resume_command_with_model() {
+        let runner = CodexRunner::new(
+            "codex".to_string(),
+            Some("gpt-5.4".to_string()),
+            None,
+            None,
+            2,
+        );
+        let (_cmd, args) = runner.build_resume_command();
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"gpt-5.4".to_string()));
+        assert!(args.contains(&"resume".to_string()));
+        assert!(args.contains(&"--last".to_string()));
+    }
+
+    #[test]
+    fn test_build_claude_resume_with_prompt_command_has_both_resume_and_prompt() {
+        let (cmd, args) = build_claude_resume_with_prompt_command(
+            "claude",
+            None,
+            None,
+            "sess-123",
+            "fix your JSON",
+        );
+        assert_eq!(cmd, "claude");
+        assert!(args.contains(&"--resume".to_string()));
+        assert!(args.contains(&"sess-123".to_string()));
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"fix your JSON".to_string()));
+        // Common flags
+        assert!(args.contains(&"--print".to_string()));
+        assert!(args.contains(&"--verbose".to_string()));
+        assert!(args.contains(&"--output-format".to_string()));
+        assert!(args.contains(&"stream-json".to_string()));
+        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn test_build_claude_resume_with_prompt_command_with_model_and_effort() {
+        let (_cmd, args) = build_claude_resume_with_prompt_command(
+            "claude",
+            Some("opus"),
+            Some("high"),
+            "sess-456",
+            "correction",
+        );
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"opus".to_string()));
+        assert!(args.contains(&"--effort".to_string()));
+        assert!(args.contains(&"high".to_string()));
+        assert!(args.contains(&"--resume".to_string()));
+        assert!(args.contains(&"sess-456".to_string()));
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"correction".to_string()));
+    }
+
+    #[test]
+    fn test_extract_thread_id_from_json() {
+        let lines = vec![
+            r#"{"type":"thread.started","thread_id":"019c97dd-d6ce-7642-99c8-3717697fd004"}"#
+                .to_string(),
+            r#"{"type":"turn.started"}"#.to_string(),
+        ];
+        assert_eq!(
+            extract_thread_id(&lines),
+            Some("019c97dd-d6ce-7642-99c8-3717697fd004".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_thread_id_returns_last() {
+        let lines = vec![
+            r#"{"thread_id":"first"}"#.to_string(),
+            r#"{"thread_id":"second"}"#.to_string(),
+        ];
+        assert_eq!(extract_thread_id(&lines), Some("second".to_string()));
+    }
+
+    #[test]
+    fn test_extract_thread_id_none_for_empty() {
+        assert_eq!(extract_thread_id(&[]), None);
+    }
+
+    #[test]
+    fn test_extract_thread_id_none_for_non_json() {
+        let lines = vec!["not json".to_string()];
+        assert_eq!(extract_thread_id(&lines), None);
+    }
+
+    #[test]
+    fn test_extract_thread_id_none_for_empty_id() {
+        let lines = vec![r#"{"thread_id":""}"#.to_string()];
+        assert_eq!(extract_thread_id(&lines), None);
+    }
+
+    #[test]
+    fn test_extract_codex_result_agent_message() {
+        let lines = vec![
+            r#"{"type":"thread.started","thread_id":"abc"}"#.to_string(),
+            r#"{"type":"turn.started"}"#.to_string(),
+            r#"{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"thinking"}}"#.to_string(),
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"hello"}}"#.to_string(),
+            r#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10}}"#.to_string(),
+        ];
+        assert_eq!(extract_codex_result(&lines).as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_extract_codex_result_returns_last_agent_message() {
+        let lines = vec![
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"first"}}"#
+                .to_string(),
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"second"}}"#
+                .to_string(),
+        ];
+        assert_eq!(extract_codex_result(&lines).as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn test_extract_codex_result_none_without_agent_message() {
+        let lines = vec![
+            r#"{"type":"thread.started","thread_id":"abc"}"#.to_string(),
+            r#"{"type":"turn.started"}"#.to_string(),
+        ];
+        assert_eq!(extract_codex_result(&lines), None);
+    }
+
+    #[test]
+    fn test_extract_codex_result_skips_reasoning() {
+        let lines = vec![
+            r#"{"type":"item.completed","item":{"type":"reasoning","text":"thinking hard"}}"#
+                .to_string(),
+        ];
+        assert_eq!(extract_codex_result(&lines), None);
+    }
+
+    #[test]
+    fn test_codex_build_resume_with_prompt_command() {
+        let (cmd, args) = build_codex_resume_with_prompt_command("codex", None, None, "thread-abc");
+        assert_eq!(cmd, "codex");
+        assert!(args.contains(&"exec".to_string()));
+        assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(args.contains(&"--json".to_string()));
+        assert!(args.contains(&"resume".to_string()));
+        assert!(args.contains(&"thread-abc".to_string()));
+        assert!(args.contains(&"-".to_string()));
+        // Must NOT have -p (prompt via stdin)
+        assert!(!args.contains(&"-p".to_string()));
+    }
+
+    #[test]
+    fn test_codex_effort_flag() {
+        let runner = CodexRunner::new("codex".to_string(), None, Some("low".to_string()), None, 2);
+        let (_cmd, args) = runner.build_command();
+        assert!(args.contains(&"--config".to_string()));
+        assert!(args.contains(&"model_reasoning_effort=\"low\"".to_string()));
+    }
+
+    #[test]
+    fn test_codex_effort_flag_not_present_when_none() {
+        let runner = CodexRunner::new("codex".to_string(), None, None, None, 2);
+        let (_cmd, args) = runner.build_command();
+        assert!(!args.contains(&"--config".to_string()));
+    }
+
+    #[test]
+    fn test_build_runner_codex_with_effort() {
+        let runner = build_runner(
+            RunnerKind::Codex,
+            "codex",
+            None,
+            Some("high"),
+            None,
+            None,
+            2,
+        );
+        assert!(matches!(runner, AnyRunner::Codex(_)));
+        if let AnyRunner::Codex(r) = runner {
+            let (_cmd, args) = r.build_command();
+            assert!(args.contains(&"--config".to_string()));
+            assert!(args.contains(&"model_reasoning_effort=\"high\"".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_codex_resume_with_prompt_command_with_model_and_effort() {
+        let (_cmd, args) = build_codex_resume_with_prompt_command(
+            "codex",
+            Some("gpt-5.4"),
+            Some("medium"),
+            "thread-xyz",
+        );
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"gpt-5.4".to_string()));
+        assert!(args.contains(&"--config".to_string()));
+        assert!(args.contains(&"model_reasoning_effort=\"medium\"".to_string()));
+        assert!(args.contains(&"resume".to_string()));
+        assert!(args.contains(&"thread-xyz".to_string()));
+        assert!(args.contains(&"-".to_string()));
+    }
+
+    // --- OpenCode tests ---
+
+    #[test]
+    fn test_opencode_build_command_defaults() {
+        let runner = OpencodeRunner::new("opencode".to_string(), None, None, None, 2);
+        let (cmd, args) = runner.build_command("do something");
+        assert_eq!(cmd, "opencode");
+        assert!(args.contains(&"run".to_string()));
+        assert!(args.contains(&"--format".to_string()));
+        assert!(args.contains(&"json".to_string()));
+        assert!(args.contains(&"do something".to_string()));
+        assert!(!args.contains(&"--model".to_string()));
+        assert!(!args.contains(&"--variant".to_string()));
+    }
+
+    #[test]
+    fn test_opencode_build_command_with_model() {
+        let runner = OpencodeRunner::new(
+            "opencode".to_string(),
+            Some("anthropic/claude-opus-4-6".to_string()),
+            None,
+            None,
+            2,
+        );
+        let (_cmd, args) = runner.build_command("pick a task");
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"anthropic/claude-opus-4-6".to_string()));
+    }
+
+    #[test]
+    fn test_opencode_build_command_with_variant() {
+        let runner = OpencodeRunner::new(
+            "opencode".to_string(),
+            None,
+            Some("high".to_string()),
+            None,
+            2,
+        );
+        let (_cmd, args) = runner.build_command("implement feature");
+        assert!(args.contains(&"--variant".to_string()));
+        assert!(args.contains(&"high".to_string()));
+    }
+
+    #[test]
+    fn test_opencode_build_command_custom_binary() {
+        let runner = OpencodeRunner::new("/usr/local/bin/oc".to_string(), None, None, None, 2);
+        let (cmd, _args) = runner.build_command("review code");
+        assert_eq!(cmd, "/usr/local/bin/oc");
+    }
+
+    #[test]
+    fn test_opencode_build_resume_command() {
+        let runner = OpencodeRunner::new("opencode".to_string(), None, None, None, 2);
+        let (cmd, args) = runner.build_resume_command("ses_abc123");
+        assert_eq!(cmd, "opencode");
+        assert!(args.contains(&"run".to_string()));
+        assert!(args.contains(&"--format".to_string()));
+        assert!(args.contains(&"json".to_string()));
+        assert!(args.contains(&"--session".to_string()));
+        assert!(args.contains(&"ses_abc123".to_string()));
+        // Prompt-less resume: no positional prompt
+        assert_eq!(args.len(), 5);
+    }
+
+    #[test]
+    fn test_opencode_build_resume_command_with_model() {
+        let runner = OpencodeRunner::new(
+            "opencode".to_string(),
+            Some("anthropic/claude-opus-4-6".to_string()),
+            None,
+            None,
+            2,
+        );
+        let (_cmd, args) = runner.build_resume_command("ses_xyz");
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"anthropic/claude-opus-4-6".to_string()));
+        assert!(args.contains(&"--session".to_string()));
+        assert!(args.contains(&"ses_xyz".to_string()));
+    }
+
+    #[test]
+    fn test_extract_opencode_session_id_camel_case() {
+        let lines = vec![
+            r#"{"type":"step_start","sessionID":"ses_abc123","part":{"type":"step-start"}}"#
+                .to_string(),
+            r#"{"type":"text","sessionID":"ses_abc123","part":{"type":"text","text":"hello"}}"#
+                .to_string(),
+        ];
+        assert_eq!(
+            extract_opencode_session_id(&lines),
+            Some("ses_abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_opencode_session_id_returns_last() {
+        let lines = vec![
+            r#"{"sessionID":"first"}"#.to_string(),
+            r#"{"sessionID":"second"}"#.to_string(),
+        ];
+        assert_eq!(
+            extract_opencode_session_id(&lines),
+            Some("second".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_opencode_session_id_none_for_empty() {
+        assert_eq!(extract_opencode_session_id(&[]), None);
+    }
+
+    #[test]
+    fn test_extract_opencode_session_id_none_for_snake_case() {
+        // OpenCode uses camelCase sessionID, not snake_case session_id
+        let lines = vec![r#"{"session_id":"abc"}"#.to_string()];
+        assert_eq!(extract_opencode_session_id(&lines), None);
+    }
+
+    #[test]
+    fn test_extract_opencode_session_id_none_for_empty_id() {
+        let lines = vec![r#"{"sessionID":""}"#.to_string()];
+        assert_eq!(extract_opencode_session_id(&lines), None);
+    }
+
+    #[test]
+    fn test_extract_opencode_result_text_events() {
+        let lines = vec![
+            r#"{"type":"step_start","sessionID":"ses_abc","part":{"type":"step-start"}}"#
+                .to_string(),
+            r#"{"type":"text","sessionID":"ses_abc","part":{"type":"text","text":"hello world"}}"#
+                .to_string(),
+            r#"{"type":"step_finish","sessionID":"ses_abc","part":{"type":"step-finish","reason":"stop"}}"#
+                .to_string(),
+        ];
+        assert_eq!(
+            extract_opencode_result(&lines).as_deref(),
+            Some("hello world")
+        );
+    }
+
+    #[test]
+    fn test_extract_opencode_result_returns_last_text() {
+        let lines = vec![
+            r#"{"type":"text","sessionID":"ses_abc","part":{"type":"text","text":"first"}}"#
+                .to_string(),
+            r#"{"type":"text","sessionID":"ses_abc","part":{"type":"text","text":"second"}}"#
+                .to_string(),
+        ];
+        assert_eq!(extract_opencode_result(&lines).as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn test_extract_opencode_result_none_without_text_event() {
+        let lines = vec![
+            r#"{"type":"step_start","sessionID":"ses_abc","part":{"type":"step-start"}}"#
+                .to_string(),
+            r#"{"type":"step_finish","sessionID":"ses_abc","part":{"type":"step-finish"}}"#
+                .to_string(),
+        ];
+        assert_eq!(extract_opencode_result(&lines), None);
+    }
+
+    #[test]
+    fn test_build_opencode_resume_with_prompt_command() {
+        let (cmd, args) = build_opencode_resume_with_prompt_command(
+            "opencode",
+            None,
+            None,
+            "ses_abc",
+            "fix your JSON",
+        );
+        assert_eq!(cmd, "opencode");
+        assert!(args.contains(&"run".to_string()));
+        assert!(args.contains(&"--format".to_string()));
+        assert!(args.contains(&"json".to_string()));
+        assert!(args.contains(&"--session".to_string()));
+        assert!(args.contains(&"ses_abc".to_string()));
+        assert!(args.contains(&"fix your JSON".to_string()));
+    }
+
+    #[test]
+    fn test_build_opencode_resume_with_prompt_command_with_model_and_variant() {
+        let (_cmd, args) = build_opencode_resume_with_prompt_command(
+            "opencode",
+            Some("anthropic/claude-opus-4-6"),
+            Some("high"),
+            "ses_xyz",
+            "correction",
+        );
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"anthropic/claude-opus-4-6".to_string()));
+        assert!(args.contains(&"--variant".to_string()));
+        assert!(args.contains(&"high".to_string()));
+        assert!(args.contains(&"--session".to_string()));
+        assert!(args.contains(&"ses_xyz".to_string()));
+        assert!(args.contains(&"correction".to_string()));
+    }
+
+    #[test]
+    fn test_runner_kind_display_opencode() {
+        assert_eq!(RunnerKind::OpenCode.to_string(), "opencode");
+    }
+
+    #[test]
+    fn test_runner_kind_from_str_opencode() {
+        assert_eq!(
+            "opencode".parse::<RunnerKind>().unwrap(),
+            RunnerKind::OpenCode
+        );
+    }
+
+    #[test]
+    fn test_build_runner_opencode_with_variant() {
+        let runner = build_runner(
+            RunnerKind::OpenCode,
+            "opencode",
+            Some("anthropic/claude-opus-4-6"),
+            None,
+            Some("high"),
+            None,
+            2,
+        );
+        assert!(matches!(runner, AnyRunner::OpenCode(_)));
+        if let AnyRunner::OpenCode(r) = runner {
+            let (_cmd, args) = r.build_command("test");
+            assert!(args.contains(&"--model".to_string()));
+            assert!(args.contains(&"anthropic/claude-opus-4-6".to_string()));
+            assert!(args.contains(&"--variant".to_string()));
+            assert!(args.contains(&"high".to_string()));
+        }
+    }
+
+    // --- Shared tracing capture helper ---
+
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+
+    /// A writer that appends to a shared buffer, for capturing tracing output in tests.
+    #[derive(Clone)]
+    struct BufWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for BufWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for BufWriter {
+        type Writer = BufWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Run a closure under a tracing subscriber that captures only `{message}\n`
+    /// (no timestamps, levels, or targets) to a buffer, then return the buffer contents.
+    fn with_tracing_capture<F: FnOnce()>(f: F) -> String {
+        let buf = BufWriter(Arc::new(Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_max_level(tracing::Level::TRACE)
+            .without_time()
+            .with_target(false)
+            .with_level(false)
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = buf.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    // --- Codex stream formatter tests ---
+
+    /// Helper: run `format_codex_line` for each input line and return collected output.
+    fn run_codex_formatter(prefix: &str, lines: &[&str]) -> String {
+        with_tracing_capture(|| {
+            let mut context_pct: Option<f64> = None;
+            for line in lines {
+                let (_wrote, updated_pct) = format_codex_line(prefix, line, context_pct);
+                context_pct = updated_pct;
+            }
+        })
+    }
+
+    #[test]
+    fn test_codex_formatter_agent_message() {
+        let out = run_codex_formatter(
+            "test",
+            &[r#"{"type":"item.completed","item":{"type":"agent_message","text":"hello world"}}"#],
+        );
+        assert_eq!(out, "[test] hello world\n");
+    }
+
+    #[test]
+    fn test_codex_formatter_command_execution_completed() {
+        let out = run_codex_formatter(
+            "test",
+            &[
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"cargo test","status":"completed"}}"#,
+            ],
+        );
+        assert_eq!(out, format!("[test] {ICON_CHECK} cargo test\n"));
+    }
+
+    #[test]
+    fn test_codex_formatter_command_execution_failed() {
+        let out = run_codex_formatter(
+            "test",
+            &[
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"cargo test","status":"failed"}}"#,
+            ],
+        );
+        assert_eq!(out, format!("[test] {ICON_CROSS} cargo test\n"));
+    }
+
+    #[test]
+    fn test_codex_formatter_item_started_command() {
+        let out = run_codex_formatter(
+            "test",
+            &[r#"{"type":"item.started","item":{"type":"command_execution","command":"ls -la"}}"#],
+        );
+        assert_eq!(out, format!("[test] {ICON_PLAY} ls -la\n"));
+    }
+
+    #[test]
+    fn test_codex_formatter_skips_unknown_event_types() {
+        let out = run_codex_formatter(
+            "test",
+            &[
+                r#"{"type":"thread.started","thread_id":"abc"}"#,
+                r#"{"type":"turn.started"}"#,
+            ],
+        );
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_codex_formatter_skips_invalid_json() {
+        let out = run_codex_formatter("test", &["not json at all", "{invalid", ""]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_codex_formatter_skips_missing_item() {
+        let out = run_codex_formatter("test", &[r#"{"type":"item.completed"}"#]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_codex_formatter_skips_unknown_item_type() {
+        let out = run_codex_formatter(
+            "test",
+            &[r#"{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}"#],
+        );
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_codex_formatter_multiline_command() {
+        let out = run_codex_formatter(
+            "test",
+            &[
+                r#"{"type":"item.started","item":{"type":"command_execution","command":"echo hello\necho world"}}"#,
+            ],
+        );
+        assert_eq!(
+            out,
+            format!("[test] {ICON_PLAY} echo hello\n[test] {ICON_PLAY} echo world\n")
+        );
+    }
+
+    #[test]
+    fn test_codex_formatter_context_pct() {
+        let out = run_codex_formatter(
+            "impl",
+            &[
+                r#"{"type":"turn.completed","usage":{"input_tokens":50000,"cached_input_tokens":0,"output_tokens":50000}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 50%] hi\n");
+    }
+
+    #[test]
+    fn test_codex_formatter_context_pct_persists() {
+        let out = run_codex_formatter(
+            "impl",
+            &[
+                r#"{"type":"turn.completed","usage":{"input_tokens":50000,"cached_input_tokens":0,"output_tokens":50000}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"first"}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"second"}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 50%] first\n[impl 50%] second\n");
+    }
+
+    #[test]
+    fn test_codex_formatter_context_pct_updates() {
+        let out = run_codex_formatter(
+            "impl",
+            &[
+                r#"{"type":"turn.completed","usage":{"input_tokens":50000,"cached_input_tokens":0,"output_tokens":50000}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"first"}}"#,
+                r#"{"type":"turn.completed","usage":{"input_tokens":100000,"cached_input_tokens":0,"output_tokens":50000}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"second"}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 50%] first\n[impl 75%] second\n");
+    }
+
+    #[test]
+    fn test_codex_formatter_no_pct_before_turn_completed() {
+        let out = run_codex_formatter(
+            "impl",
+            &[r#"{"type":"item.completed","item":{"type":"agent_message","text":"early"}}"#],
+        );
+        assert_eq!(out, "[impl] early\n");
+    }
+
+    #[test]
+    fn test_codex_formatter_context_pct_with_cached() {
+        // cached_input_tokens is a subset of input_tokens, so cached <= input.
+        // total = input + output = 20000 + 50000 = 70000 / 200000 = 35%
+        let out = run_codex_formatter(
+            "impl",
+            &[
+                r#"{"type":"turn.completed","usage":{"input_tokens":20000,"cached_input_tokens":15000,"output_tokens":50000}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 35%] hi\n");
+    }
+
+    #[test]
+    fn test_codex_formatter_turn_completed_empty_usage_preserves_pct() {
+        let out = run_codex_formatter(
+            "impl",
+            &[
+                r#"{"type":"turn.completed","usage":{"input_tokens":50000,"cached_input_tokens":0,"output_tokens":50000}}"#,
+                r#"{"type":"turn.completed","usage":{}}"#,
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}"#,
+            ],
+        );
+        // Empty usage returns None from extract, so .or(context_pct) preserves the 50%.
+        assert_eq!(out, "[impl 50%] hi\n");
+    }
+
+    // --- Claude stream formatter tests ---
+
+    /// Helper: run `format_claude_line` for each input line and return collected output.
+    fn run_claude_formatter(prefix: &str, lines: &[&str]) -> String {
+        with_tracing_capture(|| {
+            let mut context_pct: Option<f64> = None;
+            for line in lines {
+                let (_wrote, updated_pct) = format_claude_line(prefix, line, context_pct);
+                context_pct = updated_pct;
+            }
+        })
+    }
+
+    #[test]
+    fn test_claude_formatter_text_block() {
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello world"}]}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl] hello world\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_tool_use_block() {
+        let out = run_claude_formatter(
+            "impl",
+            &[r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}"#],
+        );
+        assert_eq!(out, format!("[impl] {ICON_PLAY} Read\n"));
+    }
+
+    #[test]
+    fn test_claude_formatter_mixed_blocks() {
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"thinking"},{"type":"tool_use","name":"Edit"}]}}"#,
+            ],
+        );
+        assert_eq!(out, format!("[impl] thinking\n[impl] {ICON_PLAY} Edit\n"));
+    }
+
+    #[test]
+    fn test_claude_formatter_multiline_text() {
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"line1\nline2"}]}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl] line1\n[impl] line2\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_skips_non_assistant() {
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"user","message":{"content":[{"type":"text","text":"hi"}]}}"#,
+                r#"{"type":"result","message":{"content":[{"type":"text","text":"done"}]}}"#,
+            ],
+        );
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_claude_formatter_skips_invalid_json() {
+        let out = run_claude_formatter("impl", &["not json", "", "{bad"]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_claude_formatter_skips_missing_content() {
+        let out = run_claude_formatter("impl", &[r#"{"type":"assistant","message":{}}"#]);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_claude_formatter_skips_unknown_block_type() {
+        let out = run_claude_formatter(
+            "impl",
+            &[r#"{"type":"assistant","message":{"content":[{"type":"thinking","text":"hmm"}]}}"#],
+        );
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn test_claude_formatter_context_pct() {
+        // 100k input + 80k cache_read + 20k output = 200k total → 100% of 200k window
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100000,"cache_creation_input_tokens":0,"cache_read_input_tokens":80000,"output_tokens":20000}}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 100%] hi\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_context_pct_persists() {
+        // Context % from first event persists to second event (which has no usage).
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":20000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"b"}]}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 10%] a\n[impl 10%] b\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_context_pct_ignores_zero_total_usage() {
+        // A usage object with all token fields missing/zero should not clobber
+        // an already-known context percentage.
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":20000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"b"}],"usage":{}}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 10%] a\n[impl 10%] b\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_context_pct_updates() {
+        // Context % updates when a newer event has usage data.
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":20000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"b"}],"usage":{"input_tokens":100000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 10%] a\n[impl 50%] b\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_subagent_does_not_update_context_pct() {
+        // Root event sets 10%, sub-agent event has 90% usage — displayed % stays 10%.
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"root"}],"usage":{"input_tokens":20000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+                r#"{"type":"assistant","parent_tool_use_id":"toolu_abc123","message":{"content":[{"type":"text","text":"sub"}],"usage":{"input_tokens":180000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 10%] root\n[impl 10%] sub\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_root_after_subagent_updates_normally() {
+        // root → sub-agent → root: final root event updates context % normally.
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":20000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+                r#"{"type":"assistant","parent_tool_use_id":"toolu_abc","message":{"content":[{"type":"text","text":"b"}],"usage":{"input_tokens":180000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"c"}],"usage":{"input_tokens":100000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 10%] a\n[impl 10%] b\n[impl 50%] c\n");
+    }
+
+    #[test]
+    fn test_claude_formatter_subagent_null_parent_updates_pct() {
+        // parent_tool_use_id: null is treated as root agent.
+        let out = run_claude_formatter(
+            "impl",
+            &[
+                r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":100000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}"#,
+            ],
+        );
+        assert_eq!(out, "[impl 50%] a\n");
+    }
+}
