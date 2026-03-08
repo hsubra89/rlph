@@ -136,7 +136,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
             match reader.next_line().await {
                 Ok(Some(line)) => {
                     if stream_output {
-                        info!(target: "rlph::stream", prefix = %prefix_out, "{line}");
+                        info!(target: "brrr::stream", prefix = %prefix_out, "{line}");
                     }
                     if let Some(ref tx) = stdout_tx {
                         let _ = tx.send(line.clone());
@@ -160,7 +160,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
             match reader.next_line().await {
                 Ok(Some(line)) => {
                     if stream_output {
-                        info!(target: "rlph::stream", prefix = %prefix_err, "{line}");
+                        info!(target: "brrr::stream", prefix = %prefix_err, "{line}");
                     }
                     lines.push(line);
                 }
@@ -181,7 +181,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
             tokio::time::sleep(HEARTBEAT_INTERVAL).await;
             if !quiet {
                 let elapsed = heartbeat_started.elapsed().as_secs();
-                info!(target: "rlph::heartbeat", prefix = %heartbeat_prefix, elapsed_secs = elapsed, "still running");
+                info!(target: "brrr::heartbeat", prefix = %heartbeat_prefix, elapsed_secs = elapsed, "still running");
             }
         }
     });

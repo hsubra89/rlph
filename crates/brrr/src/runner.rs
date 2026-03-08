@@ -335,14 +335,14 @@ fn format_claude_line(prefix: &str, line: &str, context_pct: Option<f64>) -> (bo
             "text" => {
                 if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
                     for text_line in text.lines() {
-                        info!(target: "rlph::stream", "[{prefix}{pct_tag}] {text_line}");
+                        info!(target: "brrr::stream", "[{prefix}{pct_tag}] {text_line}");
                     }
                     wrote = true;
                 }
             }
             "tool_use" => {
                 if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                    info!(target: "rlph::stream", "[{prefix}{pct_tag}] {ICON_PLAY} {name}");
+                    info!(target: "brrr::stream", "[{prefix}{pct_tag}] {ICON_PLAY} {name}");
                     wrote = true;
                 }
             }
@@ -353,7 +353,7 @@ fn format_claude_line(prefix: &str, line: &str, context_pct: Option<f64>) -> (bo
 }
 
 /// Spawn a task that reads Claude stream-json lines from a channel and emits
-/// formatted agent messages via `tracing` with target `rlph::stream`.
+/// formatted agent messages via `tracing` with target `brrr::stream`.
 ///
 /// Extracts text content from `assistant` events and tool names from `tool_use`
 /// content blocks. All other event types are silently skipped.
@@ -401,7 +401,7 @@ impl AgentRunner for ClaudeRunner {
                             ));
                         }
                     };
-                    info!(target: "rlph::stream", "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{max_attempts})", attempt + 1);
+                    info!(target: "brrr::stream", "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{max_attempts})", attempt + 1);
                     self.build_resume_command(&session_id)
                 };
 
@@ -789,7 +789,7 @@ impl AgentRunner for OpencodeRunner {
                         ));
                     }
                 };
-                info!(target: "rlph::stream", "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{max_attempts})", attempt + 1);
+                info!(target: "brrr::stream", "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{max_attempts})", attempt + 1);
                 self.build_resume_command(&session_id)
             };
 
@@ -1017,7 +1017,7 @@ fn format_codex_line(prefix: &str, line: &str, context_pct: Option<f64>) -> (boo
                 "agent_message" => {
                     if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
                         for text_line in text.lines() {
-                            info!(target: "rlph::stream", "[{prefix}{pct_tag}] {text_line}");
+                            info!(target: "brrr::stream", "[{prefix}{pct_tag}] {text_line}");
                         }
                         return (true, context_pct);
                     }
@@ -1031,7 +1031,7 @@ fn format_codex_line(prefix: &str, line: &str, context_pct: Option<f64>) -> (boo
                             ICON_CROSS
                         };
                         for cmd_line in cmd.lines() {
-                            info!(target: "rlph::stream", "[{prefix}{pct_tag}] {icon} {cmd_line}");
+                            info!(target: "brrr::stream", "[{prefix}{pct_tag}] {icon} {cmd_line}");
                         }
                         return (true, context_pct);
                     }
@@ -1048,7 +1048,7 @@ fn format_codex_line(prefix: &str, line: &str, context_pct: Option<f64>) -> (boo
                 && let Some(cmd) = item.get("command").and_then(|v| v.as_str())
             {
                 for cmd_line in cmd.lines() {
-                    info!(target: "rlph::stream", "[{prefix}{pct_tag}] {ICON_PLAY} {cmd_line}");
+                    info!(target: "brrr::stream", "[{prefix}{pct_tag}] {ICON_PLAY} {cmd_line}");
                 }
                 return (true, context_pct);
             }
@@ -1059,7 +1059,7 @@ fn format_codex_line(prefix: &str, line: &str, context_pct: Option<f64>) -> (boo
 }
 
 /// Spawn a task that reads Codex JSON event lines from a channel and emits
-/// formatted agent messages via `tracing` with target `rlph::stream`.
+/// formatted agent messages via `tracing` with target `brrr::stream`.
 ///
 /// Extracts text from `item.completed` agent_message events and command names
 /// from `item.started` command_execution events.
@@ -1144,7 +1144,7 @@ impl AgentRunner for CodexRunner {
                     let (cmd, a) = self.build_command();
                     (cmd, a, Some(prompt.to_string()))
                 } else {
-                    info!(target: "rlph::stream", "[{log_prefix}] resuming timed-out session (attempt {}/{max_attempts})", attempt + 1);
+                    info!(target: "brrr::stream", "[{log_prefix}] resuming timed-out session (attempt {}/{max_attempts})", attempt + 1);
                     let (cmd, a) = self.build_resume_command();
                     (cmd, a, None)
                 };

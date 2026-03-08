@@ -118,7 +118,7 @@ pub fn make_test_config() -> Config {
         source: "github".to_string(),
         runner: RunnerKind::Claude,
         submission: "github".to_string(),
-        label: "rlph".to_string(),
+        label: "brrr".to_string(),
         poll_seconds: Duration::from_secs(30),
         worktree_dir: "worktrees".to_string(),
         base_branch: "main".to_string(),

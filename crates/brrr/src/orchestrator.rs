@@ -833,7 +833,7 @@ impl<
 
     /// Parse the task selection from `.rlph/task.toml` written by the choose agent.
     fn parse_task_selection(&self) -> Result<String> {
-        let path = self.repo_root.join(".rlph").join("task.toml");
+        let path = self.repo_root.join(".brrr").join("task.toml");
         let content = std::fs::read_to_string(&path).map_err(|e| {
             Error::Orchestrator(format!(
                 "failed to read task selection {}: {e}",

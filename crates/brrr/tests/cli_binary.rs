@@ -4,7 +4,7 @@ use std::fs;
 
 #[allow(deprecated)] // cargo_bin deprecated in favor of cargo_bin_cmd! macro
 fn cmd() -> Command {
-    Command::cargo_bin("rlph").unwrap()
+    Command::cargo_bin("brrr").unwrap()
 }
 
 fn cmd_in_tmp() -> (Command, tempfile::TempDir) {
@@ -39,7 +39,7 @@ fn version_flag() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("rlph"));
+        .stdout(predicate::str::contains("brrr"));
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn config_file_not_found() {
 #[test]
 fn invalid_toml_config() {
     let (mut cmd, tmp) = cmd_in_tmp();
-    let cfg_dir = tmp.path().join(".rlph");
+    let cfg_dir = tmp.path().join(".brrr");
     fs::create_dir_all(&cfg_dir).unwrap();
     fs::write(cfg_dir.join("config.toml"), "not valid {{{{ toml").unwrap();
     cmd.args(["build", "--once"])
@@ -192,7 +192,7 @@ fn invalid_toml_config() {
 #[test]
 fn review_rejects_non_github_source() {
     let (mut cmd, tmp) = cmd_in_tmp();
-    let cfg_dir = tmp.path().join(".rlph");
+    let cfg_dir = tmp.path().join(".brrr");
     fs::create_dir_all(&cfg_dir).unwrap();
     fs::write(
         cfg_dir.join("config.toml"),

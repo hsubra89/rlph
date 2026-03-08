@@ -7,23 +7,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::{default_test_config, setup_git_repo};
-use rlph::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
-use rlph::error::{Error, Result};
-use rlph::ids::{IssueNumber, PrNumber};
-use rlph::orchestrator::{
+use brrr::config::{Config, ReviewPhaseConfig, ReviewStepConfig};
+use brrr::error::{Error, Result};
+use brrr::ids::{IssueNumber, PrNumber};
+use brrr::orchestrator::{
     CorrectionRunner, Orchestrator, ProgressReporter, ReviewInvocation, ReviewRunnerFactory,
     build_task_vars,
 };
-use rlph::prompts::PromptEngine;
-use rlph::review_schema::FINDING_MARKER;
-use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult, RunnerKind};
-use rlph::sources::TaskSource;
-use rlph::submission::{
+use brrr::prompts::PromptEngine;
+use brrr::review_schema::FINDING_MARKER;
+use brrr::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult, RunnerKind};
+use brrr::sources::TaskSource;
+use brrr::submission::{
     InlineReviewComment, PullRequestReviewEvent, SubmissionBackend, SubmitResult,
 };
-use rlph::task::Task;
-use rlph::worktree::WorktreeManager;
+use brrr::task::Task;
+use brrr::worktree::WorktreeManager;
+use common::{default_test_config, setup_git_repo};
 use tokio::sync::watch;
 
 // --- Shared test JSON literals ---
@@ -133,7 +133,7 @@ impl AgentRunner for MockRunner {
     async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
         match phase {
             Phase::Choose => {
-                let ralph_dir = working_dir.join(".rlph");
+                let ralph_dir = working_dir.join(".brrr");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
                 std::fs::write(
@@ -262,7 +262,7 @@ impl AgentRunner for CountingRunner {
         match phase {
             Phase::Choose => {
                 self.counts.choose.fetch_add(1, Ordering::SeqCst);
-                let ralph_dir = working_dir.join(".rlph");
+                let ralph_dir = working_dir.join(".brrr");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
                 std::fs::write(
@@ -327,7 +327,7 @@ impl AgentRunner for FailAtPhaseRunner {
         }
         match phase {
             Phase::Choose => {
-                let ralph_dir = working_dir.join(".rlph");
+                let ralph_dir = working_dir.join(".brrr");
                 std::fs::create_dir_all(&ralph_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
                 std::fs::write(
@@ -804,7 +804,7 @@ async fn test_full_loop_dry_run() {
     drop(tracker);
 
     // .rlph/task.toml should be cleaned up
-    assert!(!repo_dir.path().join(".rlph").join("task.toml").exists());
+    assert!(!repo_dir.path().join(".brrr").join("task.toml").exists());
 }
 
 #[tokio::test]

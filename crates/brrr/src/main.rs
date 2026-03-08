@@ -7,25 +7,25 @@ use clap::Parser;
 use tokio::sync::watch;
 use tracing::{debug, info, trace, warn};
 
-use rlph::cli::{Cli, CliCommand};
-use rlph::config::{Config, resolve_init_config};
-use rlph::error::Error;
-use rlph::fix;
-use rlph::fix_comment::format_fix_items_for_display;
-use rlph::ids::PrNumber;
-use rlph::orchestrator::{
+use brrr::cli::{Cli, CliCommand};
+use brrr::config::{Config, resolve_init_config};
+use brrr::error::Error;
+use brrr::fix;
+use brrr::fix_comment::format_fix_items_for_display;
+use brrr::ids::PrNumber;
+use brrr::orchestrator::{
     DefaultCorrectionRunner, Orchestrator, ReviewInvocation, build_task_vars,
 };
-use rlph::prd;
-use rlph::prompts::PromptEngine;
-use rlph::runner::build_runner;
-use rlph::sources::AnySource;
-use rlph::sources::TaskSource;
-use rlph::sources::github::GitHubSource;
-use rlph::sources::linear::LinearSource;
-use rlph::submission::{GitHubSubmission, PrContext, parse_pr_number_from_url};
-use rlph::task::Task;
-use rlph::worktree::{WorktreeManager, resolve_setup_script};
+use brrr::prd;
+use brrr::prompts::PromptEngine;
+use brrr::runner::build_runner;
+use brrr::sources::AnySource;
+use brrr::sources::TaskSource;
+use brrr::sources::github::GitHubSource;
+use brrr::sources::linear::LinearSource;
+use brrr::submission::{GitHubSubmission, PrContext, parse_pr_number_from_url};
+use brrr::task::Task;
+use brrr::worktree::{WorktreeManager, resolve_setup_script};
 
 /// Parse a PR reference that is either a plain number or a GitHub PR URL.
 fn parse_pr_ref(s: &str) -> Result<PrNumber, String> {
@@ -54,7 +54,7 @@ fn build_worktree_manager(
     config: &Config,
     repo_root: &Path,
     base_branch: &str,
-) -> rlph::error::Result<WorktreeManager> {
+) -> brrr::error::Result<WorktreeManager> {
     let worktree_base = PathBuf::from(&config.worktree_dir);
     let setup_script = resolve_setup_script(config.worktree_setup_script.as_deref(), repo_root)?;
     Ok(WorktreeManager::new(
@@ -92,7 +92,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
         CliCommand::Init => {
             let init_cfg = resolve_init_config(&cli)?;
             if init_cfg.source == "linear" {
-                rlph::sources::linear::init_interactive(&init_cfg.label)?;
+                brrr::sources::linear::init_interactive(&init_cfg.label)?;
             } else {
                 info!("init: nothing to do for source '{}'", init_cfg.source);
             }
@@ -159,7 +159,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
 
             let prompt_engine = PromptEngine::new(None);
             let timeout = config.implement_timeout;
-            let factory = rlph::orchestrator::DefaultReviewRunnerFactory { stream: true };
+            let factory = brrr::orchestrator::DefaultReviewRunnerFactory { stream: true };
             let orchestrator = Orchestrator::new(
                 source,
                 build_runner(
@@ -294,7 +294,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    rlph::logging::init_logging(cli.verbose, cli.log_format);
+    brrr::logging::init_logging(cli.verbose, cli.log_format);
 
     let code = match run(cli).await {
         Ok(0) => return,

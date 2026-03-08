@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rlph::process::{ProcessConfig, spawn_and_stream};
+use brrr::process::{ProcessConfig, spawn_and_stream};
 use serial_test::serial;
 
 fn make_config(command: &str, args: &[&str]) -> ProcessConfig {

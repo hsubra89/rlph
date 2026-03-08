@@ -4,15 +4,15 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rlph::config::{Config, ReviewStepConfig};
-use rlph::error::{Error, Result};
-use rlph::fix::run_fix_loop;
-use rlph::ids::{CommentId, PrNumber, ReactionId};
-use rlph::orchestrator::CorrectionRunner;
-use rlph::review_schema::ReviewFinding;
-use rlph::runner::{RunResult, RunnerKind};
-use rlph::submission::{PrReviewComment, Reaction, SubmissionBackend, SubmitResult};
-use rlph::test_helpers::{
+use brrr::config::{Config, ReviewStepConfig};
+use brrr::error::{Error, Result};
+use brrr::fix::run_fix_loop;
+use brrr::ids::{CommentId, PrNumber, ReactionId};
+use brrr::orchestrator::CorrectionRunner;
+use brrr::review_schema::ReviewFinding;
+use brrr::runner::{RunResult, RunnerKind};
+use brrr::submission::{PrReviewComment, Reaction, SubmissionBackend, SubmitResult};
+use brrr::test_helpers::{
     make_finding, make_finding_critical, make_finding_info, make_review_comment,
 };
 use tokio::sync::watch;
@@ -659,7 +659,7 @@ impl FixLoopFixture {
             &self.pr_branch,
             &self.config,
             Arc::clone(&self.submission),
-            &rlph::prompts::PromptEngine::new(None),
+            &brrr::prompts::PromptEngine::new(None),
             self.repo_root(),
             Arc::clone(&self.correction_runner),
             shutdown_rx,
@@ -895,7 +895,7 @@ async fn test_fix_loop_batch_full_session_reuse() {
         pr_branch,
         &config,
         Arc::clone(&submission),
-        &rlph::prompts::PromptEngine::new(None),
+        &brrr::prompts::PromptEngine::new(None),
         repo_root,
         correction_runner,
         shutdown_rx,
@@ -1020,7 +1020,7 @@ async fn test_fix_loop_batch_wontfix_continues() {
         pr_branch,
         &config,
         Arc::clone(&submission),
-        &rlph::prompts::PromptEngine::new(None),
+        &brrr::prompts::PromptEngine::new(None),
         repo_root,
         correction_runner,
         shutdown_rx,
@@ -1099,7 +1099,7 @@ async fn test_fix_loop_batch_abort_when_no_session_id() {
         pr_branch,
         &config,
         Arc::clone(&submission),
-        &rlph::prompts::PromptEngine::new(None),
+        &brrr::prompts::PromptEngine::new(None),
         repo_root,
         correction_runner,
         shutdown_rx,
@@ -1227,7 +1227,7 @@ echo "{{\"type\":\"result\",\"result\":\"{{\\\"status\\\":\\\"fixed\\\",\\\"comm
         pr_branch,
         &config,
         Arc::clone(&submission),
-        &rlph::prompts::PromptEngine::new(None),
+        &brrr::prompts::PromptEngine::new(None),
         repo_root,
         correction_runner,
         shutdown_rx,

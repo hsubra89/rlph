@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use rlph::orchestrator::build_task_vars;
-use rlph::prompts::PromptEngine;
-use rlph::task::Task;
+use brrr::orchestrator::build_task_vars;
+use brrr::prompts::PromptEngine;
+use brrr::task::Task;
 
 /// Real PR body from PR #94.
 const PR_BODY: &str = "\

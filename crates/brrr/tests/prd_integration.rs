@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 
-use rlph::config::{Config, default_review_phases, default_review_step};
-use rlph::prd::{build_prd_command, submission_instructions};
-use rlph::prompts::PromptEngine;
-use rlph::runner::RunnerKind;
+use brrr::config::{Config, default_review_phases, default_review_step};
+use brrr::prd::{build_prd_command, submission_instructions};
+use brrr::prompts::PromptEngine;
+use brrr::runner::RunnerKind;
 
 fn test_config(source: &str) -> Config {
     Config {
         source: source.to_string(),
         runner: RunnerKind::Claude,
         submission: "github".to_string(),
-        label: "rlph".to_string(),
+        label: "brrr".to_string(),
         poll_seconds: std::time::Duration::from_secs(30),
         worktree_dir: "../wt".to_string(),
         base_branch: "main".to_string(),
@@ -84,7 +84,7 @@ fn test_prd_template_renders_with_github_source() {
     let mut vars = HashMap::new();
     vars.insert(
         "submission_instructions".to_string(),
-        submission_instructions("github", "rlph"),
+        submission_instructions("github", "brrr"),
     );
 
     let rendered = engine.render_phase("prd", &vars).unwrap();
@@ -98,7 +98,7 @@ fn test_prd_template_renders_with_linear_source() {
     let mut vars = HashMap::new();
     vars.insert(
         "submission_instructions".to_string(),
-        submission_instructions("linear", "rlph"),
+        submission_instructions("linear", "brrr"),
     );
 
     let rendered = engine.render_phase("prd", &vars).unwrap();
@@ -175,7 +175,7 @@ exit 1
         ..test_config("github")
     };
 
-    let exit_code = rlph::prd::run_prd(&config, None).await.unwrap();
+    let exit_code = brrr::prd::run_prd(&config, None).await.unwrap();
     assert_eq!(exit_code, 0);
 }
 
@@ -197,7 +197,7 @@ async fn test_prd_exit_code_propagation() {
         ..test_config("github")
     };
 
-    let exit_code = rlph::prd::run_prd(&config, None).await.unwrap();
+    let exit_code = brrr::prd::run_prd(&config, None).await.unwrap();
     assert_eq!(exit_code, 42);
 }
 
@@ -231,6 +231,6 @@ exit 1
         ..test_config("github")
     };
 
-    let exit_code = rlph::prd::run_prd(&config, Some("add auth")).await.unwrap();
+    let exit_code = brrr::prd::run_prd(&config, Some("add auth")).await.unwrap();
     assert_eq!(exit_code, 0);
 }

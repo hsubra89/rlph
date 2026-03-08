@@ -2,9 +2,9 @@ mod common;
 
 use std::process::Command;
 
+use brrr::ids::{IssueNumber, PrNumber};
+use brrr::worktree::WorktreeManager;
 use common::run_git;
-use rlph::ids::{IssueNumber, PrNumber};
-use rlph::worktree::WorktreeManager;
 use tempfile::TempDir;
 
 /// Create a temporary git repo with an initial commit.

@@ -1,9 +1,9 @@
 //! Autonomous AI dev-loop: fetch tasks, spin up worktrees, run coding agents, submit PRs.
 
-pub use rlph_core::deps;
-pub use rlph_core::ids;
-pub(crate) use rlph_core::scc;
-pub use rlph_core::task;
+pub use brrr_core::deps;
+pub use brrr_core::ids;
+pub(crate) use brrr_core::scc;
+pub use brrr_core::task;
 
 pub mod cli;
 pub mod config;
