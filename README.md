@@ -27,7 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/hsubra89/brrr/main/install.sh | sh
 To install to a custom directory (e.g. `/usr/local/bin`):
 
 ```bash
-RLPH_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/hsubra89/brrr/main/install.sh | sh
+BRRR_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/hsubra89/brrr/main/install.sh | sh
 ```
 
 ### From source

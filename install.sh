@@ -4,7 +4,7 @@
 set -eu
 
 REPO="hsubra89/brrr"
-INSTALL_DIR="${RLPH_INSTALL_DIR:-$HOME/.brrr/bin}"
+INSTALL_DIR="${BRRR_INSTALL_DIR:-$HOME/.brrr/bin}"
 
 # --- helpers ----------------------------------------------------------------
 
