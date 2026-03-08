@@ -6,7 +6,11 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/main.ts",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "test": "vitest run --dir tests/unit",
+    "test:integration": "vitest run --dir tests/integration",
+    "test:all": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@effect/platform": "^0.94.5",
