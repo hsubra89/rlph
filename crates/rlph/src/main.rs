@@ -78,7 +78,7 @@ fn install_sigint_handler(first_message: &'static str) -> watch::Receiver<bool> 
 }
 
 async fn run(cli: Cli) -> Result<i32, Error> {
-    trace!(verbose = cli.verbose, format = ?cli.log_format, "logging initialized");
+    trace!(verbose = cli.verbose, format = %cli.log_format, "logging initialized");
     debug!("rlph starting");
 
     match cli.command {

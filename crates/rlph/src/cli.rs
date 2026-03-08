@@ -1,5 +1,7 @@
 //! CLI argument parsing via `clap`.
 
+use std::fmt;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// Log output format.
@@ -10,6 +12,16 @@ pub enum LogFormat {
     Text,
     /// Machine-readable JSON lines
     Json,
+}
+
+impl fmt::Display for LogFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Text => "text",
+            Self::Json => "json",
+        };
+        f.write_str(value)
+    }
 }
 
 /// rlph — autonomous AI development loop
@@ -420,6 +432,12 @@ mod tests {
     fn test_log_format_text_explicit() {
         let cli = Cli::parse_from(["rlph", "--log-format", "text", "build", "--once"]);
         assert_eq!(cli.log_format, LogFormat::Text);
+    }
+
+    #[test]
+    fn test_log_format_display_uses_cli_values() {
+        assert_eq!(LogFormat::Text.to_string(), "text");
+        assert_eq!(LogFormat::Json.to_string(), "json");
     }
 
     #[test]
