@@ -5,6 +5,7 @@ pub use brrr_core::ids;
 pub(crate) use brrr_core::scc;
 pub use brrr_core::task;
 
+pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod diff_position_mapper;

@@ -171,6 +171,13 @@ pub enum CliCommand {
         /// Seed description for the PRD (optional)
         description: Option<String>,
     },
+
+    /// Authenticate with the brrr server via SSH challenge-response
+    Auth {
+        /// Server URL
+        #[arg(long, default_value = "http://localhost:3000")]
+        server: String,
+    },
 }
 
 #[cfg(test)]

@@ -89,6 +89,11 @@ async fn run(cli: Cli) -> Result<i32, Error> {
     let mut exit_code = 0;
 
     match cli.command {
+        CliCommand::Auth { ref server } => {
+            let username = brrr::auth::authenticate(server)?;
+            info!(username = %username, "authenticated");
+            eprintln!("Authenticated as {username}");
+        }
         CliCommand::Init => {
             let init_cfg = resolve_init_config(&cli)?;
             if init_cfg.source == "linear" {
