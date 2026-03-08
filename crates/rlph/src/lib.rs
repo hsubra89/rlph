@@ -10,6 +10,7 @@ pub mod fix_comment;
 pub mod fix_deps;
 pub mod fix_scheduler;
 pub mod ids;
+pub mod logging;
 pub mod orchestrator;
 pub mod prd;
 pub mod process;
