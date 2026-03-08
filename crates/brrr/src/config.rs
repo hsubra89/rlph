@@ -141,8 +141,6 @@ pub struct InitConfig {
     pub label: String,
 }
 
-const DEFAULT_CONFIG_FILE: &str = ".brrr/config.toml";
-
 /// Default review phases for use in tests and when no config is provided.
 pub fn default_review_phases() -> Vec<ReviewPhaseConfig> {
     vec![
@@ -245,7 +243,7 @@ fn load_file_config(cli: &Cli, project_dir: &Path) -> Result<ConfigFile> {
             parse_config(&content)
         }
         None => {
-            let path = project_dir.join(DEFAULT_CONFIG_FILE);
+            let path = project_dir.join(crate::CONFIG_DIR).join("config.toml");
             if path.exists() {
                 let content = std::fs::read_to_string(&path)?;
                 parse_config(&content)
@@ -647,7 +645,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_file_invalid_source_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.toml"), r#"source = "jira""#).unwrap();
         let cli = Cli::parse_from(["brrr", "build", "--once"]);
@@ -658,7 +656,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_file_invalid_runner_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.toml"), r#"runner = "podman""#).unwrap();
         let cli = Cli::parse_from(["brrr", "build", "--once"]);
@@ -669,7 +667,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_file_invalid_submission_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.toml"), r#"submission = "gitlab""#).unwrap();
         let cli = Cli::parse_from(["brrr", "build", "--once"]);
@@ -680,7 +678,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_file_zero_poll_seconds_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.toml"), r#"poll_seconds = 0"#).unwrap();
         let cli = Cli::parse_from(["brrr", "build", "--once"]);
@@ -802,7 +800,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_resolve_init_config_uses_file_source_without_linear_section() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -819,7 +817,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_resolve_init_config_cli_overrides_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -928,7 +926,7 @@ worktree_dir = "/tmp/wt"
     #[test]
     fn test_review_phases_parsed_from_toml() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -965,7 +963,7 @@ agent_effort = "high"
     #[test]
     fn test_review_phases_duplicate_name_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -988,7 +986,7 @@ prompt = "other-review"
     #[test]
     fn test_review_aggregate_and_fix_parsed() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1036,7 +1034,7 @@ agent_model = "claude-opus-4-6"
     #[test]
     fn test_review_phase_empty_name_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1055,7 +1053,7 @@ prompt = "check-review"
     #[test]
     fn test_review_phase_empty_prompt_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1074,7 +1072,7 @@ prompt = ""
     #[test]
     fn test_review_phase_invalid_runner_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1094,7 +1092,7 @@ runner = "podman"
     #[test]
     fn test_review_phase_inherits_global_runner() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1116,7 +1114,7 @@ prompt = "check-review"
     #[test]
     fn test_review_phase_overrides_runner_gets_correct_defaults() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1147,7 +1145,7 @@ runner = "claude"
     #[test]
     fn test_review_step_overrides_runner_gets_correct_defaults() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1176,7 +1174,7 @@ runner = "claude"
     #[test]
     fn test_review_phase_inherits_global_agent_overrides() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1208,7 +1206,7 @@ prompt = "check-review"
     #[test]
     fn test_review_steps_inherit_global_agent_overrides() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1256,7 +1254,7 @@ prompt = "review-aggregate"
     #[test]
     fn test_mixed_runner_defaults_do_not_leak_variant() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1377,7 +1375,7 @@ runner = "claude"
     #[test]
     fn test_opencode_variant_plumbed_to_review_phases() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1409,7 +1407,7 @@ prompt = "review-aggregate"
     #[test]
     fn test_opencode_review_phase_variant_override() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1435,7 +1433,7 @@ agent_variant = "low"
     #[test]
     fn test_phase_opencode_inheriting_effort_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1464,7 +1462,7 @@ prompt = "review-aggregate"
     #[test]
     fn test_phase_claude_inheriting_variant_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),
@@ -1523,7 +1521,7 @@ runner = "opencode"
     #[test]
     fn test_review_aggregate_opencode_inheriting_effort_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg_dir = tmp.path().join(".brrr");
+        let cfg_dir = tmp.path().join(crate::CONFIG_DIR);
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(
             cfg_dir.join("config.toml"),

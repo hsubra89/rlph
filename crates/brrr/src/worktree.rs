@@ -8,8 +8,6 @@ use tracing::{debug, info, warn};
 use crate::error::{Error, Result};
 use crate::ids::{IssueNumber, PrNumber};
 
-/// Convention path for the worktree setup script.
-const CONVENTION_SETUP_SCRIPT: &str = ".brrr/worktree-setup.sh";
 const FETCH_MAX_ATTEMPTS: u32 = 3;
 
 /// Resolve the worktree setup script path.
@@ -49,7 +47,7 @@ pub fn resolve_setup_script(
             Ok(Some(resolved))
         }
         None => {
-            let convention = repo_root.join(CONVENTION_SETUP_SCRIPT);
+            let convention = repo_root.join(crate::CONFIG_DIR).join("worktree-setup.sh");
             if convention.exists() {
                 Ok(Some(convention))
             } else {
@@ -915,7 +913,7 @@ mod tests {
     fn test_resolve_setup_script_empty_string_disables() {
         let tmp = tempfile::tempdir().unwrap();
         // Even if convention file exists, empty string disables
-        let convention = tmp.path().join(".brrr/worktree-setup.sh");
+        let convention = tmp.path().join(crate::CONFIG_DIR).join("worktree-setup.sh");
         std::fs::create_dir_all(convention.parent().unwrap()).unwrap();
         std::fs::write(&convention, "#!/bin/sh\n").unwrap();
 
@@ -926,7 +924,7 @@ mod tests {
     #[test]
     fn test_resolve_setup_script_convention_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let convention = tmp.path().join(".brrr/worktree-setup.sh");
+        let convention = tmp.path().join(crate::CONFIG_DIR).join("worktree-setup.sh");
         std::fs::create_dir_all(convention.parent().unwrap()).unwrap();
         std::fs::write(&convention, "#!/bin/sh\n").unwrap();
 

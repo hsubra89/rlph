@@ -25,6 +25,9 @@ pub mod sources;
 pub mod submission;
 pub mod worktree;
 
+/// The `.brrr` config directory name, relative to the project/repo root.
+pub const CONFIG_DIR: &str = ".brrr";
+
 /// Max parallel `gh api` calls per batch to avoid exhausting file descriptors.
 pub(crate) const GH_BATCH_SIZE: usize = 10;
 

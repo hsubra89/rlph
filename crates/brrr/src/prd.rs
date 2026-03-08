@@ -9,8 +9,6 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::prompts::PromptEngine;
 
-const PROMPT_OVERRIDE_DIR: &str = ".brrr/prompts";
-
 /// Build the submission instructions string for the given task source.
 pub fn submission_instructions(source: &str, label: &str) -> String {
     match source {
@@ -67,7 +65,7 @@ pub fn build_prd_command(
 /// Launches the configured agent with the PRD prompt and inherited stdio.
 /// Blocks until the agent exits, then propagates the exit code.
 pub async fn run_prd(config: &Config, description: Option<&str>) -> Result<i32> {
-    let override_dir = std::path::Path::new(PROMPT_OVERRIDE_DIR);
+    let override_dir = std::path::Path::new(crate::CONFIG_DIR).join("prompts");
     let engine = PromptEngine::new(
         override_dir
             .is_dir()

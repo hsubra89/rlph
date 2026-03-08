@@ -593,7 +593,7 @@ pub fn init_interactive(label: &str) -> Result<()> {
 
     init_label_with_client(label, &team_key, &client)?;
 
-    let config_dir = std::path::Path::new(".brrr");
+    let config_dir = std::path::Path::new(crate::CONFIG_DIR);
     write_linear_config(&team_key, config_dir)?;
 
     info!("Wrote [linear] config to .brrr/config.toml");
