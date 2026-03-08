@@ -586,7 +586,8 @@ pub fn init_interactive(label: &str) -> Result<()> {
         info!("Found one team: {} ({})", teams[0].1, teams[0].0);
         teams[0].0.clone()
     } else {
-        prompt_team_selection(&teams, &mut std::io::stdin().lock(), &mut std::io::stderr())?
+        // Prompts go to stdout so stderr stays clean for structured log output.
+        prompt_team_selection(&teams, &mut std::io::stdin().lock(), &mut std::io::stdout())?
     };
 
     init_label_with_client(label, &team_key, &client)?;
@@ -633,14 +634,14 @@ fn list_teams(client: &dyn LinearClient) -> Result<Vec<(String, String)>> {
 fn prompt_team_selection(
     teams: &[(String, String)],
     stdin: &mut dyn BufRead,
-    stderr: &mut dyn Write,
+    output: &mut dyn Write,
 ) -> Result<String> {
-    writeln!(stderr, "Select a Linear team:").ok();
+    writeln!(output, "Select a Linear team:").ok();
     for (i, (key, name)) in teams.iter().enumerate() {
-        writeln!(stderr, "  {}) {} ({})", i + 1, name, key).ok();
+        writeln!(output, "  {}) {} ({})", i + 1, name, key).ok();
     }
-    write!(stderr, "Choice [1-{}]: ", teams.len()).ok();
-    stderr.flush().ok();
+    write!(output, "Choice [1-{}]: ", teams.len()).ok();
+    output.flush().ok();
 
     let mut line = String::new();
     stdin
