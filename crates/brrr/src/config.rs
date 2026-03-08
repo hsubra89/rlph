@@ -6,6 +6,8 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::cli::{BuildArgs, Cli};
+
+const DEFAULT_LABEL: &str = "brrr";
 use crate::error::{Error, Result};
 use crate::runner::RunnerKind;
 use crate::submission::detect_default_branch;
@@ -228,7 +230,7 @@ pub fn resolve_init_config_from(cli: &Cli, project_dir: &Path) -> Result<InitCon
             .label
             .clone()
             .or(file.label)
-            .unwrap_or_else(|| "brrr".to_string()),
+            .unwrap_or_else(|| DEFAULT_LABEL.to_string()),
     })
 }
 
@@ -455,7 +457,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
             .label
             .clone()
             .or(file.label)
-            .unwrap_or_else(|| "brrr".to_string()),
+            .unwrap_or_else(|| DEFAULT_LABEL.to_string()),
         poll_seconds: Duration::from_secs(
             build
                 .and_then(|b| b.poll_seconds)
