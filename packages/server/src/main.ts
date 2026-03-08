@@ -1,5 +1,5 @@
 import { HttpRouter, HttpServer, HttpServerResponse } from "@effect/platform"
-import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
+import { NodeCommandExecutor, NodeFileSystem, NodeHttpServer, NodeRuntime } from "@effect/platform-node"
 import { Config, Effect, Layer, Redacted } from "effect"
 import { createServer } from "node:http"
 import { makeHandleLogin } from "./auth/login.js"
@@ -20,7 +20,12 @@ const program = Effect.gen(function* () {
   )
 
   const ServerLive = NodeHttpServer.layer(() => createServer(), { port })
-  const HttpLive = HttpServer.serve(router).pipe(Layer.provide(ServerLive))
+  const PlatformLive = NodeCommandExecutor.layer.pipe(Layer.provideMerge(NodeFileSystem.layer))
+
+  const HttpLive = HttpServer.serve(router).pipe(
+    Layer.provide(ServerLive),
+    Layer.provide(PlatformLive),
+  )
 
   yield* Effect.logInfo(`Server starting on port ${port}`)
   yield* Layer.launch(HttpLive)

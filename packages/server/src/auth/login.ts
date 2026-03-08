@@ -1,5 +1,5 @@
 import { HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Effect } from "effect"
+import { Effect, Either } from "effect"
 import * as jose from "jose"
 import { sshFingerprint, verifySshSignature } from "./ssh.js"
 
@@ -56,7 +56,10 @@ export const makeHandleLogin = (jwtSecret: Uint8Array) =>
       .filter((k) => k.length > 0)
 
     // Find the key matching the submitted fingerprint
-    const matchingKey = ghKeys.find((key) => sshFingerprint(key) === fingerprint)
+    const matchingKey = ghKeys.find((key) => {
+      const fp = sshFingerprint(key)
+      return Either.isRight(fp) && fp.right === fingerprint
+    })
 
     if (!matchingKey) {
       return yield* HttpServerResponse.json(
@@ -68,14 +71,13 @@ export const makeHandleLogin = (jwtSecret: Uint8Array) =>
     // Reconstruct payload and verify signature
     const payload = `${username}\n${fingerprint}\n${timestamp}`
 
-    const verified = yield* Effect.tryPromise({
-      try: () => verifySshSignature(matchingKey, signature, payload),
-      catch: () => new Error("Signature verification failed"),
-    })
+    const verifyResult = yield* Effect.either(
+      verifySshSignature(matchingKey, signature, payload),
+    )
 
-    if (!verified) {
+    if (Either.isLeft(verifyResult)) {
       return yield* HttpServerResponse.json(
-        { error: "signature verification failed" },
+        { error: `signature verification failed: ${verifyResult.left.reason}` },
         { status: 401 },
       )
     }
