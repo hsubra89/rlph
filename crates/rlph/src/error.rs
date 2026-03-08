@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
 pub enum Error {
     #[error("config file not found: {0}")]
     ConfigNotFound(PathBuf),
