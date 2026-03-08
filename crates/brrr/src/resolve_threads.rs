@@ -85,14 +85,14 @@ struct ReactionNode {
 // Pure logic
 // ---------------------------------------------------------------------------
 
-/// Filter review thread nodes to find unresolved rlph-finding threads with
+/// Filter review thread nodes to find unresolved brrr-finding threads with
 /// completed reactions (THUMBS_UP or CONFUSED).
 ///
 /// A thread qualifies when:
 /// 1. It is not already resolved
-/// 2. Its first comment body contains the `<!-- rlph-finding:` marker
+/// 2. Its first comment body contains the `<!-- brrr-finding:` marker
 /// 3. Its first comment has a THUMBS_UP or CONFUSED reaction
-fn find_completed_rlph_thread_ids(threads: &[ReviewThreadNode]) -> Vec<&str> {
+fn find_completed_brrr_thread_ids(threads: &[ReviewThreadNode]) -> Vec<&str> {
     threads
         .iter()
         .filter(|thread| {
@@ -120,7 +120,7 @@ fn find_completed_rlph_thread_ids(threads: &[ReviewThreadNode]) -> Vec<&str> {
 // ---------------------------------------------------------------------------
 
 // NOTE: reviewThreads(first: 100) is not paginated. PRs with >100 review
-// threads may miss completed rlph threads beyond the first page. In practice
+// threads may miss completed brrr threads beyond the first page. In practice
 // this limit is unlikely to be hit; if it is, switch to cursor-based pagination
 // (see run_gh_api_paginated for a reference pattern).
 //
@@ -201,7 +201,7 @@ fn run_gh_graphql<T: serde::de::DeserializeOwned>(args: &[&str]) -> Result<Graph
     Ok(response)
 }
 
-/// Resolve all completed rlph-finding review threads on a PR.
+/// Resolve all completed brrr-finding review threads on a PR.
 ///
 /// Returns the number of threads resolved.
 pub(crate) fn resolve_completed_threads(
@@ -210,17 +210,17 @@ pub(crate) fn resolve_completed_threads(
     pr_number: PrNumber,
 ) -> Result<u32> {
     let threads = fetch_review_threads(owner, repo, pr_number)?;
-    let thread_ids = find_completed_rlph_thread_ids(&threads);
+    let thread_ids = find_completed_brrr_thread_ids(&threads);
 
     if thread_ids.is_empty() {
-        debug!(pr_number = %pr_number, "no completed rlph review threads to resolve");
+        debug!(pr_number = %pr_number, "no completed brrr review threads to resolve");
         return Ok(0);
     }
 
     info!(
         pr_number = %pr_number,
         count = thread_ids.len(),
-        "resolving completed rlph review threads"
+        "resolving completed brrr review threads"
     );
 
     let results = crate::run_batched(&thread_ids, |&thread_id| {
@@ -234,7 +234,7 @@ pub(crate) fn resolve_completed_threads(
         }
     }
 
-    info!(pr_number = %pr_number, resolved, "resolved rlph review threads");
+    info!(pr_number = %pr_number, resolved, "resolved brrr review threads");
     Ok(resolved)
 }
 
@@ -320,44 +320,44 @@ mod tests {
 
     #[test]
     fn test_empty_threads_returns_empty() {
-        assert!(find_completed_rlph_thread_ids(&[]).is_empty());
+        assert!(find_completed_brrr_thread_ids(&[]).is_empty());
     }
 
     #[test]
     fn test_already_resolved_thread_skipped() {
         let thread = make_thread("T1", true, &finding_body(), &["THUMBS_UP"]);
-        assert!(find_completed_rlph_thread_ids(&[thread]).is_empty());
+        assert!(find_completed_brrr_thread_ids(&[thread]).is_empty());
     }
 
     #[test]
     fn test_non_finding_thread_skipped() {
         let thread = make_thread("T1", false, "Just a regular comment", &["THUMBS_UP"]);
-        assert!(find_completed_rlph_thread_ids(&[thread]).is_empty());
+        assert!(find_completed_brrr_thread_ids(&[thread]).is_empty());
     }
 
     #[test]
     fn test_finding_without_completed_reaction_skipped() {
         let thread = make_thread("T1", false, &finding_body(), &["ROCKET"]);
-        assert!(find_completed_rlph_thread_ids(&[thread]).is_empty());
+        assert!(find_completed_brrr_thread_ids(&[thread]).is_empty());
     }
 
     #[test]
     fn test_finding_with_no_reactions_skipped() {
         let thread = make_thread("T1", false, &finding_body(), &[]);
-        assert!(find_completed_rlph_thread_ids(&[thread]).is_empty());
+        assert!(find_completed_brrr_thread_ids(&[thread]).is_empty());
     }
 
     #[test]
     fn test_finding_with_thumbs_up_included() {
         let threads = [make_thread("T1", false, &finding_body(), &["THUMBS_UP"])];
-        let ids = find_completed_rlph_thread_ids(&threads);
+        let ids = find_completed_brrr_thread_ids(&threads);
         assert_eq!(ids, vec!["T1"]);
     }
 
     #[test]
     fn test_finding_with_confused_included() {
         let threads = [make_thread("T1", false, &finding_body(), &["CONFUSED"])];
-        let ids = find_completed_rlph_thread_ids(&threads);
+        let ids = find_completed_brrr_thread_ids(&threads);
         assert_eq!(ids, vec!["T1"]);
     }
 
@@ -369,7 +369,7 @@ mod tests {
             &finding_body(),
             &["ROCKET", "THUMBS_UP"],
         )];
-        let ids = find_completed_rlph_thread_ids(&threads);
+        let ids = find_completed_brrr_thread_ids(&threads);
         assert_eq!(ids, vec!["T1"]);
     }
 
@@ -380,7 +380,7 @@ mod tests {
             is_resolved: false,
             comments: CommentConnection { nodes: vec![] },
         };
-        assert!(find_completed_rlph_thread_ids(&[thread]).is_empty());
+        assert!(find_completed_brrr_thread_ids(&[thread]).is_empty());
     }
 
     #[test]
@@ -393,14 +393,14 @@ mod tests {
             make_thread("T5", false, &finding_body(), &["CONFUSED"]),  // ✓ won't fix
             make_thread("T6", false, &finding_body(), &[]),            // ✗ no reactions
         ];
-        let ids = find_completed_rlph_thread_ids(&threads);
+        let ids = find_completed_brrr_thread_ids(&threads);
         assert_eq!(ids, vec!["T1", "T5"]);
     }
 
     #[test]
     fn test_finding_with_irrelevant_reactions_only_skipped() {
         let thread = make_thread("T1", false, &finding_body(), &["HEART", "EYES", "LAUGH"]);
-        assert!(find_completed_rlph_thread_ids(&[thread]).is_empty());
+        assert!(find_completed_brrr_thread_ids(&[thread]).is_empty());
     }
 
     #[test]
@@ -417,7 +417,7 @@ mod tests {
                                     "comments": {
                                         "nodes": [
                                             {
-                                                "body": "**CRITICAL** <!-- rlph-finding:{} -->",
+                                                "body": "**CRITICAL** <!-- brrr-finding:{} -->",
                                                 "reactions": {
                                                     "nodes": [
                                                         {"content": "THUMBS_UP"}
@@ -448,7 +448,7 @@ mod tests {
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].id, "PRRT_abc123");
 
-        let ids = find_completed_rlph_thread_ids(&threads);
+        let ids = find_completed_brrr_thread_ids(&threads);
         assert_eq!(ids, vec!["PRRT_abc123"]);
     }
 

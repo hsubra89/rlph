@@ -478,7 +478,7 @@ impl<
                 "choose phase complete"
             );
 
-            // Parse task selection from .rlph/task.toml
+            // Parse task selection from .brrr/task.toml
             self.parse_task_selection()?
         };
         let issue_number = parse_issue_number(&task_id)?;
@@ -591,7 +591,7 @@ impl<
             Some(pr)
         } else if !self.config.dry_run {
             info!("submitting PR");
-            let pr_body = format!("Resolves #{issue_number}\n\nAutomated implementation by rlph.");
+            let pr_body = format!("Resolves #{issue_number}\n\nAutomated implementation by brrr.");
             let result = self.submission.submit(
                 &worktree_info.branch,
                 &self.config.base_branch,
@@ -831,7 +831,7 @@ impl<
         Ok(())
     }
 
-    /// Parse the task selection from `.rlph/task.toml` written by the choose agent.
+    /// Parse the task selection from `.brrr/task.toml` written by the choose agent.
     fn parse_task_selection(&self) -> Result<String> {
         let path = self.repo_root.join(".brrr").join("task.toml");
         let content = std::fs::read_to_string(&path).map_err(|e| {

@@ -130,14 +130,14 @@ impl WorktreeManager {
         self
     }
 
-    /// Generate the worktree directory name: `rlph-{issue_number}-{slug}`.
+    /// Generate the worktree directory name: `brrr-{issue_number}-{slug}`.
     pub fn worktree_name(issue_number: IssueNumber, slug: &str) -> String {
-        format!("rlph-{issue_number}-{slug}")
+        format!("brrr-{issue_number}-{slug}")
     }
 
     /// Generate the shared fix branch name for a PR branch.
     pub fn fix_branch_name(pr_branch: &str) -> String {
-        format!("rlph-fix-{}", Self::slugify(pr_branch))
+        format!("brrr-fix-{}", Self::slugify(pr_branch))
     }
 
     /// Create a URL/title-safe slug from a string.
@@ -267,7 +267,7 @@ impl WorktreeManager {
                 s
             }
         };
-        let name = format!("rlph-pr-{pr_number}-{slug}");
+        let name = format!("brrr-pr-{pr_number}-{slug}");
         let local_branch = name.clone();
 
         if let Some(existing) = self.find_existing_by_name(&name)? {
@@ -518,10 +518,10 @@ impl WorktreeManager {
 
         // Clean up the branch
         if let Some(branch) = branch {
-            if !branch.starts_with("rlph-") {
+            if !branch.starts_with("brrr-") {
                 info!(
                     branch = %branch,
-                    "skipping deletion for non-rlph branch after worktree removal"
+                    "skipping deletion for non-brrr branch after worktree removal"
                 );
                 return Ok(());
             }
@@ -581,7 +581,7 @@ impl WorktreeManager {
 
     /// Find an existing worktree for an issue number.
     pub fn find_existing(&self, issue_number: IssueNumber) -> Result<Option<WorktreeInfo>> {
-        let prefix = format!("rlph-{issue_number}-");
+        let prefix = format!("brrr-{issue_number}-");
         self.find_worktree(|name| name.starts_with(&prefix))
     }
 
@@ -702,11 +702,11 @@ mod tests {
     fn test_worktree_name() {
         assert_eq!(
             WorktreeManager::worktree_name(IssueNumber::new(5), "worktree-management"),
-            "rlph-5-worktree-management"
+            "brrr-5-worktree-management"
         );
         assert_eq!(
             WorktreeManager::worktree_name(IssueNumber::new(42), "fix-bug"),
-            "rlph-42-fix-bug"
+            "brrr-42-fix-bug"
         );
     }
 
@@ -714,7 +714,7 @@ mod tests {
     fn test_fix_branch_name() {
         assert_eq!(
             WorktreeManager::fix_branch_name("feature/SQL Injection"),
-            "rlph-fix-feature-sql-injection"
+            "brrr-fix-feature-sql-injection"
         );
     }
 
@@ -762,7 +762,7 @@ mod tests {
     fn test_validate_branch_name_valid() {
         assert!(validate_branch_name("main").is_ok());
         assert!(validate_branch_name("feature/foo-bar").is_ok());
-        assert!(validate_branch_name("rlph-pr-56-some.branch_name").is_ok());
+        assert!(validate_branch_name("brrr-pr-56-some.branch_name").is_ok());
         assert!(validate_branch_name("v1.2.3").is_ok());
     }
 
@@ -968,7 +968,7 @@ mod tests {
             "main".to_string(),
         );
 
-        let info = mgr.create_fresh("rlph-fix-main", "main").unwrap();
+        let info = mgr.create_fresh("brrr-fix-main", "main").unwrap();
 
         std::fs::write(repo.path().join("README.md"), "# remote\n").unwrap();
         std::fs::write(repo.path().join("remote-only.txt"), "from remote\n").unwrap();
@@ -1023,7 +1023,7 @@ mod tests {
         );
 
         let info = mgr
-            .create_fresh_from_fetched_remote("rlph-fix-main", "main")
+            .create_fresh_from_fetched_remote("brrr-fix-main", "main")
             .unwrap();
 
         assert!(info.path.join(".git").exists());

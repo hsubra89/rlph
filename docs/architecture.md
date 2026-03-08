@@ -4,25 +4,25 @@
 
 | Crate | Purpose |
 |-------|---------|
-| `rlph-core` | Pure domain types and algorithms (no IO). IDs, task/priority types, dependency graphs, Tarjan's SCC. |
-| `rlph` | Binary crate. CLI, orchestrator, agent runners, process spawning, task sources, PR submission. |
+| `brrr-core` | Pure domain types and algorithms (no IO). IDs, task/priority types, dependency graphs, Tarjan's SCC. |
+| `brrr` | Binary crate. CLI, orchestrator, agent runners, process spawning, task sources, PR submission. |
 
-The `rlph` crate re-exports core modules (`ids`, `scc`, `deps`, `task`) so existing `crate::` paths continue to work.
+The `brrr` crate re-exports core modules (`ids`, `scc`, `deps`, `task`) so existing `crate::` paths continue to work.
 
 ## Key Paths
 
 | What | Where |
 |------|-------|
-| Domain IDs (`IssueNumber`, `PrNumber`, …) | `rlph-core/src/ids.rs` |
-| Task & Priority types | `rlph-core/src/task.rs` |
-| Dependency graph & cycle detection | `rlph-core/src/deps.rs`, `rlph-core/src/scc.rs` |
-| CLI entry + orchestrator setup | `rlph/src/main.rs` |
-| Core loop (choose → implement → review) | `rlph/src/orchestrator.rs` |
-| Agent process spawning | `rlph/src/runner.rs`, `rlph/src/process.rs` |
-| GitHub/Linear task sources | `rlph/src/sources/` |
-| PR submission | `rlph/src/submission.rs` |
-| Prompt templates | `rlph/src/default_prompts/` |
-| Config | `rlph/src/config.rs`, `.rlph/config.toml` |
+| Domain IDs (`IssueNumber`, `PrNumber`, …) | `brrr-core/src/ids.rs` |
+| Task & Priority types | `brrr-core/src/task.rs` |
+| Dependency graph & cycle detection | `brrr-core/src/deps.rs`, `brrr-core/src/scc.rs` |
+| CLI entry + orchestrator setup | `brrr/src/main.rs` |
+| Core loop (choose → implement → review) | `brrr/src/orchestrator.rs` |
+| Agent process spawning | `brrr/src/runner.rs`, `brrr/src/process.rs` |
+| GitHub/Linear task sources | `brrr/src/sources/` |
+| PR submission | `brrr/src/submission.rs` |
+| Prompt templates | `brrr/src/default_prompts/` |
+| Config | `brrr/src/config.rs`, `.brrr/config.toml` |
 
 ## Orchestrator Pipeline
 
@@ -30,7 +30,7 @@ The core loop in `orchestrator.rs` runs this sequence per iteration:
 
 ```
 Fetch tasks (TaskSource) → filter by dependency graph (deps.rs)
-  → Choose phase: agent picks task, writes .rlph/task.toml
+  → Choose phase: agent picks task, writes .brrr/task.toml
   → Create worktree (worktree.rs)
   → Implement phase: agent codes in worktree
   → Push branch, submit PR (SubmissionBackend)
@@ -70,6 +70,6 @@ All extensibility is through traits dispatched via enums (`AnySource`, `AnyRunne
 - **Agent output is trusted.** No verification of agent-reported task IDs, review signals, or PR numbers. The system is only as reliable as the underlying model.
 - **`gh` CLI as GitHub API layer.** All GitHub operations shell out to `gh` rather than using a Rust HTTP client. This leverages the user's existing auth and avoids token management.
 - **Worktree isolation.** Each task runs in a separate git worktree so main branch stays clean and multiple tasks could theoretically run in parallel.
-- **Prompt template overrides.** Users can place custom templates in `.rlph/prompts/` to override embedded defaults without modifying the binary.
-- **Review comment upserts.** Review comments are identified by `<!-- rlph-review -->` HTML marker for idempotent updates.
+- **Prompt template overrides.** Users can place custom templates in `.brrr/prompts/` to override embedded defaults without modifying the binary.
+- **Review comment upserts.** Review comments are identified by `<!-- brrr-review -->` HTML marker for idempotent updates.
 - **Untrusted PR comment wrapping.** External PR comments are wrapped in `<untrusted-content>` tags in prompts to mitigate prompt injection.

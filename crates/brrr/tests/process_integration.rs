@@ -108,7 +108,7 @@ async fn test_env_vars() {
 #[serial]
 #[cfg(unix)]
 async fn test_sigint_to_child() {
-    let pid_file = format!("/tmp/rlph_test_sigint_{}", std::process::id());
+    let pid_file = format!("/tmp/brrr_test_sigint_{}", std::process::id());
     let pid_file_clone = pid_file.clone();
 
     let config = ProcessConfig {
@@ -207,7 +207,7 @@ async fn test_double_sigint_force_exit() {
 #[serial]
 #[cfg(unix)]
 async fn test_timeout_kills_descendants() {
-    let pid_file = format!("/tmp/rlph_timeout_descendant_{}.pid", std::process::id());
+    let pid_file = format!("/tmp/brrr_timeout_descendant_{}.pid", std::process::id());
     let pid_file_clone = pid_file.clone();
 
     // Child shell ignores TERM and waits; its background child should not survive timeout cleanup.

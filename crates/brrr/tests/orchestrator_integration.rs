@@ -803,7 +803,7 @@ async fn test_full_loop_dry_run() {
     assert!(tracker.marked_in_progress.is_empty());
     drop(tracker);
 
-    // .rlph/task.toml should be cleaned up
+    // .brrr/task.toml should be cleaned up
     assert!(!repo_dir.path().join(".brrr").join("task.toml").exists());
 }
 
@@ -846,7 +846,7 @@ async fn test_full_loop_with_push() {
     // Submission should have been called
     let subs = sub_tracker.lock().unwrap();
     assert_eq!(subs.submissions.len(), 1);
-    assert!(subs.submissions[0].0.contains("rlph-42")); // branch name
+    assert!(subs.submissions[0].0.contains("brrr-42")); // branch name
     assert_eq!(subs.submissions[0].1, "main"); // base
     assert_eq!(subs.submissions[0].2, "Fix the bug"); // title
     assert!(subs.submissions[0].3.contains("Resolves #42")); // body
@@ -860,7 +860,7 @@ async fn test_full_loop_with_push() {
         .unwrap();
     let branches = String::from_utf8_lossy(&output.stdout);
     assert!(
-        branches.contains("rlph-42"),
+        branches.contains("brrr-42"),
         "remote branch not found: {branches}"
     );
 }
@@ -1032,7 +1032,7 @@ async fn test_worktree_cleaned_up_after_success() {
     orchestrator.run_once().await.unwrap();
 
     // Worktree directory should be removed
-    let wt_path = wt_dir.path().join("rlph-42-fix-bug");
+    let wt_path = wt_dir.path().join("brrr-42-fix-bug");
     assert!(
         !wt_path.exists(),
         "worktree should be cleaned up: {}",

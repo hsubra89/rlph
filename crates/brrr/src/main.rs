@@ -84,7 +84,7 @@ fn install_sigint_handler(first_message: &'static str) -> watch::Receiver<bool> 
 
 async fn run(cli: Cli) -> Result<i32, Error> {
     trace!(verbose = cli.verbose, format = %cli.log_format, "logging initialized");
-    debug!("rlph starting");
+    debug!("brrr starting");
 
     let mut exit_code = 0;
 
@@ -102,7 +102,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
             let config = Config::load(&cli, None)?;
             if config.source != "github" {
                 return Err(Error::ConfigValidation(
-                    "'rlph review' supports only source = \"github\"".into(),
+                    "'brrr review' supports only source = \"github\"".into(),
                 ));
             }
 

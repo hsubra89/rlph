@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn test_fetch_includes_issues_without_active_labels() {
         let json = mock_issues_json(&[
-            issue_json(1, "Just rlph", &["brrr"], "body"),
+            issue_json(1, "Just brrr", &["brrr"], "body"),
             issue_json(2, "Extra label", &["brrr", "bug"], "body"),
             issue_json(3, "No labels", &[], "body"),
         ]);

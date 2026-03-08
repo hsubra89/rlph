@@ -417,7 +417,7 @@ async fn test_fix_loop_worktrees_cleaned_up() {
         .filter(|e| {
             e.file_name()
                 .to_str()
-                .is_some_and(|n| n.starts_with("rlph-fix-"))
+                .is_some_and(|n| n.starts_with("brrr-fix-"))
         })
         .collect();
 

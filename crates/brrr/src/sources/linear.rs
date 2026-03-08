@@ -469,7 +469,7 @@ impl TaskSource for LinearSource {
 }
 
 // ---------------------------------------------------------------------------
-// rlph init — label bootstrapping
+// brrr init — label bootstrapping
 // ---------------------------------------------------------------------------
 
 /// Create the configured label in a Linear team if it doesn't already exist.
@@ -566,7 +566,7 @@ fn init_label_with_client(label: &str, team_key: &str, client: &dyn LinearClient
 }
 
 // ---------------------------------------------------------------------------
-// rlph init — interactive team discovery + label bootstrapping
+// brrr init — interactive team discovery + label bootstrapping
 // ---------------------------------------------------------------------------
 
 /// Interactive init: discover teams, prompt user to pick one, create label, write config.
@@ -596,7 +596,7 @@ pub fn init_interactive(label: &str) -> Result<()> {
     let config_dir = std::path::Path::new(".brrr");
     write_linear_config(&team_key, config_dir)?;
 
-    info!("Wrote [linear] config to .rlph/config.toml");
+    info!("Wrote [linear] config to .brrr/config.toml");
     Ok(())
 }
 

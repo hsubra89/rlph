@@ -24,7 +24,7 @@ impl fmt::Display for LogFormat {
     }
 }
 
-/// rlph — autonomous AI development loop
+/// brrr — autonomous AI development loop
 #[derive(Parser, Debug, Clone)]
 #[command(name = "brrr", version, about, subcommand_required = true)]
 pub struct Cli {

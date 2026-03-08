@@ -1167,7 +1167,7 @@ mod tests {
 
     #[test]
     fn test_fix_branch_name_is_valid() {
-        let branch = "rlph-fix-42-sql-injection";
+        let branch = "brrr-fix-42-sql-injection";
         assert!(validate_branch_name(branch).is_ok());
     }
 
@@ -1512,7 +1512,7 @@ mod tests {
             vec![prepared],
             PrNumber::new(42),
             &wt_path,
-            "rlph-fix-main",
+            "brrr-fix-main",
         )
         .await;
 
@@ -1535,7 +1535,7 @@ mod tests {
             worktree_base.path().to_path_buf(),
             "main".to_string(),
         );
-        let fix_branch = "rlph-fix-main";
+        let fix_branch = "brrr-fix-main";
         let worktree_path = worktree_base.path().join(fix_branch);
 
         std::fs::create_dir_all(&worktree_path).unwrap();

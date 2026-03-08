@@ -465,7 +465,7 @@ pub fn merge(file: ConfigFile, cli: &Cli, build: Option<&BuildArgs>) -> Result<C
         worktree_dir: build
             .and_then(|b| b.worktree_dir.clone())
             .or(file.worktree_dir)
-            .unwrap_or_else(|| "../rlph-worktrees".to_string()),
+            .unwrap_or_else(|| "../brrr-worktrees".to_string()),
         base_branch: build
             .and_then(|b| b.base_branch.clone())
             .or(file.base_branch)
@@ -754,7 +754,7 @@ worktree_dir = "/tmp/wt"
 
     #[test]
     fn test_load_missing_default_config_falls_back_to_defaults() {
-        // When no --config is provided and .rlph/config.toml doesn't exist,
+        // When no --config is provided and .brrr/config.toml doesn't exist,
         // Config::load should succeed with built-in defaults.
         let tmp = tempfile::tempdir().unwrap();
         let cli = Cli::parse_from(["brrr", "build", "--once"]);

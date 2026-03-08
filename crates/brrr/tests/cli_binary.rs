@@ -63,7 +63,7 @@ fn prd_help() {
 // --- Mode flag validation ---
 
 #[test]
-fn bare_rlph_requires_mode() {
+fn bare_brrr_requires_mode() {
     let (mut cmd, _tmp) = cmd_in_tmp();
     cmd.arg("build")
         .assert()
