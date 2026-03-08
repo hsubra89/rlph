@@ -2,8 +2,7 @@ import { HttpRouter, HttpServer, HttpServerResponse } from "@effect/platform"
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
 import { Config, Effect, Layer, Redacted } from "effect"
 import { createServer } from "node:http"
-import { handleChallenge } from "./auth/challenge.js"
-import { makeHandleVerify } from "./auth/verify.js"
+import { makeHandleLogin } from "./auth/login.js"
 import { makeAuthMiddleware } from "./auth/middleware.js"
 import { handleWhoami } from "./auth/whoami.js"
 
@@ -16,8 +15,7 @@ const program = Effect.gen(function* () {
 
   const router = HttpRouter.empty.pipe(
     HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-    HttpRouter.post("/auth/challenge", handleChallenge),
-    HttpRouter.post("/auth/verify", makeHandleVerify(jwtSecret)),
+    HttpRouter.post("/auth/login", makeHandleLogin(jwtSecret)),
     HttpRouter.get("/whoami", authMiddleware(handleWhoami)),
   )
 

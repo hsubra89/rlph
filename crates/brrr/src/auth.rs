@@ -1,6 +1,6 @@
-//! SSH challenge-response authentication against the brrr server.
+//! Single-round-trip SSH authentication against the brrr server.
 //!
-//! Flow: discover SSH key → get GitHub username → POST /auth/challenge → sign nonce → POST /auth/verify → store JWT.
+//! Flow: discover SSH key → compute fingerprint → get GitHub username → sign `{username}\n{fingerprint}\n{timestamp}` → POST /auth/login → store JWT.
 
 use std::fs;
 use std::io::Write;
@@ -19,13 +19,7 @@ struct Session {
 }
 
 #[derive(Debug, Deserialize)]
-struct ChallengeResponse {
-    nonce: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct VerifyResponse {
+struct LoginResponse {
     token: Option<String>,
     error: Option<String>,
 }
@@ -172,6 +166,32 @@ fn ssh_sign(private_key_path: &Path, data: &str) -> Result<String, Error> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Parses `ssh-keygen -lf` output to extract the `SHA256:…` fingerprint.
+fn parse_fingerprint_output(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .nth(1)
+        .filter(|s| s.starts_with("SHA256:"))
+        .map(|s| s.to_string())
+}
+
+/// Computes the SHA256 fingerprint of a public key file via `ssh-keygen -lf`.
+fn ssh_fingerprint(pub_path: &Path) -> Result<String, Error> {
+    let output = Command::new("ssh-keygen")
+        .args(["-lf", &pub_path.to_string_lossy(), "-E", "sha256"])
+        .output()
+        .map_err(|e| Error::Auth(format!("failed to run ssh-keygen -lf: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Auth(format!("ssh-keygen -lf failed: {stderr}")));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_fingerprint_output(&stdout)
+        .ok_or_else(|| Error::Auth("failed to parse fingerprint from ssh-keygen output".into()))
+}
+
 fn session_path() -> Result<PathBuf, Error> {
     let config_dir = dirs_path()?.join(".config").join("brrr");
     Ok(config_dir.join("session.json"))
@@ -206,60 +226,45 @@ pub fn load_token() -> Result<Option<String>, Error> {
     Ok(Some(session.token))
 }
 
-/// Runs the full challenge-response auth flow and stores the resulting JWT.
+/// Runs the single-round-trip auth flow and stores the resulting JWT.
 pub fn authenticate(server_url: &str) -> Result<String, Error> {
-    let (private_key_path, pubkey) = discover_pubkey()?;
+    let (private_key_path, _pubkey) = discover_pubkey()?;
     let username = github_username()?;
+    let fingerprint = ssh_fingerprint(&private_key_path.with_extension("pub"))?;
     info!(username = %username, "authenticating with server");
 
-    // Step 1: POST /auth/challenge
-    let challenge_url = format!("{server_url}/auth/challenge");
-    let challenge_body = serde_json::json!({
-        "pubkey": pubkey,
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let payload = format!("{username}\n{fingerprint}\n{timestamp}");
+    let signature = ssh_sign(&private_key_path, &payload)?;
+
+    debug!("signed payload, sending login request");
+
+    let login_url = format!("{server_url}/auth/login");
+    let login_body = serde_json::json!({
         "username": username,
-    });
-
-    let challenge_resp: ChallengeResponse = ureq::post(&challenge_url)
-        .send_json(&challenge_body)
-        .map_err(|e| Error::Auth(format!("challenge request failed: {e}")))?
-        .body_mut()
-        .read_json()
-        .map_err(|e| Error::Auth(format!("failed to parse challenge response: {e}")))?;
-
-    if let Some(err) = challenge_resp.error {
-        return Err(Error::Auth(format!("challenge rejected: {err}")));
-    }
-
-    let nonce = challenge_resp
-        .nonce
-        .ok_or_else(|| Error::Auth("challenge response missing nonce".into()))?;
-
-    debug!("received nonce, signing with SSH key");
-
-    // Step 2: Sign the nonce
-    let signature = ssh_sign(&private_key_path, &nonce)?;
-
-    // Step 3: POST /auth/verify
-    let verify_url = format!("{server_url}/auth/verify");
-    let verify_body = serde_json::json!({
-        "pubkey": pubkey,
+        "fingerprint": fingerprint,
+        "timestamp": timestamp,
         "signature": signature,
     });
 
-    let verify_resp: VerifyResponse = ureq::post(&verify_url)
-        .send_json(&verify_body)
-        .map_err(|e| Error::Auth(format!("verify request failed: {e}")))?
+    let login_resp: LoginResponse = ureq::post(&login_url)
+        .send_json(&login_body)
+        .map_err(|e| Error::Auth(format!("login request failed: {e}")))?
         .body_mut()
         .read_json()
-        .map_err(|e| Error::Auth(format!("failed to parse verify response: {e}")))?;
+        .map_err(|e| Error::Auth(format!("failed to parse login response: {e}")))?;
 
-    if let Some(err) = verify_resp.error {
-        return Err(Error::Auth(format!("verification failed: {err}")));
+    if let Some(err) = login_resp.error {
+        return Err(Error::Auth(format!("login failed: {err}")));
     }
 
-    let token = verify_resp
+    let token = login_resp
         .token
-        .ok_or_else(|| Error::Auth("verify response missing token".into()))?;
+        .ok_or_else(|| Error::Auth("login response missing token".into()))?;
 
     // Step 4: Store the token
     let session_file = session_path()?;
@@ -389,6 +394,35 @@ mod tests {
     fn test_session_path() {
         let path = session_path().unwrap();
         assert!(path.to_string_lossy().contains("session.json"));
+    }
+
+    #[test]
+    fn test_parse_fingerprint_output_ed25519() {
+        let output = "256 SHA256:abc123def456 user@host (ED25519)\n";
+        assert_eq!(
+            parse_fingerprint_output(output),
+            Some("SHA256:abc123def456".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_fingerprint_output_rsa() {
+        let output = "3072 SHA256:longhashhere comment (RSA)\n";
+        assert_eq!(
+            parse_fingerprint_output(output),
+            Some("SHA256:longhashhere".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_fingerprint_output_no_sha256() {
+        let output = "256 MD5:aa:bb:cc user@host (ED25519)\n";
+        assert_eq!(parse_fingerprint_output(output), None);
+    }
+
+    #[test]
+    fn test_parse_fingerprint_output_empty() {
+        assert_eq!(parse_fingerprint_output(""), None);
     }
 
     #[test]
