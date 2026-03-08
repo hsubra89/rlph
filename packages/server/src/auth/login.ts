@@ -1,7 +1,11 @@
-import { HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Effect, Either } from "effect"
+import { FetchHttpClient, HttpClient, HttpServerRequest, HttpServerResponse } from "@effect/platform"
+import { Data, Effect, Either } from "effect"
 import * as jose from "jose"
 import { sshFingerprint, verifySshSignature } from "./ssh.js"
+
+export class JwtSignError extends Data.TaggedError("JwtSignError")<{
+  readonly cause: unknown
+}> { }
 
 interface LoginBody {
   username: string
@@ -25,6 +29,7 @@ export const makeHandleLogin = (jwtSecret: Uint8Array) =>
 
     // Check timestamp freshness (60s window)
     const now = Math.floor(Date.now() / 1000)
+
     if (Math.abs(now - timestamp) > 60) {
       return yield* HttpServerResponse.json(
         { error: "timestamp too stale" },
@@ -33,22 +38,20 @@ export const makeHandleLogin = (jwtSecret: Uint8Array) =>
     }
 
     // Fetch GitHub public keys for the user
-    const ghKeysResponse = yield* Effect.tryPromise({
-      try: () => fetch(`https://github.com/${encodeURIComponent(username)}.keys`),
-      catch: () => new Error("Failed to fetch GitHub keys"),
-    })
+    const ghKeysResponse = yield* Effect.either(
+      HttpClient.get(`https://github.com/${encodeURIComponent(username)}.keys`).pipe(
+        Effect.provide(FetchHttpClient.layer),
+      ),
+    )
 
-    if (!ghKeysResponse.ok) {
+    if (Either.isLeft(ghKeysResponse) || ghKeysResponse.right.status !== 200) {
       return yield* HttpServerResponse.json(
         { error: `GitHub user '${username}' not found` },
         { status: 403 },
       )
     }
 
-    const ghKeysText = yield* Effect.tryPromise({
-      try: () => ghKeysResponse.text(),
-      catch: () => new Error("Failed to read GitHub keys response"),
-    })
+    const ghKeysText = yield* ghKeysResponse.right.text
 
     const ghKeys = ghKeysText
       .split("\n")
@@ -91,7 +94,7 @@ export const makeHandleLogin = (jwtSecret: Uint8Array) =>
           .setIssuedAt()
           .setExpirationTime("1h")
           .sign(jwtSecret),
-      catch: (e) => new Error(`JWT signing failed: ${e}`),
+      catch: (cause) => new JwtSignError({ cause }),
     })
 
     return yield* HttpServerResponse.json({ token })
