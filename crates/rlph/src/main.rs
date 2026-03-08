@@ -86,6 +86,8 @@ async fn run(cli: Cli) -> Result<i32, Error> {
     trace!(verbose = cli.verbose, format = %cli.log_format, "logging initialized");
     debug!("rlph starting");
 
+    let mut exit_code = 0;
+
     match cli.command {
         CliCommand::Init => {
             let init_cfg = resolve_init_config(&cli)?;
@@ -239,8 +241,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
 
             info!(?cfg, "config loaded for prd");
 
-            let exit_code = prd::run_prd(&cfg, description.as_deref()).await?;
-            return Ok(exit_code);
+            exit_code = prd::run_prd(&cfg, description.as_deref()).await?;
         }
         CliCommand::Build { ref args } => {
             let config = Config::load(&cli, Some(args))?;
@@ -293,7 +294,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
         }
     }
 
-    Ok(0)
+    Ok(exit_code)
 }
 
 #[tokio::main]
