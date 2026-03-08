@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use clap::Parser;
 use tokio::sync::watch;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
+use rlph::error::Error;
 use rlph::fix;
 use rlph::fix_comment::format_fix_items_for_display;
 use rlph::ids::PrNumber;
@@ -33,14 +34,6 @@ fn parse_pr_ref(s: &str) -> Result<PrNumber, String> {
     }
     parse_pr_number_from_url(s)
         .ok_or_else(|| format!("invalid PR reference '{s}' — expected a number or GitHub PR URL"))
-}
-
-/// Parse a PR ref or print an error and exit.
-fn parse_pr_ref_or_exit(s: &str) -> PrNumber {
-    parse_pr_ref(s).unwrap_or_else(|msg| {
-        error!("{msg}");
-        std::process::exit(1);
-    })
 }
 
 fn print_pr_banner(pr: &PrContext) {
@@ -84,75 +77,39 @@ fn install_sigint_handler(first_message: &'static str) -> watch::Receiver<bool> 
     rx
 }
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
-    rlph::logging::init_logging(cli.verbose, cli.log_format);
-
+async fn run(cli: Cli) -> Result<i32, Error> {
     debug!("rlph starting");
 
     match cli.command {
         CliCommand::Init => {
-            let init_cfg = match resolve_init_config(&cli) {
-                Ok(cfg) => cfg,
-                Err(e) => {
-                    error!("{e}");
-                    std::process::exit(1);
-                }
-            };
+            let init_cfg = resolve_init_config(&cli)?;
             if init_cfg.source == "linear" {
-                if let Err(e) = rlph::sources::linear::init_interactive(&init_cfg.label) {
-                    error!("{e}");
-                    std::process::exit(1);
-                }
+                rlph::sources::linear::init_interactive(&init_cfg.label)?;
             } else {
                 info!("init: nothing to do for source '{}'", init_cfg.source);
             }
         }
         CliCommand::Review { ref pr_ref } => {
-            let pr_number = parse_pr_ref_or_exit(pr_ref);
-            let config = match Config::load(&cli, None) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("{e}");
-                    std::process::exit(1);
-                }
-            };
+            let pr_number = parse_pr_ref(pr_ref).map_err(Error::ConfigValidation)?;
+            let config = Config::load(&cli, None)?;
             if config.source != "github" {
-                error!("'rlph review' supports only source = \"github\"");
-                std::process::exit(1);
+                return Err(Error::ConfigValidation(
+                    "'rlph review' supports only source = \"github\"".into(),
+                ));
             }
 
             let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let source: AnySource = AnySource::GitHub(GitHubSource::new(&config));
 
             let submission = GitHubSubmission::new();
-            let pr_context = match submission.get_pr_context(pr_number) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("{e}");
-                    std::process::exit(1);
-                }
-            };
+            let pr_context = submission.get_pr_context(pr_number)?;
 
             print_pr_banner(&pr_context);
 
             let worktree_mgr =
-                match build_worktree_manager(&config, &repo_root, &pr_context.base_branch) {
-                    Ok(wm) => wm,
-                    Err(e) => {
-                        error!("{e}");
-                        std::process::exit(1);
-                    }
-                };
+                build_worktree_manager(&config, &repo_root, &pr_context.base_branch)?;
             let worktree_info =
-                match worktree_mgr.create_for_branch(pr_context.number, &pr_context.head_branch) {
-                    Ok(w) => w,
-                    Err(e) => {
-                        error!("{e}");
-                        std::process::exit(1);
-                    }
-                };
+                worktree_mgr.create_for_branch(pr_context.number, &pr_context.head_branch)?;
 
             let mut issue_title = pr_context.title.clone();
             let mut issue_body = pr_context.body.clone();
@@ -227,47 +184,26 @@ async fn main() {
                 comment_pr_number: Some(pr_context.number),
             };
 
-            if let Err(e) = orchestrator.run_review_for_existing_pr(invocation).await {
-                error!("{e}");
-                std::process::exit(1);
-            }
+            orchestrator.run_review_for_existing_pr(invocation).await?;
         }
         CliCommand::Fix {
             ref pr_ref,
             dry_run,
         } => {
-            let pr_number = parse_pr_ref_or_exit(pr_ref);
+            let pr_number = parse_pr_ref(pr_ref).map_err(Error::ConfigValidation)?;
             let submission = GitHubSubmission::new();
 
             if dry_run {
-                let (items, _comments) = match fix::fetch_and_parse_items(pr_number, &submission) {
-                    Ok(result) => result,
-                    Err(e) => {
-                        error!("{e}");
-                        std::process::exit(1);
-                    }
-                };
+                let (items, _comments) = fix::fetch_and_parse_items(pr_number, &submission)?;
                 print!("{}", format_fix_items_for_display(&items));
-                return;
+                return Ok(0);
             }
 
             // Non-dry-run: run the fix polling loop
-            let config = match Config::load(&cli, None) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("{e}");
-                    std::process::exit(1);
-                }
-            };
+            let config = Config::load(&cli, None)?;
 
             // Get PR context to determine the head branch
-            let pr_context = match submission.get_pr_context(pr_number) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("{e}");
-                    std::process::exit(1);
-                }
-            };
+            let pr_context = submission.get_pr_context(pr_number)?;
 
             print_pr_banner(&pr_context);
 
@@ -279,7 +215,7 @@ async fn main() {
                 "[rlph] SIGINT received; completing in-flight fixes then exiting",
             );
 
-            if let Err(e) = fix::run_fix_loop(
+            fix::run_fix_loop(
                 pr_number,
                 &pr_context.head_branch,
                 &config,
@@ -289,61 +225,33 @@ async fn main() {
                 Arc::new(DefaultCorrectionRunner),
                 shutdown_rx,
             )
-            .await
-            {
-                error!("{e}");
-                std::process::exit(1);
-            }
+            .await?;
         }
         CliCommand::Prd {
             ref description, ..
         } => {
-            let cfg = match Config::load(&cli, None) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("{e}");
-                    std::process::exit(1);
-                }
-            };
+            let cfg = Config::load(&cli, None)?;
 
             info!(?cfg, "config loaded for prd");
 
-            let exit_code = match prd::run_prd(&cfg, description.as_deref()).await {
-                Ok(code) => code,
-                Err(e) => {
-                    error!("{e}");
-                    std::process::exit(1);
-                }
-            };
-
-            std::process::exit(exit_code);
+            let exit_code = prd::run_prd(&cfg, description.as_deref()).await?;
+            return Ok(exit_code);
         }
         CliCommand::Build { ref args } => {
-            let config = match Config::load(&cli, Some(args)) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("{e}");
-                    std::process::exit(1);
-                }
-            };
+            let config = Config::load(&cli, Some(args))?;
 
             info!(?config, "config loaded");
 
             if !config.once && !config.continuous && config.max_iterations.is_none() {
-                error!("specify one of --once, --continuous, or --max-iterations");
-                std::process::exit(1);
+                return Err(Error::ConfigValidation(
+                    "specify one of --once, --continuous, or --max-iterations".into(),
+                ));
             }
 
             let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
             let source: AnySource = match config.source.as_str() {
-                "linear" => match LinearSource::new(&config) {
-                    Ok(s) => AnySource::Linear(s),
-                    Err(e) => {
-                        error!("{e}");
-                        std::process::exit(1);
-                    }
-                },
+                "linear" => AnySource::Linear(LinearSource::new(&config)?),
                 _ => AnySource::GitHub(GitHubSource::new(&config)),
             };
             let timeout = config.implement_timeout;
@@ -358,14 +266,7 @@ async fn main() {
             )
             .with_stream_prefix("implement".to_string());
             let submission = GitHubSubmission::new();
-            let worktree_mgr =
-                match build_worktree_manager(&config, &repo_root, &config.base_branch) {
-                    Ok(wm) => wm,
-                    Err(e) => {
-                        error!("{e}");
-                        std::process::exit(1);
-                    }
-                };
+            let worktree_mgr = build_worktree_manager(&config, &repo_root, &config.base_branch)?;
             let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
             let prompt_engine = PromptEngine::new(None);
 
@@ -384,15 +285,28 @@ async fn main() {
                 "[rlph] SIGINT received; shutting down after current iteration",
             );
 
-            if let Err(e) = orchestrator.run_loop(Some(shutdown_rx)).await {
-                if matches!(&e, rlph::error::Error::Interrupted) {
-                    std::process::exit(130);
-                }
-                error!("{e}");
-                std::process::exit(1);
-            }
+            orchestrator.run_loop(Some(shutdown_rx)).await?;
         }
     }
+
+    Ok(0)
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    rlph::logging::init_logging(cli.verbose, cli.log_format);
+
+    let code = match run(cli).await {
+        Ok(0) => return,
+        Ok(code) => code,
+        Err(Error::Interrupted) => 130,
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    };
+    std::process::exit(code);
 }
 
 #[cfg(test)]
