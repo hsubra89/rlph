@@ -40,9 +40,6 @@ pub enum Error {
         stderr_lines: Vec<String>,
     },
 
-    #[error("state error: {0}")]
-    State(String),
-
     #[error("prompt error: {0}")]
     Prompt(String),
 

@@ -11,7 +11,6 @@
 | PR submission | `src/submission.rs` |
 | Prompt templates | `src/default_prompts/` |
 | Config | `src/config.rs`, `.rlph/config.toml` |
-| Local state | `src/state.rs`, `.rlph/state/` |
 
 ## Orchestrator Pipeline
 
@@ -50,7 +49,6 @@ All extensibility is through traits dispatched via enums (`AnySource`, `AnyRunne
 | `sources` | Fetches/filters tasks from issue trackers | Know about worktrees or PRs |
 | `submission` | Creates PRs, manages review comments | Know about tasks or agents |
 | `worktree` | Creates/removes git worktrees | Know about tasks |
-| `state` | TOML persistence with flock-based locking | Know about git or agents |
 | `prompts` | Loads templates (embedded defaults + overrides), `{{var}}` substitution | Execute agents |
 | `deps` | Parses dependency references, Tarjan's SCC for cycle detection | Fetch tasks |
 | `config` | Merges CLI flags → config file → defaults | Validate business logic beyond field values |

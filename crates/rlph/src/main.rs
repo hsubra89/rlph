@@ -23,7 +23,6 @@ use rlph::sources::AnySource;
 use rlph::sources::github::GitHubSource;
 use rlph::sources::linear::LinearSource;
 use rlph::sources::{Task, TaskSource};
-use rlph::state::StateManager;
 use rlph::submission::{GitHubSubmission, PrContext, parse_pr_number_from_url};
 use rlph::worktree::{WorktreeManager, resolve_setup_script};
 
@@ -123,7 +122,6 @@ async fn run(cli: Cli) -> Result<i32, Error> {
             let mut issue_body = pr_context.body.clone();
             let mut issue_number = pr_context.number.to_string();
             let mut issue_url = pr_context.url.clone();
-            let mut task_id_for_state = format!("pr-{}", pr_context.number);
             let mut mark_in_review_task_id: Option<String> = None;
 
             if let Some(linked_issue_number) = pr_context.linked_issue_number {
@@ -133,10 +131,8 @@ async fn run(cli: Cli) -> Result<i32, Error> {
                     issue_body = task.body;
                     issue_number = task.id.clone();
                     issue_url = task.url;
-                    task_id_for_state = format!("gh-{linked_issue_number}");
                     mark_in_review_task_id = Some(task.id);
                 } else {
-                    task_id_for_state = format!("gh-{linked_issue_number}");
                     mark_in_review_task_id = Some(linked_issue_id);
                 }
             }
@@ -160,7 +156,6 @@ async fn run(cli: Cli) -> Result<i32, Error> {
             vars.insert("pr_branch".to_string(), pr_context.head_branch.clone());
             vars.insert("pr_url".to_string(), pr_context.url.clone());
 
-            let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
             let prompt_engine = PromptEngine::new(None);
             let timeout = config.implement_timeout;
             let factory = rlph::orchestrator::DefaultReviewRunnerFactory { stream: true };
@@ -177,7 +172,6 @@ async fn run(cli: Cli) -> Result<i32, Error> {
                 ),
                 submission,
                 worktree_mgr,
-                state_mgr,
                 prompt_engine,
                 config,
                 repo_root,
@@ -185,7 +179,6 @@ async fn run(cli: Cli) -> Result<i32, Error> {
             .with_review_factory(factory);
 
             let invocation = ReviewInvocation {
-                task_id_for_state,
                 mark_in_review_task_id,
                 worktree_info,
                 vars,
@@ -275,7 +268,6 @@ async fn run(cli: Cli) -> Result<i32, Error> {
             .with_stream_prefix("implement".to_string());
             let submission = GitHubSubmission::new();
             let worktree_mgr = build_worktree_manager(&config, &repo_root, &config.base_branch)?;
-            let state_mgr = StateManager::new(StateManager::default_dir(&repo_root));
             let prompt_engine = PromptEngine::new(None);
 
             let orchestrator = Orchestrator::new(
@@ -283,7 +275,6 @@ async fn run(cli: Cli) -> Result<i32, Error> {
                 runner,
                 submission,
                 worktree_mgr,
-                state_mgr,
                 prompt_engine,
                 config,
                 repo_root,
