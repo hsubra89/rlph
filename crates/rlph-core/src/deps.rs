@@ -8,7 +8,7 @@ use tracing::warn;
 
 use crate::ids::IssueNumber;
 use crate::scc::TarjanScc;
-use crate::sources::Task;
+use crate::task::Task;
 
 static INLINE_DEP_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:blocked\s+by|depends\s+on)\s+#(\d+)")

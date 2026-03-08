@@ -7,11 +7,12 @@ use std::collections::HashSet;
 use std::thread;
 use std::time::Duration;
 
-use serde::Serialize;
 use tracing::warn;
 
 use crate::error::Result;
 use crate::ids::IssueNumber;
+
+pub use rlph_core::task::{Priority, Task};
 
 const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 500;
@@ -43,39 +44,6 @@ where
 
     // max_retries == 0: no loop iterations, so make a single attempt
     f()
-}
-
-/// Task priority (1 = highest, 9 = lowest).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub struct Priority(pub u8);
-
-impl Priority {
-    /// Parse priority from a label string.
-    /// Recognizes: p1-p9, priority-high, priority-medium, priority-low.
-    pub fn from_label(label: &str) -> Option<Self> {
-        let lower = label.to_lowercase();
-        match lower.as_str() {
-            "priority-high" => Some(Priority(1)),
-            "priority-medium" => Some(Priority(5)),
-            "priority-low" => Some(Priority(9)),
-            s if s.len() == 2 && s.starts_with('p') => s[1..]
-                .parse::<u8>()
-                .ok()
-                .filter(|&n| (1..=9).contains(&n))
-                .map(Priority),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Task {
-    pub id: String,
-    pub title: String,
-    pub body: String,
-    pub labels: Vec<String>,
-    pub url: String,
-    pub priority: Option<Priority>,
 }
 
 pub trait TaskSource {
@@ -169,34 +137,5 @@ mod tests {
         let result: Result<String> =
             retry_with_backoff_ms(|| Err(Error::TaskSource("permanent".to_string())), 1, 3);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_priority_from_numeric_labels() {
-        assert_eq!(Priority::from_label("p1"), Some(Priority(1)));
-        assert_eq!(Priority::from_label("p5"), Some(Priority(5)));
-        assert_eq!(Priority::from_label("p9"), Some(Priority(9)));
-    }
-
-    #[test]
-    fn test_priority_from_named_labels() {
-        assert_eq!(Priority::from_label("priority-high"), Some(Priority(1)));
-        assert_eq!(Priority::from_label("priority-medium"), Some(Priority(5)));
-        assert_eq!(Priority::from_label("priority-low"), Some(Priority(9)));
-    }
-
-    #[test]
-    fn test_priority_case_insensitive() {
-        assert_eq!(Priority::from_label("P1"), Some(Priority(1)));
-        assert_eq!(Priority::from_label("Priority-High"), Some(Priority(1)));
-        assert_eq!(Priority::from_label("PRIORITY-LOW"), Some(Priority(9)));
-    }
-
-    #[test]
-    fn test_priority_invalid() {
-        assert_eq!(Priority::from_label("p0"), None);
-        assert_eq!(Priority::from_label("p10"), None);
-        assert_eq!(Priority::from_label("bug"), None);
-        assert_eq!(Priority::from_label(""), None);
     }
 }

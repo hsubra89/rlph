@@ -1,15 +1,18 @@
 //! Autonomous AI dev-loop: fetch tasks, spin up worktrees, run coding agents, submit PRs.
 
+pub use rlph_core::deps;
+pub use rlph_core::ids;
+pub(crate) use rlph_core::scc;
+pub use rlph_core::task;
+
 pub mod cli;
 pub mod config;
-pub mod deps;
 pub mod diff_position_mapper;
 pub mod error;
 pub mod fix;
 pub mod fix_comment;
 pub mod fix_deps;
 pub mod fix_scheduler;
-pub mod ids;
 pub mod logging;
 pub mod orchestrator;
 pub mod prd;
@@ -18,7 +21,6 @@ pub mod prompts;
 pub(crate) mod resolve_threads;
 pub mod review_schema;
 pub mod runner;
-pub(crate) mod scc;
 pub mod sources;
 pub mod submission;
 pub mod worktree;
