@@ -583,7 +583,7 @@ pub fn init_interactive(label: &str) -> Result<()> {
     }
 
     let team_key = if teams.len() == 1 {
-        eprintln!("Found one team: {} ({})", teams[0].1, teams[0].0);
+        info!("Found one team: {} ({})", teams[0].1, teams[0].0);
         teams[0].0.clone()
     } else {
         prompt_team_selection(&teams, &mut std::io::stdin().lock(), &mut std::io::stderr())?
@@ -594,7 +594,7 @@ pub fn init_interactive(label: &str) -> Result<()> {
     let config_dir = std::path::Path::new(".rlph");
     write_linear_config(&team_key, config_dir)?;
 
-    eprintln!("Wrote [linear] config to .rlph/config.toml");
+    info!("Wrote [linear] config to .rlph/config.toml");
     Ok(())
 }
 

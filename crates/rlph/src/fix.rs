@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::watch;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// Maximum number of push attempts before giving up (rebase+retry on conflict).
 const MAX_PUSH_ATTEMPTS: u32 = 3;
@@ -68,8 +68,8 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         Arc::clone(&correction_runner),
         setup_script,
     );
-    eprintln!(
-        "[rlph] fix: {}",
+    info!(
+        "fix: {}",
         format_runner_display(
             config.fix.runner,
             config.fix.agent_model.as_deref(),
@@ -100,7 +100,6 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         }
 
         // Fetch and parse
-        eprintln!("[rlph] polling for newly 🚀-reacted comments (cycle {cycle})");
         info!(
             pr_number = %pr_number,
             cycle,
@@ -174,11 +173,6 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         )
         .await;
 
-        eprintln!(
-            "[rlph] poll cycle {cycle} summary: {} completed, {} failed",
-            completed.len(),
-            failed.len()
-        );
         info!(
             cycle,
             completed = completed.len(),
@@ -242,7 +236,6 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
         match fix_scheduler::next_action(queued_items, deps, &sched_completed, &sched_failed) {
             ScheduleAction::RunBatch(finding_ids) => {
                 let batch_size = finding_ids.len();
-                eprintln!("[rlph] Scheduling {batch_size} finding(s): {finding_ids:?}");
                 info!(batch_size, ?finding_ids, "scheduling fix session");
 
                 // Prepare all items, skipping any that fail validation
@@ -282,7 +275,6 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                 needs_worktree_recovery = true;
 
                 for id in &batch_completed {
-                    eprintln!("[rlph] Finding completed successfully: {id}");
                     info!(%id, "finding completed successfully");
                 }
                 completed.extend(batch_completed);
@@ -292,19 +284,13 @@ async fn run_scheduler_cycle<S: SubmissionBackend, C: CorrectionRunner>(
                         let attempts = retries.entry(failed_id.clone()).or_insert(0);
                         *attempts += 1;
                         if *attempts >= MAX_CRITICAL_ATTEMPTS {
-                            eprintln!("[rlph] Critical fix failed after retry: {failed_id}: {e}");
-                            warn!(finding_id = %failed_id, error = %e, "critical fix failed after retry");
+                            error!(finding_id = %failed_id, error = %e, "critical fix failed after retry");
                             failed.insert(failed_id);
                         } else {
-                            eprintln!(
-                                "[rlph] Critical fix failed (attempt {}, will retry): {failed_id}: {e}",
-                                *attempts
-                            );
                             warn!(finding_id = %failed_id, error = %e, attempt = *attempts, "critical fix failed, will retry");
                         }
                     } else {
-                        eprintln!("[rlph] Fix failed: {failed_id}: {e}");
-                        warn!(finding_id = %failed_id, error = %e, "fix failed");
+                        error!(finding_id = %failed_id, error = %e, "fix failed");
                         failed.insert(failed_id);
                     }
                 }
@@ -325,10 +311,6 @@ fn recover_shared_worktree(
     match worktree_manager.reset_to_remote(worktree_path, pr_branch) {
         Ok(()) => true,
         Err(reset_error) => {
-            eprintln!(
-                "[rlph] Failed to reset shared fix worktree at {}: {reset_error}. Recreating it before the next batch.",
-                worktree_path.display()
-            );
             warn!(
                 error = %reset_error,
                 path = %worktree_path.display(),
@@ -345,11 +327,7 @@ fn recover_shared_worktree(
             if let Err(remove_error) = std::fs::remove_dir_all(worktree_path)
                 && remove_error.kind() != std::io::ErrorKind::NotFound
             {
-                eprintln!(
-                    "[rlph] Failed to remove broken shared fix worktree at {} before recreation: {remove_error}",
-                    worktree_path.display()
-                );
-                warn!(
+                error!(
                     error = %remove_error,
                     path = %worktree_path.display(),
                     "failed to remove broken shared worktree directory before recreation"
@@ -367,11 +345,7 @@ fn recover_shared_worktree(
                     true
                 }
                 Err(recreate_error) => {
-                    eprintln!(
-                        "[rlph] Failed to recreate shared fix worktree at {} after reset failure: {recreate_error}",
-                        worktree_path.display()
-                    );
-                    warn!(
+                    error!(
                         reset_error = %reset_error,
                         recreate_error = %recreate_error,
                         path = %worktree_path.display(),
@@ -701,8 +675,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             let run_result = match run_result {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("[rlph] Batch abort (agent failed): {finding_id}: {e}");
-                    warn!(%finding_id, error = %e, "batch abort: agent failed");
+                    error!(%finding_id, error = %e, "batch abort: agent failed");
                     break 'batch Some((finding_id, finding_severity, e));
                 }
             };
@@ -737,8 +710,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             {
                 Ok(output) => output,
                 Err(e) => {
-                    eprintln!("[rlph] Batch abort (parse failed): {finding_id}: {e}");
-                    warn!(%finding_id, error = %e, "batch abort: parse failed");
+                    error!(%finding_id, error = %e, "batch abort: parse failed");
                     break 'batch Some((finding_id, finding_severity, e));
                 }
             };
@@ -762,8 +734,7 @@ async fn run_batch_fix<S: SubmissionBackend, C: CorrectionRunner>(
             {
                 Ok(result) => result,
                 Err(e) => {
-                    eprintln!("[rlph] Batch abort (push failed): {finding_id}: {e}");
-                    warn!(%finding_id, error = %e, "batch abort: push failed");
+                    error!(%finding_id, error = %e, "batch abort: push failed");
                     break 'batch Some((finding_id, finding_severity, e));
                 }
             };
@@ -796,7 +767,6 @@ async fn apply_fix_output<C: CorrectionRunner + ?Sized>(
 ) -> Result<FixResultKind> {
     match fix_output {
         StandaloneFixOutput::Fixed { commit_message } => {
-            eprintln!("[rlph] Fix applied — rebasing and pushing: {finding_id}");
             info!(%finding_id, commit_message, "fix applied — rebasing and pushing");
             match (
                 push_to_pr_branch_with_retry(worktree_path, fix_branch, pr_branch).await,
@@ -804,7 +774,7 @@ async fn apply_fix_output<C: CorrectionRunner + ?Sized>(
             ) {
                 (Ok(()), _) => Ok(FixResultKind::Fixed { commit_message }),
                 (Err(Error::RebaseConflict { .. }), Some(sid)) => {
-                    eprintln!("[rlph] Rebase conflict — resuming agent to resolve: {finding_id}");
+                    warn!(%finding_id, "rebase conflict — resuming agent to resolve");
                     resolve_conflict_and_push(
                         worktree_path,
                         fix_branch,
@@ -820,7 +790,6 @@ async fn apply_fix_output<C: CorrectionRunner + ?Sized>(
             }
         }
         StandaloneFixOutput::WontFix { reason } => {
-            eprintln!("[rlph] Finding marked as won't fix: {finding_id}");
             info!(%finding_id, reason, "finding marked as won't fix");
             Ok(FixResultKind::WontFix { reason })
         }

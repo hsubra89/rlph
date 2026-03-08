@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use tokio::sync::watch;
-use tracing::{debug, info};
+use tracing::{debug, error, info, warn};
 
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
@@ -38,7 +38,7 @@ fn parse_pr_ref(s: &str) -> Result<PrNumber, String> {
 /// Parse a PR ref or print an error and exit.
 fn parse_pr_ref_or_exit(s: &str) -> PrNumber {
     parse_pr_ref(s).unwrap_or_else(|msg| {
-        eprintln!("error: {msg}");
+        error!("{msg}");
         std::process::exit(1);
     })
 }
@@ -73,11 +73,11 @@ fn install_sigint_handler(first_message: &'static str) -> watch::Receiver<bool> 
     let (tx, rx) = watch::channel(false);
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!("{first_message}");
+            warn!("{first_message}");
             let _ = tx.send(true);
         }
         if tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!("[rlph] Second SIGINT received; exiting immediately");
+            warn!("Second SIGINT received; exiting immediately");
             std::process::exit(130);
         }
     });
@@ -96,13 +96,13 @@ async fn main() {
             let init_cfg = match resolve_init_config(&cli) {
                 Ok(cfg) => cfg,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    error!("{e}");
                     std::process::exit(1);
                 }
             };
             if init_cfg.source == "linear" {
                 if let Err(e) = rlph::sources::linear::init_interactive(&init_cfg.label) {
-                    eprintln!("error: {e}");
+                    error!("{e}");
                     std::process::exit(1);
                 }
             } else {
@@ -114,12 +114,12 @@ async fn main() {
             let config = match Config::load(&cli, None) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    error!("{e}");
                     std::process::exit(1);
                 }
             };
             if config.source != "github" {
-                eprintln!("error: 'rlph review' supports only source = \"github\"");
+                error!("'rlph review' supports only source = \"github\"");
                 std::process::exit(1);
             }
 
@@ -130,7 +130,7 @@ async fn main() {
             let pr_context = match submission.get_pr_context(pr_number) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    error!("{e}");
                     std::process::exit(1);
                 }
             };
@@ -141,7 +141,7 @@ async fn main() {
                 match build_worktree_manager(&config, &repo_root, &pr_context.base_branch) {
                     Ok(wm) => wm,
                     Err(e) => {
-                        eprintln!("error: {e}");
+                        error!("{e}");
                         std::process::exit(1);
                     }
                 };
@@ -149,7 +149,7 @@ async fn main() {
                 match worktree_mgr.create_for_branch(pr_context.number, &pr_context.head_branch) {
                     Ok(w) => w,
                     Err(e) => {
-                        eprintln!("error: {e}");
+                        error!("{e}");
                         std::process::exit(1);
                     }
                 };
@@ -228,7 +228,7 @@ async fn main() {
             };
 
             if let Err(e) = orchestrator.run_review_for_existing_pr(invocation).await {
-                eprintln!("error: {e}");
+                error!("{e}");
                 std::process::exit(1);
             }
         }
@@ -243,7 +243,7 @@ async fn main() {
                 let (items, _comments) = match fix::fetch_and_parse_items(pr_number, &submission) {
                     Ok(result) => result,
                     Err(e) => {
-                        eprintln!("error: {e}");
+                        error!("{e}");
                         std::process::exit(1);
                     }
                 };
@@ -255,7 +255,7 @@ async fn main() {
             let config = match Config::load(&cli, None) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    error!("{e}");
                     std::process::exit(1);
                 }
             };
@@ -264,7 +264,7 @@ async fn main() {
             let pr_context = match submission.get_pr_context(pr_number) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    error!("{e}");
                     std::process::exit(1);
                 }
             };
@@ -291,7 +291,7 @@ async fn main() {
             )
             .await
             {
-                eprintln!("error: {e}");
+                error!("{e}");
                 std::process::exit(1);
             }
         }
@@ -301,7 +301,7 @@ async fn main() {
             let cfg = match Config::load(&cli, None) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    error!("{e}");
                     std::process::exit(1);
                 }
             };
@@ -311,7 +311,7 @@ async fn main() {
             let exit_code = match prd::run_prd(&cfg, description.as_deref()).await {
                 Ok(code) => code,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    error!("{e}");
                     std::process::exit(1);
                 }
             };
@@ -322,7 +322,7 @@ async fn main() {
             let config = match Config::load(&cli, Some(args)) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    error!("{e}");
                     std::process::exit(1);
                 }
             };
@@ -330,7 +330,7 @@ async fn main() {
             info!(?config, "config loaded");
 
             if !config.once && !config.continuous && config.max_iterations.is_none() {
-                eprintln!("error: specify one of --once, --continuous, or --max-iterations");
+                error!("specify one of --once, --continuous, or --max-iterations");
                 std::process::exit(1);
             }
 
@@ -340,7 +340,7 @@ async fn main() {
                 "linear" => match LinearSource::new(&config) {
                     Ok(s) => AnySource::Linear(s),
                     Err(e) => {
-                        eprintln!("error: {e}");
+                        error!("{e}");
                         std::process::exit(1);
                     }
                 },
@@ -362,7 +362,7 @@ async fn main() {
                 match build_worktree_manager(&config, &repo_root, &config.base_branch) {
                     Ok(wm) => wm,
                     Err(e) => {
-                        eprintln!("error: {e}");
+                        error!("{e}");
                         std::process::exit(1);
                     }
                 };
@@ -388,7 +388,7 @@ async fn main() {
                 if matches!(&e, rlph::error::Error::Interrupted) {
                     std::process::exit(130);
                 }
-                eprintln!("error: {e}");
+                error!("{e}");
                 std::process::exit(1);
             }
         }
