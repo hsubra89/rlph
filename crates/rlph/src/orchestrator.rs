@@ -25,10 +25,11 @@ use crate::runner::{
     AgentRunner, AnyRunner, Phase, RunResult, RunnerKind, build_runner, format_runner_display,
     resume_with_correction,
 };
-use crate::sources::{Task, TaskSource};
+use crate::sources::TaskSource;
 use crate::submission::{
     InlineReviewComment, PullRequestReviewEvent, REVIEW_MARKER, SubmissionBackend,
 };
+use crate::task::Task;
 use crate::worktree::{WorktreeInfo, WorktreeManager};
 
 #[derive(Debug)]

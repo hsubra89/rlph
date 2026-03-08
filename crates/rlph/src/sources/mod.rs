@@ -11,8 +11,7 @@ use tracing::warn;
 
 use crate::error::Result;
 use crate::ids::IssueNumber;
-
-pub use rlph_core::task::{Priority, Task};
+use crate::task::Task;
 
 const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 500;

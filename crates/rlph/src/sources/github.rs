@@ -9,8 +9,9 @@ use tracing::{debug, warn};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::ids::IssueNumber;
+use crate::task::Priority;
 
-use super::{Priority, Task, TaskSource, retry_with_backoff};
+use super::{Task, TaskSource, retry_with_backoff};
 
 #[derive(Debug, Deserialize)]
 struct GhLabel {

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use rlph::orchestrator::build_task_vars;
 use rlph::prompts::PromptEngine;
-use rlph::sources::Task;
+use rlph::task::Task;
 
 /// Real PR body from PR #94.
 const PR_BODY: &str = "\

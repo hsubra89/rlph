@@ -9,8 +9,9 @@ use tracing::{debug, info};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::ids::IssueNumber;
+use crate::task::Priority;
 
-use super::{Priority, Task, TaskSource, retry_with_backoff};
+use super::{Task, TaskSource, retry_with_backoff};
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 const LINEAR_CLI_CREDENTIALS: &str = ".config/linear/credentials.toml";

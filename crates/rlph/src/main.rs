@@ -20,10 +20,11 @@ use rlph::prd;
 use rlph::prompts::PromptEngine;
 use rlph::runner::build_runner;
 use rlph::sources::AnySource;
+use rlph::sources::TaskSource;
 use rlph::sources::github::GitHubSource;
 use rlph::sources::linear::LinearSource;
-use rlph::sources::{Task, TaskSource};
 use rlph::submission::{GitHubSubmission, PrContext, parse_pr_number_from_url};
+use rlph::task::Task;
 use rlph::worktree::{WorktreeManager, resolve_setup_script};
 
 /// Parse a PR reference that is either a plain number or a GitHub PR URL.
