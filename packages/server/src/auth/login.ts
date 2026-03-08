@@ -1,6 +1,7 @@
 import { FetchHttpClient, HttpClient, HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Data, Effect, Either, Schema } from "effect"
 import * as jose from "jose"
+import { ReplayGuard } from "./replay-guard.js"
 import { sshFingerprint, verifySshSignature } from "./ssh.js"
 
 export class JwtSignError extends Data.TaggedError("JwtSignError")<{
@@ -37,6 +38,16 @@ export const makeHandleLogin = (jwtSecret: Uint8Array) =>
     if (Math.abs(now - timestamp) > 60) {
       return yield* HttpServerResponse.json(
         { error: "timestamp too stale" },
+        { status: 401 },
+      )
+    }
+
+    // Reject replayed (username, timestamp) pairs within the freshness window
+    const replayGuard = yield* ReplayGuard
+    const isReplay = yield* replayGuard.checkAndMark(username, timestamp)
+    if (isReplay) {
+      return yield* HttpServerResponse.json(
+        { error: "duplicate request" },
         { status: 401 },
       )
     }

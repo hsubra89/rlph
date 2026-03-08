@@ -4,6 +4,7 @@ import { Config, Effect, Layer, Redacted } from "effect"
 import { createServer } from "node:http"
 import { makeHandleLogin } from "./auth/login.js"
 import { makeAuthMiddleware } from "./auth/middleware.js"
+import { ReplayGuardLive } from "./auth/replay-guard.js"
 import { handleWhoami } from "./auth/whoami.js"
 
 const program = Effect.gen(function* () {
@@ -25,6 +26,7 @@ const program = Effect.gen(function* () {
   const HttpLive = HttpServer.serve(router).pipe(
     Layer.provide(ServerLive),
     Layer.provide(PlatformLive),
+    Layer.provide(ReplayGuardLive),
   )
 
   yield* Effect.logInfo(`Server starting on port ${port}`)
