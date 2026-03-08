@@ -237,16 +237,18 @@ async fn run(cli: Cli) -> Result<i32, Error> {
         CliCommand::Prd {
             ref description, ..
         } => {
-            let cfg = Config::load(&cli, None)?;
+            let config = Config::load(&cli, None)?;
 
-            info!(?cfg, "config loaded for prd");
+            info!("config loaded for prd");
+            debug!(?config, "config loaded for prd");
 
-            exit_code = prd::run_prd(&cfg, description.as_deref()).await?;
+            exit_code = prd::run_prd(&config, description.as_deref()).await?;
         }
         CliCommand::Build { ref args } => {
             let config = Config::load(&cli, Some(args))?;
 
-            info!(?config, "config loaded");
+            info!("config loaded");
+            debug!(?config, "config loaded");
 
             if !config.once && !config.continuous && config.max_iterations.is_none() {
                 return Err(Error::ConfigValidation(
