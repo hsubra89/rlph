@@ -1,5 +1,5 @@
 # Run all checks (mirrors CI)
-check: fmt-check lint test
+check: fmt-check lint test ts-build
 
 # Format check
 fmt-check:
@@ -24,3 +24,11 @@ integration-all:
 # Format (fix)
 fmt:
     cargo fmt --all
+
+# TypeScript build
+ts-build:
+    pnpm --filter '@rlph/*' run build
+
+# TypeScript dev server
+ts-dev:
+    pnpm --filter @rlph/server run dev

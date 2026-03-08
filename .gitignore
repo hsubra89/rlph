@@ -33,3 +33,4 @@ ideas.md
 # Node / pnpm
 node_modules/
 .pnpm-store/
+dist/
