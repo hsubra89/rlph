@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use tokio::sync::watch;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
@@ -36,12 +36,12 @@ fn parse_pr_ref(s: &str) -> Result<PrNumber, String> {
         .ok_or_else(|| format!("invalid PR reference '{s}' — expected a number or GitHub PR URL"))
 }
 
-fn print_pr_banner(pr: &PrContext) {
+fn log_pr_context(pr: &PrContext) {
     info!(
         number = %pr.number,
         head = pr.head_branch,
         base = pr.base_branch,
-        "PR"
+        "reviewing PR"
     );
 }
 
@@ -78,6 +78,7 @@ fn install_sigint_handler(first_message: &'static str) -> watch::Receiver<bool> 
 }
 
 async fn run(cli: Cli) -> Result<i32, Error> {
+    trace!(verbose = cli.verbose, format = ?cli.log_format, "logging initialized");
     debug!("rlph starting");
 
     match cli.command {
@@ -104,7 +105,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
             let submission = GitHubSubmission::new();
             let pr_context = submission.get_pr_context(pr_number)?;
 
-            print_pr_banner(&pr_context);
+            log_pr_context(&pr_context);
 
             let worktree_mgr =
                 build_worktree_manager(&config, &repo_root, &pr_context.base_branch)?;
@@ -205,15 +206,14 @@ async fn run(cli: Cli) -> Result<i32, Error> {
             // Get PR context to determine the head branch
             let pr_context = submission.get_pr_context(pr_number)?;
 
-            print_pr_banner(&pr_context);
+            log_pr_context(&pr_context);
 
             let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let prompt_engine = PromptEngine::new(None);
 
             // Set up SIGINT handler for graceful shutdown
-            let shutdown_rx = install_sigint_handler(
-                "[rlph] SIGINT received; completing in-flight fixes then exiting",
-            );
+            let shutdown_rx =
+                install_sigint_handler("SIGINT received; completing in-flight fixes then exiting");
 
             fix::run_fix_loop(
                 pr_number,
@@ -281,9 +281,8 @@ async fn run(cli: Cli) -> Result<i32, Error> {
                 repo_root,
             );
 
-            let shutdown_rx = install_sigint_handler(
-                "[rlph] SIGINT received; shutting down after current iteration",
-            );
+            let shutdown_rx =
+                install_sigint_handler("SIGINT received; shutting down after current iteration");
 
             orchestrator.run_loop(Some(shutdown_rx)).await?;
         }

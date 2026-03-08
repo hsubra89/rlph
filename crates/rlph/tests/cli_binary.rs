@@ -2,9 +2,24 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 
-#[allow(deprecated)]
+#[allow(deprecated)] // cargo_bin deprecated in favor of cargo_bin_cmd! macro
 fn cmd() -> Command {
     Command::cargo_bin("rlph").unwrap()
+}
+
+fn cmd_in_tmp() -> (Command, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut c = cmd();
+    c.current_dir(&tmp);
+    (c, tmp)
+}
+
+fn parse_json_stderr(stderr: &[u8]) -> Vec<serde_json::Value> {
+    let s = String::from_utf8_lossy(stderr);
+    s.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|_| panic!("expected valid JSON: {l}")))
+        .collect()
 }
 
 // --- Help & version ---
@@ -49,10 +64,8 @@ fn prd_help() {
 
 #[test]
 fn bare_rlph_requires_mode() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .arg("build")
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.arg("build")
         .assert()
         .failure()
         .code(1)
@@ -65,10 +78,8 @@ fn bare_rlph_requires_mode() {
 
 #[test]
 fn once_and_continuous_conflict() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["build", "--once", "--continuous"])
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.args(["build", "--once", "--continuous"])
         .assert()
         .failure()
         .code(2)
@@ -113,10 +124,8 @@ fn review_missing_pr_number() {
 
 #[test]
 fn unknown_source_rejected() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["build", "--once", "--source", "jira"])
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.args(["build", "--once", "--source", "jira"])
         .assert()
         .failure()
         .code(1)
@@ -125,10 +134,8 @@ fn unknown_source_rejected() {
 
 #[test]
 fn unknown_runner_rejected() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["build", "--once", "--runner", "foo"])
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.args(["build", "--once", "--runner", "foo"])
         .assert()
         .failure()
         .code(1)
@@ -137,10 +144,8 @@ fn unknown_runner_rejected() {
 
 #[test]
 fn unknown_submission_rejected() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["build", "--once", "--submission", "gitlab"])
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.args(["build", "--once", "--submission", "gitlab"])
         .assert()
         .failure()
         .code(1)
@@ -149,10 +154,8 @@ fn unknown_submission_rejected() {
 
 #[test]
 fn zero_poll_seconds_rejected() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["build", "--once", "--poll-seconds", "0"])
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.args(["build", "--once", "--poll-seconds", "0"])
         .assert()
         .failure()
         .code(1)
@@ -163,10 +166,8 @@ fn zero_poll_seconds_rejected() {
 
 #[test]
 fn config_file_not_found() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["build", "--once", "--config", "/nonexistent.toml"])
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.args(["build", "--once", "--config", "/nonexistent.toml"])
         .assert()
         .failure()
         .code(1)
@@ -175,13 +176,11 @@ fn config_file_not_found() {
 
 #[test]
 fn invalid_toml_config() {
-    let tmp = tempfile::tempdir().unwrap();
+    let (mut cmd, tmp) = cmd_in_tmp();
     let cfg_dir = tmp.path().join(".rlph");
     fs::create_dir_all(&cfg_dir).unwrap();
     fs::write(cfg_dir.join("config.toml"), "not valid {{{{ toml").unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["build", "--once"])
+    cmd.args(["build", "--once"])
         .assert()
         .failure()
         .code(1)
@@ -192,7 +191,7 @@ fn invalid_toml_config() {
 
 #[test]
 fn review_rejects_non_github_source() {
-    let tmp = tempfile::tempdir().unwrap();
+    let (mut cmd, tmp) = cmd_in_tmp();
     let cfg_dir = tmp.path().join(".rlph");
     fs::create_dir_all(&cfg_dir).unwrap();
     fs::write(
@@ -200,9 +199,7 @@ fn review_rejects_non_github_source() {
         "source = \"linear\"\n[linear]\nteam = \"ENG\"\n",
     )
     .unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["review", "123"])
+    cmd.args(["review", "123"])
         .assert()
         .failure()
         .code(1)
@@ -215,16 +212,14 @@ fn review_rejects_non_github_source() {
 
 #[test]
 fn init_github_noop() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd().current_dir(&tmp).arg("init").assert().success();
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.arg("init").assert().success();
 }
 
 #[test]
 fn init_unknown_source_rejected() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["init", "--source", "jira"])
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.args(["init", "--source", "jira"])
         .assert()
         .failure()
         .code(1)
@@ -235,10 +230,8 @@ fn init_unknown_source_rejected() {
 
 #[test]
 fn default_verbosity_shows_info() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .arg("init")
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.arg("init")
         .assert()
         .success()
         .stderr(predicate::str::contains("INFO"));
@@ -246,10 +239,8 @@ fn default_verbosity_shows_info() {
 
 #[test]
 fn single_v_enables_debug() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["-v", "init"])
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.args(["-v", "init"])
         .assert()
         .success()
         .stderr(predicate::str::contains("DEBUG"));
@@ -257,22 +248,17 @@ fn single_v_enables_debug() {
 
 #[test]
 fn double_v_enables_trace() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["-vv", "init"])
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.args(["-vv", "init"])
         .assert()
         .success()
-        // trace level enables trace and debug
-        .stderr(predicate::str::contains("TRACE").or(predicate::str::contains("DEBUG")));
+        .stderr(predicate::str::contains("TRACE"));
 }
 
 #[test]
 fn rust_log_overrides_cli_verbosity() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .env("RUST_LOG", "error")
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.env("RUST_LOG", "error")
         .args(["-vv", "init"])
         .assert()
         .success()
@@ -281,75 +267,48 @@ fn rust_log_overrides_cli_verbosity() {
 
 #[test]
 fn json_format_produces_valid_json() {
-    let tmp = tempfile::tempdir().unwrap();
-    let output = cmd()
-        .current_dir(&tmp)
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    let output = cmd
         .args(["--log-format", "json", "init"])
         .output()
         .expect("failed to run");
 
     assert!(output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for line in stderr.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        assert!(
-            serde_json::from_str::<serde_json::Value>(line).is_ok(),
-            "expected valid JSON line, got: {line}"
-        );
-    }
+    let lines = parse_json_stderr(&output.stderr);
+    assert!(!lines.is_empty(), "expected at least one JSON log line");
 }
 
 #[test]
 fn verbose_json_combination() {
-    let tmp = tempfile::tempdir().unwrap();
-    let output = cmd()
-        .current_dir(&tmp)
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    let output = cmd
         .args(["-v", "--log-format", "json", "init"])
         .output()
         .expect("failed to run");
 
     assert!(output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut found_debug = false;
-    for line in stderr.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let v: serde_json::Value = serde_json::from_str(line).expect("expected valid JSON line");
-        if v.get("level").and_then(|l| l.as_str()) == Some("DEBUG") {
-            found_debug = true;
-        }
-    }
+    let lines = parse_json_stderr(&output.stderr);
+    let found_debug = lines
+        .iter()
+        .any(|v| v.get("level").and_then(|l| l.as_str()) == Some("DEBUG"));
     assert!(found_debug, "expected at least one DEBUG-level JSON line");
 }
 
 #[test]
 fn text_format_explicit() {
-    let tmp = tempfile::tempdir().unwrap();
-    cmd()
-        .current_dir(&tmp)
-        .args(["--log-format", "text", "init"])
+    let (mut cmd, _tmp) = cmd_in_tmp();
+    cmd.args(["--log-format", "text", "init"])
         .assert()
         .success()
         .stderr(predicate::str::contains("INFO"));
 }
 
 #[test]
-fn help_shows_verbose_flag() {
+fn help_shows_logging_flags() {
     cmd()
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("--verbose"));
-}
-
-#[test]
-fn help_shows_log_format_flag() {
-    cmd()
-        .arg("--help")
-        .assert()
-        .success()
+        .stdout(predicate::str::contains("--verbose"))
         .stdout(predicate::str::contains("--log-format"));
 }

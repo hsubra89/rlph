@@ -136,7 +136,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
             match reader.next_line().await {
                 Ok(Some(line)) => {
                     if stream_output {
-                        println!("[{prefix_out}] {line}");
+                        info!(target: "rlph::stream", prefix = %prefix_out, "{line}");
                     }
                     if let Some(ref tx) = stdout_tx {
                         let _ = tx.send(line.clone());

@@ -192,9 +192,9 @@ pub trait ProgressReporter: Send + Sync {
 }
 
 /// Default reporter that logs progress via `tracing::info!`.
-pub struct StderrReporter;
+pub struct TracingReporter;
 
-impl ProgressReporter for StderrReporter {
+impl ProgressReporter for TracingReporter {
     fn fetching_tasks(&self) {
         info!("Fetching eligible tasks...");
     }
@@ -220,11 +220,13 @@ impl ProgressReporter for StderrReporter {
     }
 
     fn phases_started(&self, names: &[String]) {
-        info!(
-            count = names.len(),
-            phases = names.join(", "),
-            "Running review agents"
-        );
+        if tracing::enabled!(tracing::Level::INFO) {
+            info!(
+                count = names.len(),
+                phases = names.join(", "),
+                "Running review agents"
+            );
+        }
     }
 
     fn phase_complete(&self, name: &str) {
@@ -236,7 +238,7 @@ impl ProgressReporter for StderrReporter {
     }
 
     fn pr_url(&self, url: &str) {
-        info!(url, "PR");
+        info!(url, "PR URL");
     }
 }
 
@@ -245,7 +247,7 @@ pub struct Orchestrator<
     R,
     B,
     F = DefaultReviewRunnerFactory,
-    P = StderrReporter,
+    P = TracingReporter,
     C = DefaultCorrectionRunner,
 > {
     source: S,
@@ -283,7 +285,7 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             config,
             repo_root,
             review_factory: DefaultReviewRunnerFactory { stream: true },
-            reporter: StderrReporter,
+            reporter: TracingReporter,
             correction_runner: DefaultCorrectionRunner,
         }
     }
@@ -671,16 +673,18 @@ impl<
                 .review_factory
                 .create_phase_runner(phase_config, self.config.agent_timeout_retries);
 
-            info!(
-                phase = phase_config.name,
-                runner = format_runner_display(
-                    phase_config.runner,
-                    phase_config.agent_model.as_deref(),
-                    phase_config.agent_effort.as_deref(),
-                    phase_config.agent_variant.as_deref(),
-                ),
-                "review phase config"
-            );
+            if tracing::enabled!(tracing::Level::INFO) {
+                info!(
+                    phase = phase_config.name,
+                    runner = format_runner_display(
+                        phase_config.runner,
+                        phase_config.agent_model.as_deref(),
+                        phase_config.agent_effort.as_deref(),
+                        phase_config.agent_variant.as_deref(),
+                    ),
+                    "review phase config"
+                );
+            }
 
             let mut phase_vars = vars.clone();
             phase_vars.insert("review_phase_name".to_string(), phase_config.name.clone());

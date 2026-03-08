@@ -68,15 +68,17 @@ pub async fn run_fix_loop<C: CorrectionRunner + 'static>(
         Arc::clone(&correction_runner),
         setup_script,
     );
-    info!(
-        "fix: {}",
-        format_runner_display(
-            config.fix.runner,
-            config.fix.agent_model.as_deref(),
-            config.fix.agent_effort.as_deref(),
-            config.fix.agent_variant.as_deref(),
-        )
-    );
+    if tracing::enabled!(tracing::Level::INFO) {
+        info!(
+            "fix: {}",
+            format_runner_display(
+                config.fix.runner,
+                config.fix.agent_model.as_deref(),
+                config.fix.agent_effort.as_deref(),
+                config.fix.agent_variant.as_deref(),
+            )
+        );
+    }
 
     let poll_duration = config.poll_seconds;
 
