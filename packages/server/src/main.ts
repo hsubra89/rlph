@@ -5,6 +5,8 @@ import { createServer } from "node:http"
 import { makeHandleLogin } from "./auth/login.js"
 import { makeAuthMiddleware } from "./auth/middleware.js"
 import { ReplayGuardLive } from "./auth/replay-guard.js"
+import { handleRevoke } from "./auth/revoke.js"
+import { TokenDenylistLive } from "./auth/token-denylist.js"
 import { handleWhoami } from "./auth/whoami.js"
 
 const program = Effect.gen(function* () {
@@ -18,6 +20,7 @@ const program = Effect.gen(function* () {
     HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
     HttpRouter.post("/auth/login", makeHandleLogin(jwtSecret)),
     HttpRouter.get("/whoami", authMiddleware(handleWhoami)),
+    HttpRouter.post("/auth/revoke", authMiddleware(handleRevoke)),
   )
 
   const ServerLive = NodeHttpServer.layer(() => createServer(), { port })
@@ -27,6 +30,7 @@ const program = Effect.gen(function* () {
     Layer.provide(ServerLive),
     Layer.provide(PlatformLive),
     Layer.provide(ReplayGuardLive),
+    Layer.provide(TokenDenylistLive),
   )
 
   yield* Effect.logInfo(`Server starting on port ${port}`)

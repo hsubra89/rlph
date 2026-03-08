@@ -1,5 +1,6 @@
 import { FetchHttpClient, HttpClient, HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Data, Effect, Either, Schema } from "effect"
+import * as crypto from "node:crypto"
 import * as jose from "jose"
 import { ReplayGuard } from "./replay-guard.js"
 import { sshFingerprint, verifySshSignature } from "./ssh.js"
@@ -100,12 +101,14 @@ export const makeHandleLogin = (jwtSecret: Uint8Array) =>
       )
     }
 
-    // Issue JWT
+    // Issue JWT with unique JTI for revocation support
+    const jti = crypto.randomUUID()
     const token = yield* Effect.tryPromise({
       try: () =>
         new jose.SignJWT({ ghuser: username })
           .setProtectedHeader({ alg: "HS256" })
           .setSubject(fingerprint)
+          .setJti(jti)
           .setIssuedAt()
           .setExpirationTime("1h")
           .sign(jwtSecret),
