@@ -19,6 +19,7 @@ export function verifySshSignature(
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "brrr-verify-"))
+    const cleanup = () => fs.rmSync(tmpDir, { recursive: true, force: true })
     const sigFile = path.join(tmpDir, "sig")
     const allowedSignersFile = path.join(tmpDir, "allowed_signers")
 
@@ -41,16 +42,16 @@ export function verifySshSignature(
       proc.stdin.end()
 
       proc.on("close", (code) => {
-        fs.rmSync(tmpDir, { recursive: true, force: true })
+        cleanup()
         resolve(code === 0)
       })
 
       proc.on("error", () => {
-        fs.rmSync(tmpDir, { recursive: true, force: true })
+        cleanup()
         resolve(false)
       })
     } catch {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
+      cleanup()
       resolve(false)
     }
   })

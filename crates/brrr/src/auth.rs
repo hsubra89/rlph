@@ -166,30 +166,55 @@ fn ssh_sign(private_key_path: &Path, data: &str) -> Result<String, Error> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Parses `ssh-keygen -lf` output to extract the `SHA256:…` fingerprint.
-fn parse_fingerprint_output(output: &str) -> Option<String> {
-    output
+/// Computes the SHA256 fingerprint of a public key string.
+/// Mirrors the server-side `sshFingerprint()` in `ssh.ts`:
+/// base64-decode the key data field, SHA-256 hash it, base64-encode (no padding).
+fn ssh_fingerprint(pubkey: &str) -> Result<String, Error> {
+    let key_data = pubkey
         .split_whitespace()
         .nth(1)
-        .filter(|s| s.starts_with("SHA256:"))
-        .map(|s| s.to_string())
+        .ok_or_else(|| Error::Auth("public key has no key-data field".into()))?;
+
+    let raw = base64url_decode_standard(key_data)
+        .ok_or_else(|| Error::Auth("public key base64 decode failed".into()))?;
+
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(&raw);
+    let b64 = base64_encode_standard(&hash);
+    let trimmed = b64.trim_end_matches('=');
+    Ok(format!("SHA256:{trimmed}"))
 }
 
-/// Computes the SHA256 fingerprint of a public key file via `ssh-keygen -lf`.
-fn ssh_fingerprint(pub_path: &Path) -> Result<String, Error> {
-    let output = Command::new("ssh-keygen")
-        .args(["-lf", &pub_path.to_string_lossy(), "-E", "sha256"])
-        .output()
-        .map_err(|e| Error::Auth(format!("failed to run ssh-keygen -lf: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(Error::Auth(format!("ssh-keygen -lf failed: {stderr}")));
+/// Standard base64 encode (not URL-safe).
+fn base64_encode_standard(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(TABLE[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
     }
+    out
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_fingerprint_output(&stdout)
-        .ok_or_else(|| Error::Auth("failed to parse fingerprint from ssh-keygen output".into()))
+/// Standard base64 decode (not URL-safe).
+fn base64url_decode_standard(input: &str) -> Option<Vec<u8>> {
+    let mut buf = Vec::new();
+    base64_decode_impl(input.as_bytes(), &mut buf)?;
+    Some(buf)
 }
 
 fn session_path() -> Result<PathBuf, Error> {
@@ -228,9 +253,9 @@ pub fn load_token() -> Result<Option<String>, Error> {
 
 /// Runs the single-round-trip auth flow and stores the resulting JWT.
 pub fn authenticate(server_url: &str) -> Result<String, Error> {
-    let (private_key_path, _pubkey) = discover_pubkey()?;
+    let (private_key_path, pubkey) = discover_pubkey()?;
     let username = github_username()?;
-    let fingerprint = ssh_fingerprint(&private_key_path.with_extension("pub"))?;
+    let fingerprint = ssh_fingerprint(&pubkey)?;
     info!(username = %username, "authenticating with server");
 
     let timestamp = std::time::SystemTime::now()
@@ -266,7 +291,7 @@ pub fn authenticate(server_url: &str) -> Result<String, Error> {
         .token
         .ok_or_else(|| Error::Auth("login response missing token".into()))?;
 
-    // Step 4: Store the token
+    // Persist session to disk
     let session_file = session_path()?;
     if let Some(parent) = session_file.parent() {
         fs::create_dir_all(parent)
@@ -283,10 +308,7 @@ pub fn authenticate(server_url: &str) -> Result<String, Error> {
             + 3600
     });
 
-    let session = Session {
-        token: token.clone(),
-        expires_at,
-    };
+    let session = Session { token, expires_at };
     let json = serde_json::to_string_pretty(&session)
         .map_err(|e| Error::Auth(format!("failed to serialize session: {e}")))?;
     fs::write(&session_file, json)
@@ -319,18 +341,14 @@ fn jwt_expiry(token: &str) -> Option<u64> {
 }
 
 fn base64url_decode(input: &str) -> Option<Vec<u8>> {
-    // Add padding
-    let padded = match input.len() % 4 {
-        2 => format!("{input}=="),
-        3 => format!("{input}="),
-        _ => input.to_string(),
+    // URL-safe → standard: replace chars and add padding
+    let standard = input.replace('-', "+").replace('_', "/");
+    let padded = match standard.len() % 4 {
+        2 => format!("{standard}=="),
+        3 => format!("{standard}="),
+        _ => standard,
     };
-    // Replace URL-safe chars
-    let standard = padded.replace('-', "+").replace('_', "/");
-    // Use a simple base64 decoder
-    let mut buf = Vec::new();
-    base64_decode_impl(standard.as_bytes(), &mut buf)?;
-    Some(buf)
+    base64url_decode_standard(&padded)
 }
 
 fn base64_decode_impl(input: &[u8], output: &mut Vec<u8>) -> Option<()> {
@@ -397,32 +415,34 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_fingerprint_output_ed25519() {
-        let output = "256 SHA256:abc123def456 user@host (ED25519)\n";
-        assert_eq!(
-            parse_fingerprint_output(output),
-            Some("SHA256:abc123def456".to_string())
-        );
+    fn test_ssh_fingerprint_from_pubkey_string() {
+        // A known ed25519 public key (32 bytes of zeros, base64 = AAAA...AA==)
+        // The key-data is base64-encoded; we SHA-256 that decoded blob, then base64 the hash.
+        let pubkey =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyDataForTestingPurposesOnly00 user@host";
+        let fp = ssh_fingerprint(pubkey).unwrap();
+        assert!(fp.starts_with("SHA256:"));
+        assert!(!fp.ends_with('='));
     }
 
     #[test]
-    fn test_parse_fingerprint_output_rsa() {
-        let output = "3072 SHA256:longhashhere comment (RSA)\n";
-        assert_eq!(
-            parse_fingerprint_output(output),
-            Some("SHA256:longhashhere".to_string())
-        );
+    fn test_ssh_fingerprint_no_key_data() {
+        assert!(ssh_fingerprint("ssh-ed25519").is_err());
     }
 
     #[test]
-    fn test_parse_fingerprint_output_no_sha256() {
-        let output = "256 MD5:aa:bb:cc user@host (ED25519)\n";
-        assert_eq!(parse_fingerprint_output(output), None);
-    }
-
-    #[test]
-    fn test_parse_fingerprint_output_empty() {
-        assert_eq!(parse_fingerprint_output(""), None);
+    fn test_ssh_fingerprint_matches_typescript_logic() {
+        // Verify our Rust implementation matches the TS sshFingerprint():
+        // both do SHA256(base64_decode(key_data)) then base64-encode with no padding.
+        // Use a trivial key_data "AAAA" which decodes to [0, 0, 0].
+        let pubkey = "ssh-rsa AAAA comment";
+        let fp = ssh_fingerprint(pubkey).unwrap();
+        // SHA256 of [0,0,0] is a known hash
+        use sha2::{Digest, Sha256};
+        let expected_hash = Sha256::digest([0u8, 0, 0]);
+        let expected_b64 = base64_encode_standard(&expected_hash);
+        let expected = format!("SHA256:{}", expected_b64.trim_end_matches('='));
+        assert_eq!(fp, expected);
     }
 
     #[test]

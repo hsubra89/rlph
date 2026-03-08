@@ -3,20 +3,18 @@ import { Effect } from "effect"
 import * as jose from "jose"
 import { sshFingerprint, verifySshSignature } from "./ssh.js"
 
+interface LoginBody {
+  username: string
+  fingerprint: string
+  timestamp: number
+  signature: string
+}
+
 export const makeHandleLogin = (jwtSecret: Uint8Array) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
-    const body = yield* request.json as Effect.Effect<
-      { username: string; fingerprint: string; timestamp: number; signature: string },
-      unknown
-    >
-
-    const { username, fingerprint, timestamp, signature } = body as {
-      username: string
-      fingerprint: string
-      timestamp: number
-      signature: string
-    }
+    const { username, fingerprint, timestamp, signature } =
+      (yield* request.json) as LoginBody
 
     if (!username || !fingerprint || !timestamp || !signature) {
       return yield* HttpServerResponse.json(
@@ -29,7 +27,7 @@ export const makeHandleLogin = (jwtSecret: Uint8Array) =>
     const now = Math.floor(Date.now() / 1000)
     if (Math.abs(now - timestamp) > 60) {
       return yield* HttpServerResponse.json(
-        { error: "Timestamp too stale" },
+        { error: "timestamp too stale" },
         { status: 401 },
       )
     }
@@ -62,7 +60,7 @@ export const makeHandleLogin = (jwtSecret: Uint8Array) =>
 
     if (!matchingKey) {
       return yield* HttpServerResponse.json(
-        { error: "Fingerprint does not match any GitHub key" },
+        { error: "fingerprint does not match any GitHub key" },
         { status: 403 },
       )
     }
@@ -77,7 +75,7 @@ export const makeHandleLogin = (jwtSecret: Uint8Array) =>
 
     if (!verified) {
       return yield* HttpServerResponse.json(
-        { error: "Signature verification failed" },
+        { error: "signature verification failed" },
         { status: 401 },
       )
     }
