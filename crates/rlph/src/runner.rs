@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::error::{Error, Result};
 use crate::process::{ProcessConfig, spawn_and_stream};
@@ -299,18 +299,13 @@ fn extract_context_pct(val: &serde_json::Value, context_window: u64) -> Option<f
     token_pct(total, context_window)
 }
 
-/// Format a single Claude stream-json event line and write the result to `sink`.
+/// Format a single Claude stream-json event line, emitting output via tracing.
 ///
 /// `context_pct` is the latest known context usage percentage.
 ///
 /// Returns `(wrote, updated_pct)` — whether any output was written, and the
 /// (possibly refreshed) context usage percentage for the caller to store.
-fn format_claude_line(
-    prefix: &str,
-    line: &str,
-    context_pct: Option<f64>,
-    sink: &mut impl std::io::Write,
-) -> (bool, Option<f64>) {
+fn format_claude_line(prefix: &str, line: &str, context_pct: Option<f64>) -> (bool, Option<f64>) {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
         return (false, context_pct);
     };
@@ -340,14 +335,14 @@ fn format_claude_line(
             "text" => {
                 if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
                     for text_line in text.lines() {
-                        let _ = writeln!(sink, "[{prefix}{pct_tag}] {text_line}");
+                        info!(target: "rlph::stream", "[{prefix}{pct_tag}] {text_line}");
                     }
                     wrote = true;
                 }
             }
             "tool_use" => {
                 if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                    let _ = writeln!(sink, "[{prefix}{pct_tag}] {ICON_PLAY} {name}");
+                    info!(target: "rlph::stream", "[{prefix}{pct_tag}] {ICON_PLAY} {name}");
                     wrote = true;
                 }
             }
@@ -357,8 +352,8 @@ fn format_claude_line(
     (wrote, context_pct)
 }
 
-/// Spawn a task that reads Claude stream-json lines from a channel and prints
-/// formatted agent messages to stderr, prefixed with `[prefix]`.
+/// Spawn a task that reads Claude stream-json lines from a channel and emits
+/// formatted agent messages via `tracing` with target `rlph::stream`.
 ///
 /// Extracts text content from `assistant` events and tool names from `tool_use`
 /// content blocks. All other event types are silently skipped.
@@ -367,11 +362,9 @@ fn spawn_claude_stream_formatter(
     mut rx: mpsc::UnboundedReceiver<String>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut stderr = std::io::stderr();
         let mut context_pct: Option<f64> = None;
         while let Some(line) = rx.recv().await {
-            let (_wrote, updated_pct) =
-                format_claude_line(&prefix, &line, context_pct, &mut stderr);
+            let (_wrote, updated_pct) = format_claude_line(&prefix, &line, context_pct);
             context_pct = updated_pct;
         }
     })
@@ -408,11 +401,7 @@ impl AgentRunner for ClaudeRunner {
                             ));
                         }
                     };
-                    eprintln!(
-                        "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{})",
-                        attempt + 1,
-                        max_attempts
-                    );
+                    info!(target: "rlph::stream", "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{max_attempts})", attempt + 1);
                     self.build_resume_command(&session_id)
                 };
 
@@ -800,11 +789,7 @@ impl AgentRunner for OpencodeRunner {
                         ));
                     }
                 };
-                eprintln!(
-                    "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{})",
-                    attempt + 1,
-                    max_attempts
-                );
+                info!(target: "rlph::stream", "[{log_prefix}] resuming timed-out session {session_id} (attempt {}/{max_attempts})", attempt + 1);
                 self.build_resume_command(&session_id)
             };
 
@@ -996,7 +981,7 @@ fn extract_codex_context_pct(val: &serde_json::Value, context_window: u64) -> Op
     token_pct(total, context_window)
 }
 
-/// Format a single Codex JSON event line and write the result to `sink`.
+/// Format a single Codex JSON event line, emitting output via tracing.
 ///
 /// `context_pct` is the latest known context usage percentage.
 ///
@@ -1007,12 +992,7 @@ fn extract_codex_context_pct(val: &serde_json::Value, context_window: u64) -> Op
 ///
 /// Returns `(wrote, updated_pct)` — whether any output was written, and the
 /// (possibly refreshed) context usage percentage for the caller to store.
-fn format_codex_line(
-    prefix: &str,
-    line: &str,
-    context_pct: Option<f64>,
-    sink: &mut impl std::io::Write,
-) -> (bool, Option<f64>) {
+fn format_codex_line(prefix: &str, line: &str, context_pct: Option<f64>) -> (bool, Option<f64>) {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
         return (false, context_pct);
     };
@@ -1037,7 +1017,7 @@ fn format_codex_line(
                 "agent_message" => {
                     if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
                         for text_line in text.lines() {
-                            let _ = writeln!(sink, "[{prefix}{pct_tag}] {text_line}");
+                            info!(target: "rlph::stream", "[{prefix}{pct_tag}] {text_line}");
                         }
                         return (true, context_pct);
                     }
@@ -1051,7 +1031,7 @@ fn format_codex_line(
                             ICON_CROSS
                         };
                         for cmd_line in cmd.lines() {
-                            let _ = writeln!(sink, "[{prefix}{pct_tag}] {icon} {cmd_line}");
+                            info!(target: "rlph::stream", "[{prefix}{pct_tag}] {icon} {cmd_line}");
                         }
                         return (true, context_pct);
                     }
@@ -1068,7 +1048,7 @@ fn format_codex_line(
                 && let Some(cmd) = item.get("command").and_then(|v| v.as_str())
             {
                 for cmd_line in cmd.lines() {
-                    let _ = writeln!(sink, "[{prefix}{pct_tag}] {ICON_PLAY} {cmd_line}");
+                    info!(target: "rlph::stream", "[{prefix}{pct_tag}] {ICON_PLAY} {cmd_line}");
                 }
                 return (true, context_pct);
             }
@@ -1078,8 +1058,8 @@ fn format_codex_line(
     }
 }
 
-/// Spawn a task that reads Codex JSON event lines from a channel and prints
-/// formatted agent messages to stderr, prefixed with `[prefix]`.
+/// Spawn a task that reads Codex JSON event lines from a channel and emits
+/// formatted agent messages via `tracing` with target `rlph::stream`.
 ///
 /// Extracts text from `item.completed` agent_message events and command names
 /// from `item.started` command_execution events.
@@ -1088,10 +1068,9 @@ fn spawn_codex_stream_formatter(
     mut rx: mpsc::UnboundedReceiver<String>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut stderr = std::io::stderr();
         let mut context_pct: Option<f64> = None;
         while let Some(line) = rx.recv().await {
-            let (_wrote, updated_pct) = format_codex_line(&prefix, &line, context_pct, &mut stderr);
+            let (_wrote, updated_pct) = format_codex_line(&prefix, &line, context_pct);
             context_pct = updated_pct;
         }
     })
@@ -1165,11 +1144,7 @@ impl AgentRunner for CodexRunner {
                     let (cmd, a) = self.build_command();
                     (cmd, a, Some(prompt.to_string()))
                 } else {
-                    eprintln!(
-                        "[{log_prefix}] resuming timed-out session (attempt {}/{})",
-                        attempt + 1,
-                        max_attempts
-                    );
+                    info!(target: "rlph::stream", "[{log_prefix}] resuming timed-out session (attempt {}/{max_attempts})", attempt + 1);
                     let (cmd, a) = self.build_resume_command();
                     (cmd, a, None)
                 };
@@ -1937,17 +1912,60 @@ mod tests {
         }
     }
 
+    // --- Shared tracing capture helper ---
+
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+
+    /// A writer that appends to a shared buffer, for capturing tracing output in tests.
+    #[derive(Clone)]
+    struct BufWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for BufWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for BufWriter {
+        type Writer = BufWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Run a closure under a tracing subscriber that captures only `{message}\n`
+    /// (no timestamps, levels, or targets) to a buffer, then return the buffer contents.
+    fn with_tracing_capture<F: FnOnce()>(f: F) -> String {
+        let buf = BufWriter(Arc::new(Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_max_level(tracing::Level::TRACE)
+            .without_time()
+            .with_target(false)
+            .with_level(false)
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = buf.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
     // --- Codex stream formatter tests ---
 
     /// Helper: run `format_codex_line` for each input line and return collected output.
     fn run_codex_formatter(prefix: &str, lines: &[&str]) -> String {
-        let mut buf = Vec::new();
-        let mut context_pct: Option<f64> = None;
-        for line in lines {
-            let (_wrote, updated_pct) = format_codex_line(prefix, line, context_pct, &mut buf);
-            context_pct = updated_pct;
-        }
-        String::from_utf8(buf).unwrap()
+        with_tracing_capture(|| {
+            let mut context_pct: Option<f64> = None;
+            for line in lines {
+                let (_wrote, updated_pct) = format_codex_line(prefix, line, context_pct);
+                context_pct = updated_pct;
+            }
+        })
     }
 
     #[test]
@@ -2117,13 +2135,13 @@ mod tests {
 
     /// Helper: run `format_claude_line` for each input line and return collected output.
     fn run_claude_formatter(prefix: &str, lines: &[&str]) -> String {
-        let mut buf = Vec::new();
-        let mut context_pct: Option<f64> = None;
-        for line in lines {
-            let (_wrote, updated_pct) = format_claude_line(prefix, line, context_pct, &mut buf);
-            context_pct = updated_pct;
-        }
-        String::from_utf8(buf).unwrap()
+        with_tracing_capture(|| {
+            let mut context_pct: Option<f64> = None;
+            for line in lines {
+                let (_wrote, updated_pct) = format_claude_line(prefix, line, context_pct);
+                context_pct = updated_pct;
+            }
+        })
     }
 
     #[test]
