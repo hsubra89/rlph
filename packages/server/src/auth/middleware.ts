@@ -1,25 +1,18 @@
 import { HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import type { HttpBodyError } from "@effect/platform/HttpBody"
-import { Effect } from "effect"
+import { Context, Data, Effect, Either } from "effect"
 import * as jose from "jose"
 
-export interface AuthClaims {
-  sub: string
-  ghuser: string
-}
+export class AuthClaims extends Context.Tag("AuthClaims")<AuthClaims, {
+  readonly sub: string
+  readonly ghuser: string
+}>() {}
 
-export const makeAuthMiddleware = (jwtSecret: Uint8Array) => {
-  const verify = (
-    handler: Effect.Effect<
-      HttpServerResponse.HttpServerResponse,
-      HttpBodyError,
-      HttpServerRequest.HttpServerRequest
-    >,
-  ): Effect.Effect<
-    HttpServerResponse.HttpServerResponse,
-    HttpBodyError,
-    HttpServerRequest.HttpServerRequest
-  > =>
+export class JwtVerifyError extends Data.TaggedError("JwtVerifyError")<{
+  readonly reason: "invalid_token" | "invalid_claims"
+}> {}
+
+export const makeAuthMiddleware = (jwtSecret: Uint8Array) =>
+  <E, R>(handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R | AuthClaims>) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest
       const authHeader = request.headers["authorization"]
@@ -33,22 +26,21 @@ export const makeAuthMiddleware = (jwtSecret: Uint8Array) => {
 
       const token = authHeader.slice(7)
 
-      const result = yield* Effect.tryPromise({
-        try: () => jose.jwtVerify(token, jwtSecret),
-        catch: () => new Error("Invalid or expired token"),
-      }).pipe(
-        Effect.mapError(() => undefined),
-        Effect.option,
+      const verifyResult = yield* Effect.either(
+        Effect.tryPromise({
+          try: () => jose.jwtVerify(token, jwtSecret),
+          catch: () => new JwtVerifyError({ reason: "invalid_token" }),
+        }),
       )
 
-      if (result._tag === "None") {
+      if (Either.isLeft(verifyResult)) {
         return yield* HttpServerResponse.json(
           { error: "Invalid or expired token" },
           { status: 401 },
         )
       }
 
-      const payload = result.value.payload as { sub?: string; ghuser?: string }
+      const payload = verifyResult.right.payload as { sub?: string; ghuser?: string }
       if (!payload.sub || !payload.ghuser) {
         return yield* HttpServerResponse.json(
           { error: "Invalid token claims" },
@@ -56,16 +48,7 @@ export const makeAuthMiddleware = (jwtSecret: Uint8Array) => {
         )
       }
 
-      // Store claims for the handler to use
-      ;(request as any)._authClaims = { sub: payload.sub, ghuser: payload.ghuser }
-
-      return yield* handler
+      return yield* handler.pipe(
+        Effect.provideService(AuthClaims, { sub: payload.sub, ghuser: payload.ghuser }),
+      )
     })
-
-  return verify
-}
-
-export const getAuthClaims = Effect.gen(function* () {
-  const request = yield* HttpServerRequest.HttpServerRequest
-  return (request as any)._authClaims as AuthClaims
-})

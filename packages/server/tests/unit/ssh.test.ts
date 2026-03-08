@@ -5,7 +5,7 @@ import { execSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { FingerprintError, SshVerifyError, sshFingerprint, verifySshSignature } from "./ssh.js"
+import { FingerprintError, SshVerifyError, sshFingerprint, verifySshSignature } from "../../src/auth/ssh.js"
 
 const TEST_PUBKEY =
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl test@example"
