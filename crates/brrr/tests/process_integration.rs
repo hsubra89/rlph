@@ -97,8 +97,8 @@ async fn test_spawn_failure() {
 #[tokio::test]
 #[serial]
 async fn test_env_vars() {
-    let mut config = make_config("bash", &["-c", "echo $RLPH_TEST_VAR"]);
-    config.env = vec![("RLPH_TEST_VAR".to_string(), "hello_world".to_string())];
+    let mut config = make_config("bash", &["-c", "echo $BRRR_TEST_VAR"]);
+    config.env = vec![("BRRR_TEST_VAR".to_string(), "hello_world".to_string())];
     let output = spawn_and_stream(config).await.unwrap();
     assert!(output.success());
     assert_eq!(output.stdout_lines, vec!["hello_world"]);

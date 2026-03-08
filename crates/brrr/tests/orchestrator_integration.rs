@@ -133,11 +133,11 @@ impl AgentRunner for MockRunner {
     async fn run(&self, phase: Phase, _prompt: &str, working_dir: &Path) -> Result<RunResult> {
         match phase {
             Phase::Choose => {
-                let ralph_dir = working_dir.join(".brrr");
-                std::fs::create_dir_all(&ralph_dir)
+                let brrr_dir = working_dir.join(".brrr");
+                std::fs::create_dir_all(&brrr_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
                 std::fs::write(
-                    ralph_dir.join("task.toml"),
+                    brrr_dir.join("task.toml"),
                     format!("id = \"{}\"", self.task_id),
                 )
                 .map_err(|e| Error::AgentRunner(e.to_string()))?;
@@ -262,11 +262,11 @@ impl AgentRunner for CountingRunner {
         match phase {
             Phase::Choose => {
                 self.counts.choose.fetch_add(1, Ordering::SeqCst);
-                let ralph_dir = working_dir.join(".brrr");
-                std::fs::create_dir_all(&ralph_dir)
+                let brrr_dir = working_dir.join(".brrr");
+                std::fs::create_dir_all(&brrr_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
                 std::fs::write(
-                    ralph_dir.join("task.toml"),
+                    brrr_dir.join("task.toml"),
                     format!("id = \"{}\"", self.task_id),
                 )
                 .map_err(|e| Error::AgentRunner(e.to_string()))?;
@@ -327,11 +327,11 @@ impl AgentRunner for FailAtPhaseRunner {
         }
         match phase {
             Phase::Choose => {
-                let ralph_dir = working_dir.join(".brrr");
-                std::fs::create_dir_all(&ralph_dir)
+                let brrr_dir = working_dir.join(".brrr");
+                std::fs::create_dir_all(&brrr_dir)
                     .map_err(|e| Error::AgentRunner(e.to_string()))?;
                 std::fs::write(
-                    ralph_dir.join("task.toml"),
+                    brrr_dir.join("task.toml"),
                     format!("id = \"{}\"", self.task_id),
                 )
                 .map_err(|e| Error::AgentRunner(e.to_string()))?;
