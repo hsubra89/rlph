@@ -30,29 +30,83 @@ struct VerifyResponse {
     error: Option<String>,
 }
 
-/// Discovers the user's SSH public key, preferring ed25519.
+/// Discovers the SSH key used for `github.com` by querying the resolved SSH config
+/// via `ssh -G github.com`. Falls back to `~/.ssh/id_ed25519` / `id_rsa` if that fails.
 fn discover_pubkey() -> Result<(PathBuf, String), Error> {
+    if let Some(result) = discover_pubkey_from_ssh_config()? {
+        return Ok(result);
+    }
+
+    // Fallback: default key names
     let ssh_dir = dirs_path()?.join(".ssh");
     let candidates = ["id_ed25519.pub", "id_rsa.pub"];
 
     for name in &candidates {
         let path = ssh_dir.join(name);
-        if path.exists() {
-            let content = fs::read_to_string(&path)
-                .map_err(|e| Error::Auth(format!("failed to read {}: {e}", path.display())))?;
-            let pubkey = content.trim().to_string();
-            if !pubkey.is_empty() {
-                // Derive private key path (strip .pub)
-                let private_key_path = path.with_extension("");
-                debug!(key = %path.display(), "discovered SSH public key");
-                return Ok((private_key_path, pubkey));
-            }
+        if let Some(result) = try_read_keypair(&path)? {
+            return Ok(result);
         }
     }
 
     Err(Error::Auth(
-        "no SSH public key found (~/.ssh/id_ed25519.pub or ~/.ssh/id_rsa.pub)".into(),
+        "no SSH key for github.com found (checked `ssh -G github.com` and ~/.ssh/id_{ed25519,rsa})"
+            .into(),
     ))
+}
+
+/// Parses `ssh -G github.com` output for `identityfile` lines and returns the
+/// first keypair where the `.pub` file exists on disk.
+fn discover_pubkey_from_ssh_config() -> Result<Option<(PathBuf, String)>, Error> {
+    let output = match Command::new("ssh").args(["-G", "github.com"]).output() {
+        Ok(o) if o.status.success() => o,
+        _ => {
+            debug!("`ssh -G github.com` failed, falling back to default key paths");
+            return Ok(None);
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let home = dirs_path()?;
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(raw_path) = line.strip_prefix("identityfile ") {
+            let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
+                home.join(rest)
+            } else {
+                PathBuf::from(raw_path)
+            };
+
+            let pub_path = expanded.with_extension(match expanded.extension() {
+                Some(_) => return Ok(None), // skip paths that already have a non-empty extension
+                None => "pub",
+            });
+
+            // The identityfile list includes defaults that may not exist — skip missing ones.
+            if let Some(result) = try_read_keypair(&pub_path)? {
+                return Ok(Some(result));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Reads a `.pub` file and returns `(private_key_path, pubkey_contents)` if the file
+/// exists and is non-empty.
+fn try_read_keypair(pub_path: &Path) -> Result<Option<(PathBuf, String)>, Error> {
+    if !pub_path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(pub_path)
+        .map_err(|e| Error::Auth(format!("failed to read {}: {e}", pub_path.display())))?;
+    let pubkey = content.trim().to_string();
+    if pubkey.is_empty() {
+        return Ok(None);
+    }
+    let private_key_path = pub_path.with_extension("");
+    debug!(key = %pub_path.display(), "discovered SSH public key");
+    Ok(Some((private_key_path, pubkey)))
 }
 
 /// Gets the GitHub username via `gh api user`.
@@ -328,5 +382,12 @@ mod tests {
     fn test_session_path() {
         let path = session_path().unwrap();
         assert!(path.to_string_lossy().contains("session.json"));
+    }
+
+    #[test]
+    fn test_discover_pubkey_uses_ssh_config() {
+        // Just verify it doesn't panic — actual key discovery depends on the host's SSH setup.
+        // On CI/machines without keys this returns an Err, which is fine.
+        let _result = discover_pubkey();
     }
 }
