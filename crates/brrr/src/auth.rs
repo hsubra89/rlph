@@ -67,29 +67,36 @@ fn discover_pubkey_from_ssh_config() -> Result<Option<(PathBuf, String)>, Error>
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let home = dirs_path()?;
+    let candidates = parse_identity_files(&stdout, &home);
 
-    for line in stdout.lines() {
-        let line = line.trim();
-        if let Some(raw_path) = line.strip_prefix("identityfile ") {
+    for pub_path in candidates {
+        if let Some(result) = try_read_keypair(&pub_path)? {
+            return Ok(Some(result));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Extracts identity file `.pub` paths from `ssh -G` output, expanding `~/` against `home`.
+/// Pure function — no I/O.
+fn parse_identity_files(ssh_config_output: &str, home: &Path) -> Vec<PathBuf> {
+    ssh_config_output
+        .lines()
+        .filter_map(|line| {
+            let raw_path = line.trim().strip_prefix("identityfile ")?;
             let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
                 home.join(rest)
             } else {
                 PathBuf::from(raw_path)
             };
-
-            let pub_path = expanded.with_extension(match expanded.extension() {
-                Some(_) => return Ok(None), // skip paths that already have a non-empty extension
-                None => "pub",
-            });
-
-            // The identityfile list includes defaults that may not exist — skip missing ones.
-            if let Some(result) = try_read_keypair(&pub_path)? {
-                return Ok(Some(result));
+            // Skip paths that already have an extension (e.g. `.pem` cert files)
+            if expanded.extension().is_some() {
+                return None;
             }
-        }
-    }
-
-    Ok(None)
+            Some(expanded.with_extension("pub"))
+        })
+        .collect()
 }
 
 /// Reads a `.pub` file and returns `(private_key_path, pubkey_contents)` if the file
@@ -385,9 +392,70 @@ mod tests {
     }
 
     #[test]
-    fn test_discover_pubkey_uses_ssh_config() {
-        // Just verify it doesn't panic — actual key discovery depends on the host's SSH setup.
-        // On CI/machines without keys this returns an Err, which is fine.
-        let _result = discover_pubkey();
+    fn test_parse_identity_files_typical_output() {
+        let output = "\
+user harish
+hostname github.com
+port 22
+identityfile ~/.ssh/id_rsa
+identityfile ~/.ssh/id_ecdsa
+identityfile ~/.ssh/id_ed25519
+";
+        let home = PathBuf::from("/home/alice");
+        let paths = parse_identity_files(output, &home);
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/home/alice/.ssh/id_rsa.pub"),
+                PathBuf::from("/home/alice/.ssh/id_ecdsa.pub"),
+                PathBuf::from("/home/alice/.ssh/id_ed25519.pub"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_identity_files_custom_key() {
+        let output = "\
+hostname github.com
+identityfile ~/.ssh/github_deploy
+";
+        let home = PathBuf::from("/Users/bob");
+        let paths = parse_identity_files(output, &home);
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/Users/bob/.ssh/github_deploy.pub")]
+        );
+    }
+
+    #[test]
+    fn test_parse_identity_files_absolute_path() {
+        let output = "identityfile /etc/ssh/custom_key\n";
+        let home = PathBuf::from("/home/x");
+        let paths = parse_identity_files(output, &home);
+        assert_eq!(paths, vec![PathBuf::from("/etc/ssh/custom_key.pub")]);
+    }
+
+    #[test]
+    fn test_parse_identity_files_skips_cert_files() {
+        let output = "\
+identityfile ~/.ssh/id_ed25519
+identityfile ~/.ssh/id_ed25519-cert.pem
+";
+        let home = PathBuf::from("/home/x");
+        let paths = parse_identity_files(output, &home);
+        assert_eq!(paths, vec![PathBuf::from("/home/x/.ssh/id_ed25519.pub")]);
+    }
+
+    #[test]
+    fn test_parse_identity_files_empty_output() {
+        let paths = parse_identity_files("", &PathBuf::from("/home/x"));
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_parse_identity_files_no_identity_lines() {
+        let output = "hostname github.com\nport 22\nuser git\n";
+        let paths = parse_identity_files(output, &PathBuf::from("/home/x"));
+        assert!(paths.is_empty());
     }
 }
