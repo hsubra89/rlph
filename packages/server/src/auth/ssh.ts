@@ -35,6 +35,15 @@ export function verifySshSignature(
     const allowedSignersFile = `${tmpDir}/allowed_signers`
 
     const keyParts = pubkey.trim().split(/\s+/)
+
+    // Reject control characters (newlines, tabs, etc.) in key parts to prevent
+    // injection of additional entries into the allowed_signers file.
+    // eslint-disable-next-line no-control-regex
+    const controlCharRe = /[\x00-\x1f\x7f]/
+    if (!keyParts[0] || !keyParts[1] || controlCharRe.test(keyParts[0]) || controlCharRe.test(keyParts[1])) {
+      return yield* Effect.fail(new SshVerifyError({ reason: "setup_failed" }))
+    }
+
     const allowedSignerLine = `verify@brrr ${keyParts[0]} ${keyParts[1]}`
 
     yield* fs.writeFileString(sigFile, signature).pipe(

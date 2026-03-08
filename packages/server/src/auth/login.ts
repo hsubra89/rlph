@@ -1,5 +1,5 @@
 import { FetchHttpClient, HttpClient, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Data, Effect, Either } from "effect"
+import { Data, Effect, Either, Schema } from "effect"
 import * as jose from "jose"
 import { sshFingerprint, verifySshSignature } from "./ssh.js"
 
@@ -7,25 +7,29 @@ export class JwtSignError extends Data.TaggedError("JwtSignError")<{
   readonly cause: unknown
 }> { }
 
-interface LoginBody {
-  username: string
-  fingerprint: string
-  timestamp: number
-  signature: string
-}
+const LoginBody = Schema.Struct({
+  username: Schema.String,
+  fingerprint: Schema.String,
+  timestamp: Schema.Number,
+  signature: Schema.String,
+})
 
 export const makeHandleLogin = (jwtSecret: Uint8Array) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
-    const { username, fingerprint, timestamp, signature } =
-      (yield* request.json) as LoginBody
+    const json = yield* request.json
+    const decoded = yield* Effect.either(
+      Schema.decodeUnknown(LoginBody)(json),
+    )
 
-    if (!username || !fingerprint || !timestamp || !signature) {
+    if (Either.isLeft(decoded)) {
       return yield* HttpServerResponse.json(
         { error: "username, fingerprint, timestamp, and signature required" },
         { status: 400 },
       )
     }
+
+    const { username, fingerprint, timestamp, signature } = decoded.right
 
     // Check timestamp freshness (60s window)
     const now = Math.floor(Date.now() / 1000)
@@ -80,7 +84,7 @@ export const makeHandleLogin = (jwtSecret: Uint8Array) =>
 
     if (Either.isLeft(verifyResult)) {
       return yield* HttpServerResponse.json(
-        { error: `signature verification failed: ${verifyResult.left.reason}` },
+        { error: "signature verification failed" },
         { status: 401 },
       )
     }
