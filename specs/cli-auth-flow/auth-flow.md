@@ -1,39 +1,41 @@
-# CLI Authentication via SSH Challenge-Response
+# CLI Authentication via SSH Signed Payload
 
 ## Overview
 
-The CLI authenticates against the server using the developer's existing SSH key — no sign-up, no OAuth, no browser interaction. The server issues a short-lived JWT after verifying the user holds the private key.
+The CLI authenticates against the server using the developer's existing SSH key — no sign-up, no OAuth, no browser interaction. The CLI signs a payload containing its identity and a timestamp; the server verifies the signature against the user's GitHub-published keys and returns a short-lived JWT.
 
 ## Flow
 
 ```
   CLI                          Server                      GitHub API
    │                             │                              │
-   │  1. POST /auth/challenge    │                              │
-   │     { pubkey, username }    │                              │
-   │ ──────────────────────────► │                              │
-   │                             │  2. GET /<user>.keys         │
-   │                             │ ────────────────────────────►│
-   │                             │                              │
-   │                             │  3. Verify pubkey belongs    │
-   │                             │     to this GitHub user      │
-   │                             │ ◄────────────────────────────│
-   │                             │                              │
-   │  4. { nonce }               │                              │
-   │ ◄────────────────────────── │                              │
-   │                             │                              │
-   │  5. Sign nonce with         │                              │
+   │  1. Build payload:          │                              │
+   │     { username,             │                              │
+   │       fingerprint,          │                              │
+   │       timestamp }           │                              │
+   │     Sign payload with       │                              │
    │     private key             │                              │
    │     (ssh-keygen -Y sign)    │                              │
    │                             │                              │
-   │  6. POST /auth/verify       │                              │
-   │     { pubkey, signature }   │                              │
+   │  2. POST /auth/login        │                              │
+   │     { username,             │                              │
+   │       fingerprint,          │                              │
+   │       timestamp,            │                              │
+   │       signature }           │                              │
    │ ──────────────────────────► │                              │
+   │                             │  3. GET /<user>.keys         │
+   │                             │ ────────────────────────────►│
    │                             │                              │
-   │                             │  7. Verify signature         │
-   │                             │     against pubkey           │
+   │                             │  4. Find key matching        │
+   │                             │     fingerprint              │
+   │                             │ ◄────────────────────────────│
    │                             │                              │
-   │  8. { jwt (1h TTL) }       │                              │
+   │                             │  5. Verify:                  │
+   │                             │     - timestamp within 60s   │
+   │                             │     - signature valid for    │
+   │                             │       matched public key     │
+   │                             │                              │
+   │  6. { jwt (1h TTL) }       │                              │
    │ ◄────────────────────────── │                              │
    │                             │                              │
    │  CLI stores JWT in          │                              │
@@ -68,7 +70,7 @@ The CLI authenticates against the server using the developer's existing SSH key 
    │  401 Unauthorized           │
    │ ◄────────────────────────── │
    │                             │
-   │  Re-run challenge-response  │
+   │  Re-run auth flow           │
    │  (automatic, no user input) │
    │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ► │
    │                             │
@@ -88,8 +90,10 @@ The CLI authenticates against the server using the developer's existing SSH key 
 ## Why This Works
 
 - **No sign-up** — uses the SSH key the developer already has
-- **No browser** — challenge-response is fully non-interactive
+- **No browser** — single request, fully non-interactive
+- **Single round trip** — CLI signs locally, server verifies in one request
 - **Verifiable identity** — GitHub's public API confirms the pubkey belongs to a real user
-- **Secure** — private key never leaves the machine; only a signature over a server-generated nonce is transmitted
+- **Secure** — private key never leaves the machine; only a signature over a self-describing payload is transmitted
+- **Replay-resistant** — timestamp freshness window (60s) prevents reuse of captured signatures
 - **Stateless sessions** — JWT requires no server-side storage
 - **Auto-refresh** — CLI re-authenticates transparently on 401
