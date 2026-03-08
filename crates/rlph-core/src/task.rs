@@ -4,22 +4,30 @@ use serde::Serialize;
 
 /// Task priority (1 = highest, 9 = lowest).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub struct Priority(pub u8);
+pub struct Priority(u8);
 
 impl Priority {
+    pub fn new(value: u8) -> Self {
+        Self(value)
+    }
+
+    pub fn get(self) -> u8 {
+        self.0
+    }
+
     /// Parse priority from a label string.
     /// Recognizes: p1-p9, priority-high, priority-medium, priority-low.
     pub fn from_label(label: &str) -> Option<Self> {
         let lower = label.to_lowercase();
         match lower.as_str() {
-            "priority-high" => Some(Priority(1)),
-            "priority-medium" => Some(Priority(5)),
-            "priority-low" => Some(Priority(9)),
+            "priority-high" => Some(Self(1)),
+            "priority-medium" => Some(Self(5)),
+            "priority-low" => Some(Self(9)),
             s if s.len() == 2 && s.starts_with('p') => s[1..]
                 .parse::<u8>()
                 .ok()
                 .filter(|&n| (1..=9).contains(&n))
-                .map(Priority),
+                .map(Self),
             _ => None,
         }
     }
@@ -41,23 +49,32 @@ mod tests {
 
     #[test]
     fn test_priority_from_numeric_labels() {
-        assert_eq!(Priority::from_label("p1"), Some(Priority(1)));
-        assert_eq!(Priority::from_label("p5"), Some(Priority(5)));
-        assert_eq!(Priority::from_label("p9"), Some(Priority(9)));
+        assert_eq!(Priority::from_label("p1"), Some(Priority::new(1)));
+        assert_eq!(Priority::from_label("p5"), Some(Priority::new(5)));
+        assert_eq!(Priority::from_label("p9"), Some(Priority::new(9)));
     }
 
     #[test]
     fn test_priority_from_named_labels() {
-        assert_eq!(Priority::from_label("priority-high"), Some(Priority(1)));
-        assert_eq!(Priority::from_label("priority-medium"), Some(Priority(5)));
-        assert_eq!(Priority::from_label("priority-low"), Some(Priority(9)));
+        assert_eq!(
+            Priority::from_label("priority-high"),
+            Some(Priority::new(1))
+        );
+        assert_eq!(
+            Priority::from_label("priority-medium"),
+            Some(Priority::new(5))
+        );
+        assert_eq!(Priority::from_label("priority-low"), Some(Priority::new(9)));
     }
 
     #[test]
     fn test_priority_case_insensitive() {
-        assert_eq!(Priority::from_label("P1"), Some(Priority(1)));
-        assert_eq!(Priority::from_label("Priority-High"), Some(Priority(1)));
-        assert_eq!(Priority::from_label("PRIORITY-LOW"), Some(Priority(9)));
+        assert_eq!(Priority::from_label("P1"), Some(Priority::new(1)));
+        assert_eq!(
+            Priority::from_label("Priority-High"),
+            Some(Priority::new(1))
+        );
+        assert_eq!(Priority::from_label("PRIORITY-LOW"), Some(Priority::new(9)));
     }
 
     #[test]
