@@ -230,3 +230,126 @@ fn init_unknown_source_rejected() {
         .code(1)
         .stderr(predicate::str::contains("unknown source: jira"));
 }
+
+// --- Verbosity / log-format flags ---
+
+#[test]
+fn default_verbosity_shows_info() {
+    let tmp = tempfile::tempdir().unwrap();
+    cmd()
+        .current_dir(&tmp)
+        .arg("init")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("INFO"));
+}
+
+#[test]
+fn single_v_enables_debug() {
+    let tmp = tempfile::tempdir().unwrap();
+    cmd()
+        .current_dir(&tmp)
+        .args(["-v", "init"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("DEBUG"));
+}
+
+#[test]
+fn double_v_enables_trace() {
+    let tmp = tempfile::tempdir().unwrap();
+    cmd()
+        .current_dir(&tmp)
+        .args(["-vv", "init"])
+        .assert()
+        .success()
+        // trace level enables trace and debug
+        .stderr(predicate::str::contains("TRACE").or(predicate::str::contains("DEBUG")));
+}
+
+#[test]
+fn rust_log_overrides_cli_verbosity() {
+    let tmp = tempfile::tempdir().unwrap();
+    cmd()
+        .current_dir(&tmp)
+        .env("RUST_LOG", "error")
+        .args(["-vv", "init"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("INFO").not());
+}
+
+#[test]
+fn json_format_produces_valid_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = cmd()
+        .current_dir(&tmp)
+        .args(["--log-format", "json", "init"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stderr.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        assert!(
+            serde_json::from_str::<serde_json::Value>(line).is_ok(),
+            "expected valid JSON line, got: {line}"
+        );
+    }
+}
+
+#[test]
+fn verbose_json_combination() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = cmd()
+        .current_dir(&tmp)
+        .args(["-v", "--log-format", "json", "init"])
+        .output()
+        .expect("failed to run");
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut found_debug = false;
+    for line in stderr.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = serde_json::from_str(line).expect("expected valid JSON line");
+        if v.get("level").and_then(|l| l.as_str()) == Some("DEBUG") {
+            found_debug = true;
+        }
+    }
+    assert!(found_debug, "expected at least one DEBUG-level JSON line");
+}
+
+#[test]
+fn text_format_explicit() {
+    let tmp = tempfile::tempdir().unwrap();
+    cmd()
+        .current_dir(&tmp)
+        .args(["--log-format", "text", "init"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("INFO"));
+}
+
+#[test]
+fn help_shows_verbose_flag() {
+    cmd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--verbose"));
+}
+
+#[test]
+fn help_shows_log_format_flag() {
+    cmd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--log-format"));
+}

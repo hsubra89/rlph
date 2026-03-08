@@ -191,52 +191,52 @@ pub trait ProgressReporter: Send + Sync {
     fn pr_url(&self, url: &str);
 }
 
-/// Default reporter that prints to stderr.
+/// Default reporter that logs progress via `tracing::info!`.
 pub struct StderrReporter;
 
 impl ProgressReporter for StderrReporter {
     fn fetching_tasks(&self) {
-        eprintln!("[rlph] Fetching eligible tasks...");
+        info!("Fetching eligible tasks...");
     }
 
     fn tasks_found(&self, count: usize) {
-        eprintln!("[rlph] Found {count} eligible task(s)");
+        info!(count, "Found eligible task(s)");
     }
 
     fn task_selected(&self, issue_number: IssueNumber, title: &str) {
-        eprintln!("[rlph] Selected #{issue_number}: {title}");
+        info!(%issue_number, title, "Selected task");
     }
 
     fn implement_started(&self) {
-        eprintln!("[rlph] Implementing...");
+        info!("Implementing...");
     }
 
     fn pr_created(&self, url: &str) {
-        eprintln!("[rlph] PR created: {url}");
+        info!(url, "PR created");
     }
 
     fn iteration_complete(&self, issue_number: IssueNumber, title: &str) {
-        eprintln!("[rlph] Done with #{issue_number}: {title}");
+        info!(%issue_number, title, "Done with task");
     }
 
     fn phases_started(&self, names: &[String]) {
-        eprintln!(
-            "[rlph] Running {} review agents: {}",
-            names.len(),
-            names.join(", ")
+        info!(
+            count = names.len(),
+            phases = names.join(", "),
+            "Running review agents"
         );
     }
 
     fn phase_complete(&self, name: &str) {
-        eprintln!("[rlph] Review phase complete: {name}");
+        info!(name, "Review phase complete");
     }
 
     fn review_summary(&self, body: &str) {
-        eprintln!("[rlph] Review summary:\n{body}");
+        info!(body, "Review summary");
     }
 
     fn pr_url(&self, url: &str) {
-        eprintln!("[rlph] PR: {url}");
+        info!(url, "PR");
     }
 }
 
@@ -671,15 +671,15 @@ impl<
                 .review_factory
                 .create_phase_runner(phase_config, self.config.agent_timeout_retries);
 
-            eprintln!(
-                "[rlph] review phase {}: {}",
-                phase_config.name,
-                format_runner_display(
+            info!(
+                phase = phase_config.name,
+                runner = format_runner_display(
                     phase_config.runner,
                     phase_config.agent_model.as_deref(),
                     phase_config.agent_effort.as_deref(),
                     phase_config.agent_variant.as_deref(),
-                )
+                ),
+                "review phase config"
             );
 
             let mut phase_vars = vars.clone();

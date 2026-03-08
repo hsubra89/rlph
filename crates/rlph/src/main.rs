@@ -6,7 +6,6 @@ use std::sync::Arc;
 use clap::Parser;
 use tokio::sync::watch;
 use tracing::{debug, info};
-use tracing_subscriber::EnvFilter;
 
 use rlph::cli::{Cli, CliCommand};
 use rlph::config::{Config, resolve_init_config};
@@ -45,9 +44,11 @@ fn parse_pr_ref_or_exit(s: &str) -> PrNumber {
 }
 
 fn print_pr_banner(pr: &PrContext) {
-    eprintln!(
-        "[rlph] PR #{}: {} \u{2192} {}",
-        pr.number, pr.head_branch, pr.base_branch
+    info!(
+        number = %pr.number,
+        head = pr.head_branch,
+        base = pr.base_branch,
+        "PR"
     );
 }
 
@@ -83,20 +84,10 @@ fn install_sigint_handler(first_message: &'static str) -> watch::Receiver<bool> 
     rx
 }
 
-fn init_logging() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
-        .with_target(true)
-        .without_time()
-        .init();
-}
-
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    init_logging();
+    rlph::logging::init_logging(cli.verbose, cli.log_format);
 
     debug!("rlph starting");
 

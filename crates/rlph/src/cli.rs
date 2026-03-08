@@ -1,6 +1,16 @@
 //! CLI argument parsing via `clap`.
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+
+/// Log output format.
+#[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LogFormat {
+    /// Human-readable ANSI-colored output
+    #[default]
+    Text,
+    /// Machine-readable JSON lines
+    Json,
+}
 
 /// rlph — autonomous AI development loop
 #[derive(Parser, Debug, Clone)]
@@ -8,6 +18,14 @@ use clap::{Args, Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: CliCommand,
+
+    /// Increase log verbosity (-v = debug, -vv = trace)
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    pub verbose: u8,
+
+    /// Log output format
+    #[arg(long, value_enum, default_value_t = LogFormat::Text, global = true)]
+    pub log_format: LogFormat,
 
     /// Task source to use (github, linear)
     #[arg(long, global = true)]
@@ -365,5 +383,49 @@ mod tests {
             }
             _ => panic!("expected Fix subcommand"),
         }
+    }
+
+    #[test]
+    fn test_default_verbosity_and_format() {
+        let cli = Cli::parse_from(["rlph", "build", "--once"]);
+        assert_eq!(cli.verbose, 0);
+        assert_eq!(cli.log_format, LogFormat::Text);
+    }
+
+    #[test]
+    fn test_single_verbose() {
+        let cli = Cli::parse_from(["rlph", "-v", "build", "--once"]);
+        assert_eq!(cli.verbose, 1);
+    }
+
+    #[test]
+    fn test_double_verbose() {
+        let cli = Cli::parse_from(["rlph", "-vv", "build", "--once"]);
+        assert_eq!(cli.verbose, 2);
+    }
+
+    #[test]
+    fn test_verbose_after_subcommand() {
+        let cli = Cli::parse_from(["rlph", "build", "--once", "-v"]);
+        assert_eq!(cli.verbose, 1);
+    }
+
+    #[test]
+    fn test_log_format_json() {
+        let cli = Cli::parse_from(["rlph", "--log-format", "json", "build", "--once"]);
+        assert_eq!(cli.log_format, LogFormat::Json);
+    }
+
+    #[test]
+    fn test_log_format_text_explicit() {
+        let cli = Cli::parse_from(["rlph", "--log-format", "text", "build", "--once"]);
+        assert_eq!(cli.log_format, LogFormat::Text);
+    }
+
+    #[test]
+    fn test_verbose_with_json_format() {
+        let cli = Cli::parse_from(["rlph", "-vv", "--log-format", "json", "build", "--once"]);
+        assert_eq!(cli.verbose, 2);
+        assert_eq!(cli.log_format, LogFormat::Json);
     }
 }
