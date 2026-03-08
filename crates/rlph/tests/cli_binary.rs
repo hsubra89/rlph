@@ -259,10 +259,14 @@ fn double_v_enables_trace() {
 fn rust_log_overrides_cli_verbosity() {
     let (mut cmd, _tmp) = cmd_in_tmp();
     cmd.env("RUST_LOG", "error")
-        .args(["-vv", "init"])
+        .args(["-vv", "build", "--once", "--source", "jira"])
         .assert()
-        .success()
-        .stderr(predicate::str::contains("INFO").not());
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("error: unknown source: jira"))
+        .stderr(predicate::str::contains("INFO").not())
+        .stderr(predicate::str::contains("DEBUG").not())
+        .stderr(predicate::str::contains("TRACE").not());
 }
 
 #[test]
