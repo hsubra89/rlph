@@ -8,7 +8,7 @@ use tokio::sync::watch;
 use tracing::{debug, info, trace, warn};
 
 use brrr::cli::{Cli, CliCommand};
-use brrr::config::{Config, resolve_init_config};
+use brrr::config::{Config, load_file_config_from_cli, resolve_init_config};
 use brrr::error::Error;
 use brrr::fix;
 use brrr::fix_comment::format_fix_items_for_display;
@@ -90,7 +90,12 @@ async fn run(cli: Cli) -> Result<i32, Error> {
 
     match cli.command {
         CliCommand::Auth { ref server } => {
-            let username = brrr::auth::authenticate(server)?;
+            let file_config = load_file_config_from_cli(&cli).unwrap_or_default();
+            let server_url = server
+                .clone()
+                .or(file_config.server_url)
+                .unwrap_or_else(|| "http://localhost:3000".to_string());
+            let username = brrr::auth::authenticate(&server_url)?;
             info!(username = %username, "authenticated");
             eprintln!("Authenticated as {username}");
         }

@@ -174,9 +174,9 @@ pub enum CliCommand {
 
     /// Authenticate with the brrr server via SSH challenge-response
     Auth {
-        /// Server URL
-        #[arg(long, default_value = "http://localhost:3000")]
-        server: String,
+        /// Server URL (overrides server_url in config.toml)
+        #[arg(long)]
+        server: Option<String>,
     },
 }
 
