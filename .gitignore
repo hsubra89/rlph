@@ -24,8 +24,6 @@ target
 # Added by cargo
 
 /target
-.ralph/
-.ralph-gh/
 .rlph/state
 .rlph/config.toml
 ideas.md
@@ -34,3 +32,4 @@ ideas.md
 node_modules/
 .pnpm-store/
 dist/
+ralph.sh
