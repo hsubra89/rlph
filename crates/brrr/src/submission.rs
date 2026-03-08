@@ -309,13 +309,9 @@ impl GitHubSubmission {
     /// Find an existing brrr review comment on a PR, returning its ID if found.
     fn find_review_comment(&self, pr_number: PrNumber) -> Result<Option<CommentId>> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments");
+        let jq_filter = format!(".[] | select(.body | contains(\"{REVIEW_MARKER}\")) | .id");
         let output = Command::new("gh")
-            .args([
-                "api",
-                &endpoint,
-                "--jq",
-                ".[] | select(.body | contains(\"<!-- brrr-review -->\")) | .id",
-            ])
+            .args(["api", &endpoint, "--jq", &jq_filter])
             .output()
             .map_err(|e| Error::Submission(format!("failed to run gh: {e}")))?;
 
