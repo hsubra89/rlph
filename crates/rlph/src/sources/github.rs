@@ -9,8 +9,9 @@ use tracing::{debug, warn};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::ids::IssueNumber;
+use crate::task::Priority;
 
-use super::{Priority, Task, TaskSource, retry_with_backoff};
+use super::{Task, TaskSource, retry_with_backoff};
 
 #[derive(Debug, Deserialize)]
 struct GhLabel {
@@ -274,8 +275,8 @@ mod tests {
         let client = MockGhClient::new(vec![Ok(json)]);
         let source = GitHubSource::with_client("rlph", Box::new(client));
         let tasks = source.fetch_eligible_tasks().unwrap();
-        assert_eq!(tasks[0].priority, Some(Priority(1)));
-        assert_eq!(tasks[1].priority, Some(Priority(9)));
+        assert_eq!(tasks[0].priority, Some(Priority::new(1)));
+        assert_eq!(tasks[1].priority, Some(Priority::new(9)));
         assert_eq!(tasks[2].priority, None);
     }
 
@@ -301,7 +302,7 @@ mod tests {
         assert_eq!(task.id, "7");
         assert_eq!(task.title, "Detail task");
         assert_eq!(task.body, "task body");
-        assert_eq!(task.priority, Some(Priority(3)));
+        assert_eq!(task.priority, Some(Priority::new(3)));
     }
 
     #[test]

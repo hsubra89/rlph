@@ -1,16 +1,28 @@
 # Architecture
 
+## Crate Structure
+
+| Crate | Purpose |
+|-------|---------|
+| `rlph-core` | Pure domain types and algorithms (no IO). IDs, task/priority types, dependency graphs, Tarjan's SCC. |
+| `rlph` | Binary crate. CLI, orchestrator, agent runners, process spawning, task sources, PR submission. |
+
+The `rlph` crate re-exports core modules (`ids`, `scc`, `deps`, `task`) so existing `crate::` paths continue to work.
+
 ## Key Paths
 
 | What | Where |
 |------|-------|
-| CLI entry + orchestrator setup | `src/main.rs` |
-| Core loop (choose → implement → review) | `src/orchestrator.rs` |
-| Agent process spawning | `src/runner.rs`, `src/process.rs` |
-| GitHub/Linear task sources | `src/sources/` |
-| PR submission | `src/submission.rs` |
-| Prompt templates | `src/default_prompts/` |
-| Config | `src/config.rs`, `.rlph/config.toml` |
+| Domain IDs (`IssueNumber`, `PrNumber`, …) | `rlph-core/src/ids.rs` |
+| Task & Priority types | `rlph-core/src/task.rs` |
+| Dependency graph & cycle detection | `rlph-core/src/deps.rs`, `rlph-core/src/scc.rs` |
+| CLI entry + orchestrator setup | `rlph/src/main.rs` |
+| Core loop (choose → implement → review) | `rlph/src/orchestrator.rs` |
+| Agent process spawning | `rlph/src/runner.rs`, `rlph/src/process.rs` |
+| GitHub/Linear task sources | `rlph/src/sources/` |
+| PR submission | `rlph/src/submission.rs` |
+| Prompt templates | `rlph/src/default_prompts/` |
+| Config | `rlph/src/config.rs`, `.rlph/config.toml` |
 
 ## Orchestrator Pipeline
 

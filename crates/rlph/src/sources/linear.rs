@@ -9,8 +9,9 @@ use tracing::{debug, info};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::ids::IssueNumber;
+use crate::task::Priority;
 
-use super::{Priority, Task, TaskSource, retry_with_backoff};
+use super::{Task, TaskSource, retry_with_backoff};
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 const LINEAR_CLI_CREDENTIALS: &str = ".config/linear/credentials.toml";
@@ -210,11 +211,11 @@ impl LinearSource {
     /// Linear: 0=None, 1=Urgent, 2=High, 3=Medium, 4=Low.
     fn map_priority(linear_priority: u8) -> Option<Priority> {
         match linear_priority {
-            1 => Some(Priority(1)), // Urgent
-            2 => Some(Priority(2)), // High
-            3 => Some(Priority(5)), // Medium
-            4 => Some(Priority(8)), // Low
-            _ => None,              // 0 = No priority
+            1 => Some(Priority::new(1)), // Urgent
+            2 => Some(Priority::new(2)), // High
+            3 => Some(Priority::new(5)), // Medium
+            4 => Some(Priority::new(8)), // Low
+            _ => None,                   // 0 = No priority
         }
     }
 
@@ -790,10 +791,10 @@ mod tests {
     #[test]
     fn test_priority_mapping() {
         assert_eq!(LinearSource::map_priority(0), None);
-        assert_eq!(LinearSource::map_priority(1), Some(Priority(1))); // Urgent
-        assert_eq!(LinearSource::map_priority(2), Some(Priority(2))); // High
-        assert_eq!(LinearSource::map_priority(3), Some(Priority(5))); // Medium
-        assert_eq!(LinearSource::map_priority(4), Some(Priority(8))); // Low
+        assert_eq!(LinearSource::map_priority(1), Some(Priority::new(1))); // Urgent
+        assert_eq!(LinearSource::map_priority(2), Some(Priority::new(2))); // High
+        assert_eq!(LinearSource::map_priority(3), Some(Priority::new(5))); // Medium
+        assert_eq!(LinearSource::map_priority(4), Some(Priority::new(8))); // Low
         assert_eq!(LinearSource::map_priority(5), None);
     }
 
@@ -807,8 +808,8 @@ mod tests {
         let client = MockLinearClient::new(vec![Ok(data)]);
         let source = LinearSource::with_client("rlph", "ENG", Box::new(client));
         let tasks = source.fetch_eligible_tasks().unwrap();
-        assert_eq!(tasks[0].priority, Some(Priority(1)));
-        assert_eq!(tasks[1].priority, Some(Priority(2)));
+        assert_eq!(tasks[0].priority, Some(Priority::new(1)));
+        assert_eq!(tasks[1].priority, Some(Priority::new(2)));
         assert_eq!(tasks[2].priority, None);
     }
 
@@ -848,7 +849,7 @@ mod tests {
         let task = source.get_task_details("7").unwrap();
         assert_eq!(task.id, "7");
         assert_eq!(task.title, "Detail task");
-        assert_eq!(task.priority, Some(Priority(5))); // Medium
+        assert_eq!(task.priority, Some(Priority::new(5))); // Medium
         assert_eq!(task.labels, vec!["rlph", "bug"]);
     }
 

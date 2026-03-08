@@ -18,10 +18,11 @@ use rlph::orchestrator::{
 use rlph::prompts::PromptEngine;
 use rlph::review_schema::FINDING_MARKER;
 use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult, RunnerKind};
-use rlph::sources::{Task, TaskSource};
+use rlph::sources::TaskSource;
 use rlph::submission::{
     InlineReviewComment, PullRequestReviewEvent, SubmissionBackend, SubmitResult,
 };
+use rlph::task::Task;
 use rlph::worktree::WorktreeManager;
 use tokio::sync::watch;
 
