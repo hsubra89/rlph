@@ -7,10 +7,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 /// Log output format.
 #[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LogFormat {
-    /// Human-readable ANSI-colored output
+    /// Human-readable ANSI-colored output.
     #[default]
     Text,
-    /// Machine-readable JSON lines
+    /// Machine-readable JSON lines.
     Json,
 }
 
@@ -31,11 +31,11 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: CliCommand,
 
-    /// Increase log verbosity (-v = debug, -vv = trace)
+    /// Increase log verbosity (-v = debug, -vv = trace).
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
 
-    /// Log output format
+    /// Log output format.
     #[arg(long, value_enum, default_value_t = LogFormat::Text, global = true)]
     pub log_format: LogFormat,
 
