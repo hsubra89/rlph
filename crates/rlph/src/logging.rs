@@ -21,24 +21,19 @@ pub fn init_logging(verbosity: u8, format: LogFormat) {
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
 
+    let builder = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(env_filter)
+        .with_target(true);
+
     match format {
         LogFormat::Text => {
             // Text omits timestamps for readability — the terminal context is enough.
-            tracing_subscriber::fmt()
-                .with_writer(std::io::stderr)
-                .with_env_filter(env_filter)
-                .with_target(true)
-                .without_time()
-                .init();
+            builder.without_time().init();
         }
         LogFormat::Json => {
             // JSON retains timestamps for machine consumers.
-            tracing_subscriber::fmt()
-                .json()
-                .with_writer(std::io::stderr)
-                .with_env_filter(env_filter)
-                .with_target(true)
-                .init();
+            builder.json().init();
         }
     }
 }
