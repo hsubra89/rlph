@@ -29,3 +29,8 @@ target
 .rlph/state
 .rlph/config.toml
 ideas.md
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+dist/

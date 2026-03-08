@@ -1,9 +1,16 @@
 # rlph
 
-Rust binary crate (edition 2024). Autonomous AI dev-loop CLI: fetches tasks, spins up worktrees, runs coding agents through implement/review phases, submits PRs.
+Mixed-language monorepo: Rust CLI (`crates/`) + TypeScript packages (`packages/`).
+
+## Layout
+
+- `crates/rlph/` — Rust binary crate (edition 2024). Autonomous AI dev-loop CLI.
+- `packages/` — TypeScript packages (pnpm workspace).
+- `justfile` — Unified task runner.
 
 ## Commands
 
+- **All checks:** `just check`
 - **Format:** `cargo fmt --all -- --check`
 - **Lint:** `cargo clippy --all-targets --all-features -- -D warnings`
 - **Test:** `cargo nextest run`
