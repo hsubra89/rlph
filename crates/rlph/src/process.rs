@@ -160,7 +160,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
             match reader.next_line().await {
                 Ok(Some(line)) => {
                     if stream_output {
-                        eprintln!("[{prefix_err}] {line}");
+                        info!(target: "rlph::stream", prefix = %prefix_err, "{line}");
                     }
                     lines.push(line);
                 }
@@ -181,7 +181,7 @@ pub async fn spawn_and_stream(config: ProcessConfig) -> Result<ProcessOutput> {
             tokio::time::sleep(HEARTBEAT_INTERVAL).await;
             if !quiet {
                 let elapsed = heartbeat_started.elapsed().as_secs();
-                eprintln!("[{heartbeat_prefix}] still running ({elapsed}s elapsed)");
+                info!(target: "rlph::heartbeat", prefix = %heartbeat_prefix, elapsed_secs = elapsed, "still running");
             }
         }
     });
@@ -431,8 +431,7 @@ async fn handle_interrupt_unix(
         sigint,
         sigterm,
     } = ctx;
-    warn!(prefix = %log_prefix, child_pid, signal_name, "received signal, forwarding to child");
-    eprintln!("[{log_prefix}] received {signal_name}; press Ctrl-C again to force exit");
+    warn!(prefix = %log_prefix, child_pid, signal_name, "received signal, forwarding to child; press Ctrl-C again to force exit");
     send_signal_unix(
         child_pid,
         signal,
@@ -459,7 +458,7 @@ async fn handle_interrupt_unix(
             }
         }
         _ = sigint.recv() => {
-            eprintln!("[{log_prefix}] force exit");
+            warn!(prefix = %log_prefix, "force exit");
             send_signal_unix(
                 child_pid,
                 libc::SIGKILL,
@@ -471,7 +470,7 @@ async fn handle_interrupt_unix(
             Err(Error::Interrupted)
         }
         _ = sigterm.recv() => {
-            eprintln!("[{log_prefix}] force exit");
+            warn!(prefix = %log_prefix, "force exit");
             send_signal_unix(
                 child_pid,
                 libc::SIGKILL,
