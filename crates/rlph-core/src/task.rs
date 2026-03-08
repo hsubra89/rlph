@@ -18,18 +18,28 @@ impl Priority {
     /// Parse priority from a label string.
     /// Recognizes: p1-p9, priority-high, priority-medium, priority-low.
     pub fn from_label(label: &str) -> Option<Self> {
-        let lower = label.to_lowercase();
-        match lower.as_str() {
-            "priority-high" => Some(Self(1)),
-            "priority-medium" => Some(Self(5)),
-            "priority-low" => Some(Self(9)),
-            s if s.len() == 2 && s.starts_with('p') => s[1..]
-                .parse::<u8>()
-                .ok()
-                .filter(|&n| (1..=9).contains(&n))
-                .map(Self),
-            _ => None,
+        if label.eq_ignore_ascii_case("priority-high") {
+            return Some(Self(1));
         }
+
+        if label.eq_ignore_ascii_case("priority-medium") {
+            return Some(Self(5));
+        }
+
+        if label.eq_ignore_ascii_case("priority-low") {
+            return Some(Self(9));
+        }
+
+        let [first, second] = label.as_bytes() else {
+            return None;
+        };
+
+        if first.eq_ignore_ascii_case(&b'p') && second.is_ascii_digit() {
+            let value = second - b'0';
+            return (1..=9).contains(&value).then_some(Self(value));
+        }
+
+        None
     }
 }
 
