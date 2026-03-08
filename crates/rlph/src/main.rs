@@ -45,6 +45,11 @@ fn log_pr_context(pr: &PrContext) {
     );
 }
 
+fn current_repo_root() -> Result<PathBuf, Error> {
+    std::env::current_dir()
+        .map_err(|e| Error::ConfigValidation(format!("cannot determine cwd: {e}")))
+}
+
 fn build_worktree_manager(
     config: &Config,
     repo_root: &Path,
@@ -99,7 +104,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
                 ));
             }
 
-            let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = current_repo_root()?;
             let source: AnySource = AnySource::GitHub(GitHubSource::new(&config));
 
             let submission = GitHubSubmission::new();
@@ -208,7 +213,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
 
             log_pr_context(&pr_context);
 
-            let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = current_repo_root()?;
             let prompt_engine = PromptEngine::new(None);
 
             // Set up SIGINT handler for graceful shutdown
@@ -248,7 +253,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
                 ));
             }
 
-            let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = current_repo_root()?;
 
             let source: AnySource = match config.source.as_str() {
                 "linear" => AnySource::Linear(LinearSource::new(&config)?),
