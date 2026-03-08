@@ -24,7 +24,6 @@ target
 # Added by cargo
 
 /target
-.rlph/state
 .rlph/config.toml
 ideas.md
 

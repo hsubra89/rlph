@@ -19,7 +19,6 @@ use rlph::prompts::PromptEngine;
 use rlph::review_schema::FINDING_MARKER;
 use rlph::runner::{AgentRunner, AnyRunner, CallbackRunner, Phase, RunResult, RunnerKind};
 use rlph::sources::{Task, TaskSource};
-use rlph::state::StateManager;
 use rlph::submission::{
     InlineReviewComment, PullRequestReviewEvent, SubmissionBackend, SubmitResult,
 };
@@ -783,8 +782,6 @@ async fn test_full_loop_dry_run() {
         wt_dir.path().to_path_buf(),
         "main".to_string(),
     );
-    let state_dir = repo_dir.path().join(".rlph-test-state");
-    let state_mgr = StateManager::new(&state_dir);
     let prompt_engine = PromptEngine::new(None);
 
     let orchestrator = Orchestrator::new(
@@ -792,7 +789,6 @@ async fn test_full_loop_dry_run() {
         runner,
         submission,
         worktree_mgr,
-        state_mgr,
         prompt_engine,
         make_config(true), // dry_run
         repo_dir.path().to_path_buf(),
@@ -805,13 +801,6 @@ async fn test_full_loop_dry_run() {
     let tracker = source_tracker.lock().unwrap();
     assert!(tracker.marked_in_progress.is_empty());
     drop(tracker);
-
-    // State should be completed
-    let state_mgr = StateManager::new(&state_dir);
-    let state = state_mgr.load();
-    assert!(state.current_task.is_none());
-    assert_eq!(state.history.len(), 1);
-    assert_eq!(state.history[0].id, "gh-42");
 
     // .rlph/task.toml should be cleaned up
     assert!(!repo_dir.path().join(".rlph").join("task.toml").exists());
@@ -833,8 +822,6 @@ async fn test_full_loop_with_push() {
         wt_dir.path().to_path_buf(),
         "main".to_string(),
     );
-    let state_dir = repo_dir.path().join(".rlph-test-state");
-    let state_mgr = StateManager::new(&state_dir);
     let prompt_engine = PromptEngine::new(None);
 
     let orchestrator = Orchestrator::new(
@@ -842,7 +829,6 @@ async fn test_full_loop_with_push() {
         runner,
         submission,
         worktree_mgr,
-        state_mgr,
         prompt_engine,
         make_config(false), // not dry_run
         repo_dir.path().to_path_buf(),
@@ -895,7 +881,6 @@ async fn test_no_eligible_tasks() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
@@ -928,7 +913,6 @@ async fn test_error_at_choose_phase() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
@@ -948,7 +932,6 @@ async fn test_error_at_implement_phase() {
         task_id: "gh-42".to_string(),
     };
 
-    let state_dir = repo_dir.path().join(".rlph-test-state");
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
@@ -961,7 +944,6 @@ async fn test_error_at_implement_phase() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
@@ -969,12 +951,6 @@ async fn test_error_at_implement_phase() {
 
     let err = orchestrator.run_once().await.unwrap_err();
     assert!(err.to_string().contains("mock failure at implement"));
-
-    // State should still show current task (not completed)
-    let state_mgr = StateManager::new(&state_dir);
-    let state = state_mgr.load();
-    assert!(state.current_task.is_some());
-    assert_eq!(state.current_task.unwrap().phase, "implement");
 }
 
 #[tokio::test]
@@ -982,7 +958,6 @@ async fn test_error_at_review_phase() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
-    let state_dir = repo_dir.path().join(".rlph-test-state");
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
@@ -995,7 +970,6 @@ async fn test_error_at_review_phase() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
@@ -1004,12 +978,6 @@ async fn test_error_at_review_phase() {
 
     let err = orchestrator.run_once().await.unwrap_err();
     assert!(err.to_string().contains("mock failure at review"));
-
-    // State should show review phase
-    let state_mgr = StateManager::new(&state_dir);
-    let state = state_mgr.load();
-    assert!(state.current_task.is_some());
-    assert_eq!(state.current_task.unwrap().phase, "review");
 }
 
 #[tokio::test]
@@ -1028,7 +996,6 @@ async fn test_error_at_submission() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         make_config(false), // need non-dry-run to trigger submission
         repo_dir.path().to_path_buf(),
@@ -1036,41 +1003,6 @@ async fn test_error_at_submission() {
 
     let err = orchestrator.run_once().await.unwrap_err();
     assert!(err.to_string().contains("mock submission failure"));
-}
-
-#[tokio::test]
-async fn test_state_transitions_through_phases() {
-    let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
-    let task = make_task(7, "Add feature");
-
-    let state_dir = repo_dir.path().join(".rlph-test-state");
-    let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
-    let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
-
-    let orchestrator = Orchestrator::new(
-        MockSource::new(vec![task], Arc::clone(&source_tracker)),
-        MockRunner::new("gh-7"),
-        MockSubmission::new(Arc::clone(&sub_tracker), None),
-        WorktreeManager::new(
-            repo_dir.path().to_path_buf(),
-            wt_dir.path().to_path_buf(),
-            "main".to_string(),
-        ),
-        StateManager::new(&state_dir),
-        PromptEngine::new(None),
-        make_config(true),
-        repo_dir.path().to_path_buf(),
-    )
-    .with_review_factory(ApprovedReviewFactory);
-
-    orchestrator.run_once().await.unwrap();
-
-    // After completion: current_task is None, history has the task
-    let state_mgr = StateManager::new(&state_dir);
-    let state = state_mgr.load();
-    assert!(state.current_task.is_none());
-    assert_eq!(state.history.len(), 1);
-    assert_eq!(state.history[0].id, "gh-7");
 }
 
 #[tokio::test]
@@ -1090,7 +1022,6 @@ async fn test_worktree_cleaned_up_after_success() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
@@ -1113,7 +1044,6 @@ async fn test_needs_fix_completes_successfully() {
     let (_bare, repo_dir, wt_dir) = setup_git_repo_with_worktree();
     let task = make_task(42, "Fix bug");
 
-    let state_dir = repo_dir.path().join(".rlph-test-state");
     let source_tracker = Arc::new(Mutex::new(SourceTracker::default()));
     let sub_tracker = Arc::new(Mutex::new(SubmissionTracker::default()));
 
@@ -1126,7 +1056,6 @@ async fn test_needs_fix_completes_successfully() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(true),
         repo_dir.path().to_path_buf(),
@@ -1154,7 +1083,6 @@ async fn test_existing_pr_skips_submission() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         make_config(false), // non-dry-run so submission would normally fire
         repo_dir.path().to_path_buf(),
@@ -1195,7 +1123,6 @@ async fn test_continuous_mode_polls_with_empty_results() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
@@ -1231,7 +1158,6 @@ async fn test_max_iterations_stops_at_limit() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
@@ -1269,7 +1195,6 @@ async fn test_continuous_shutdown_exits_between_iterations() {
             wt_dir.path().to_path_buf(),
             "main".to_string(),
         ),
-        StateManager::new(repo_dir.path().join(".rlph-test-state")),
         PromptEngine::new(None),
         config,
         repo_dir.path().to_path_buf(),
@@ -1302,7 +1227,6 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
     let worktree_info = worktree_mgr
         .create(IssueNumber::new(42), "review-only")
         .unwrap();
-    let state_dir = repo_dir.path().join(".rlph-test-state");
     let vars = make_review_vars(
         &task,
         repo_dir.path(),
@@ -1315,7 +1239,6 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
         MockRunner::new("gh-42"),
         submission,
         worktree_mgr,
-        StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(false),
         repo_dir.path().to_path_buf(),
@@ -1323,7 +1246,6 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
     .with_review_factory(ApprovedReviewFactory);
 
     let invocation = ReviewInvocation {
-        task_id_for_state: "gh-42".to_string(),
         mark_in_review_task_id: Some("42".to_string()),
         worktree_info: worktree_info.clone(),
         vars,
@@ -1350,10 +1272,6 @@ async fn test_review_only_success_posts_comment_and_marks_review() {
     assert!(submission_data.reviews.is_empty());
     drop(submission_data);
 
-    let state = StateManager::new(&state_dir).load();
-    assert!(state.current_task.is_none());
-    assert_eq!(state.history.len(), 1);
-    assert_eq!(state.history[0].id, "gh-42");
     assert!(!worktree_info.path.exists());
 }
 
@@ -1374,7 +1292,6 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
     let worktree_info = worktree_mgr
         .create(IssueNumber::new(88), "review-pr-only")
         .unwrap();
-    let state_dir = repo_dir.path().join(".rlph-test-state");
     let vars = make_review_vars(
         &task,
         repo_dir.path(),
@@ -1387,7 +1304,6 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
         MockRunner::new("gh-88"),
         submission,
         worktree_mgr,
-        StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(false),
         repo_dir.path().to_path_buf(),
@@ -1395,7 +1311,6 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
     .with_review_factory(ApprovedReviewFactory);
 
     let invocation = ReviewInvocation {
-        task_id_for_state: "pr-88".to_string(),
         mark_in_review_task_id: None,
         worktree_info,
         vars,
@@ -1409,11 +1324,6 @@ async fn test_review_only_without_linked_issue_skips_mark_in_review() {
     let source_data = source_tracker.lock().unwrap();
     assert!(source_data.marked_in_review.is_empty());
     drop(source_data);
-
-    let state = StateManager::new(&state_dir).load();
-    assert!(state.current_task.is_none());
-    assert_eq!(state.history.len(), 1);
-    assert_eq!(state.history[0].id, "pr-88");
 }
 
 #[tokio::test]
@@ -1439,14 +1349,11 @@ async fn test_review_only_needs_fix_completes_successfully() {
         &worktree_info.branch,
         &worktree_info.path,
     );
-    let state_dir = repo_dir.path().join(".rlph-test-state");
-
     let orchestrator = Orchestrator::new(
         source,
         MockRunner::new("gh-99"),
         submission,
         worktree_mgr,
-        StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(false),
         repo_dir.path().to_path_buf(),
@@ -1454,7 +1361,6 @@ async fn test_review_only_needs_fix_completes_successfully() {
     .with_review_factory(NeverApproveReviewFactory);
 
     let invocation = ReviewInvocation {
-        task_id_for_state: "pr-99".to_string(),
         mark_in_review_task_id: None,
         worktree_info: worktree_info.clone(),
         vars,
@@ -1513,14 +1419,11 @@ async fn test_review_only_fails_when_inline_review_submission_fails() {
         &worktree_info.branch,
         &worktree_info.path,
     );
-    let state_dir = repo_dir.path().join(".rlph-test-state");
-
     let orchestrator = Orchestrator::new(
         source,
         MockRunner::new("gh-100"),
         submission,
         worktree_mgr,
-        StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(false),
         repo_dir.path().to_path_buf(),
@@ -1528,7 +1431,6 @@ async fn test_review_only_fails_when_inline_review_submission_fails() {
     .with_review_factory(NeverApproveReviewFactory);
 
     let invocation = ReviewInvocation {
-        task_id_for_state: "pr-100".to_string(),
         mark_in_review_task_id: None,
         worktree_info,
         vars,
@@ -1573,7 +1475,6 @@ fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
     let worktree_info = worktree_mgr
         .create(IssueNumber::new(42), "review-reporter")
         .unwrap();
-    let state_dir = repo_dir.join(".rlph-test-state");
     let vars = make_review_vars(task, repo_dir, &worktree_info.branch, &worktree_info.path);
 
     let (reporter, events) = CapturingReporter::new();
@@ -1583,7 +1484,6 @@ fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
         MockRunner::new("gh-42"),
         submission,
         worktree_mgr,
-        StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(dry_run),
         repo_dir.to_path_buf(),
@@ -1592,7 +1492,6 @@ fn build_review_orchestrator_with_reporter<F: ReviewRunnerFactory>(
     .with_reporter(reporter);
 
     let invocation = ReviewInvocation {
-        task_id_for_state: "gh-42".to_string(),
         mark_in_review_task_id: Some("42".to_string()),
         worktree_info,
         vars,
@@ -1755,8 +1654,6 @@ fn build_iteration_orchestrator_with_reporter<F: ReviewRunnerFactory>(
         wt_dir.to_path_buf(),
         "main".to_string(),
     );
-    let state_dir = repo_dir.join(".rlph-test-state");
-
     let (reporter, events) = CapturingReporter::new();
 
     let orchestrator = Orchestrator::new(
@@ -1764,7 +1661,6 @@ fn build_iteration_orchestrator_with_reporter<F: ReviewRunnerFactory>(
         MockRunner::new("gh-42"),
         submission,
         worktree_mgr,
-        StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(dry_run),
         repo_dir.to_path_buf(),
@@ -2141,7 +2037,6 @@ fn build_correction_test_orchestrator<F: ReviewRunnerFactory>(
     let worktree_info = worktree_mgr
         .create(IssueNumber::new(42), "correction-test")
         .unwrap();
-    let state_dir = repo_dir.join(".rlph-test-state");
     let vars = make_review_vars(task, repo_dir, &worktree_info.branch, &worktree_info.path);
 
     let (reporter, events) = CapturingReporter::new();
@@ -2151,7 +2046,6 @@ fn build_correction_test_orchestrator<F: ReviewRunnerFactory>(
         MockRunner::new("gh-42"),
         submission,
         worktree_mgr,
-        StateManager::new(&state_dir),
         PromptEngine::new(None),
         make_config(true),
         repo_dir.to_path_buf(),
@@ -2161,7 +2055,6 @@ fn build_correction_test_orchestrator<F: ReviewRunnerFactory>(
     .with_correction_runner(correction_runner);
 
     let invocation = ReviewInvocation {
-        task_id_for_state: "gh-42".to_string(),
         mark_in_review_task_id: None,
         worktree_info,
         vars,

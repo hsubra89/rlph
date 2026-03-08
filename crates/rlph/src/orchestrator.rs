@@ -26,7 +26,6 @@ use crate::runner::{
     resume_with_correction,
 };
 use crate::sources::{Task, TaskSource};
-use crate::state::StateManager;
 use crate::submission::{
     InlineReviewComment, PullRequestReviewEvent, REVIEW_MARKER, SubmissionBackend,
 };
@@ -51,7 +50,6 @@ pub enum IterationOutcome {
 }
 
 pub struct ReviewInvocation {
-    pub task_id_for_state: String,
     pub mark_in_review_task_id: Option<String>,
     pub worktree_info: WorktreeInfo,
     pub vars: HashMap<String, String>,
@@ -254,7 +252,6 @@ pub struct Orchestrator<
     runner: R,
     submission: B,
     worktree_mgr: WorktreeManager,
-    state_mgr: StateManager,
     prompt_engine: PromptEngine,
     config: Config,
     repo_root: PathBuf,
@@ -270,7 +267,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
         runner: R,
         submission: B,
         worktree_mgr: WorktreeManager,
-        state_mgr: StateManager,
         prompt_engine: PromptEngine,
         config: Config,
         repo_root: PathBuf,
@@ -280,7 +276,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend> Orchestrator<S, R, B> 
             runner,
             submission,
             worktree_mgr,
-            state_mgr,
             prompt_engine,
             config,
             repo_root,
@@ -298,7 +293,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P, C> Orchestrator<
             runner: self.runner,
             submission: self.submission,
             worktree_mgr: self.worktree_mgr,
-            state_mgr: self.state_mgr,
             prompt_engine: self.prompt_engine,
             config: self.config,
             repo_root: self.repo_root,
@@ -314,7 +308,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P, C> Orchestrator<
             runner: self.runner,
             submission: self.submission,
             worktree_mgr: self.worktree_mgr,
-            state_mgr: self.state_mgr,
             prompt_engine: self.prompt_engine,
             config: self.config,
             repo_root: self.repo_root,
@@ -333,7 +326,6 @@ impl<S: TaskSource, R: AgentRunner, B: SubmissionBackend, F, P, C> Orchestrator<
             runner: self.runner,
             submission: self.submission,
             worktree_mgr: self.worktree_mgr,
-            state_mgr: self.state_mgr,
             prompt_engine: self.prompt_engine,
             config: self.config,
             repo_root: self.repo_root,
@@ -411,12 +403,6 @@ impl<
 
     /// Run only the review pipeline for an already-selected PR/worktree context.
     pub async fn run_review_for_existing_pr(&self, invocation: ReviewInvocation) -> Result<()> {
-        self.state_mgr.set_current_task(
-            &invocation.task_id_for_state,
-            "review",
-            &invocation.worktree_info.path.display().to_string(),
-        )?;
-
         if !self.config.dry_run
             && let Some(task_id) = invocation.mark_in_review_task_id.as_deref()
         {
@@ -435,11 +421,6 @@ impl<
 
         match result {
             Ok(()) => {
-                self.state_mgr.complete_current_task()?;
-                let _ = self
-                    .state_mgr
-                    .remove_worktree_mapping(&invocation.task_id_for_state);
-
                 info!("review-only run complete");
                 Ok(())
             }
@@ -535,13 +516,6 @@ impl<
             "worktree created"
         );
 
-        // Update state
-        self.state_mgr.set_current_task(
-            &task_id,
-            "implement",
-            &worktree_info.path.display().to_string(),
-        )?;
-
         // Run the implement → submit → review pipeline, cleaning up on success
         let result = self
             .run_implement_review(&task, issue_number, &worktree_info, existing_pr_number)
@@ -552,11 +526,6 @@ impl<
 
         match result {
             Ok(()) => {
-                // 12. Mark done — no explicit source.mark_done() call; GitHub auto-closes
-                //     the issue when the PR merges
-                self.state_mgr.complete_current_task()?;
-                let _ = self.state_mgr.remove_worktree_mapping(&task_id);
-
                 info!("iteration complete");
                 self.reporter.iteration_complete(issue_number, &task.title);
                 Ok(IterationOutcome::ProcessedTask)
@@ -652,8 +621,6 @@ impl<
         worktree_info: &WorktreeInfo,
         pr_number: Option<PrNumber>,
     ) -> Result<()> {
-        self.state_mgr.update_phase("review")?;
-
         // Report phase names
         let phase_names: Vec<String> = self
             .config
