@@ -163,7 +163,7 @@ fn ssh_sign(private_key_path: &Path, data: &str) -> Result<String, Error> {
         .spawn()
         .map_err(|e| Error::Auth(format!("failed to spawn ssh-keygen: {e}")))?;
 
-    if let Some(ref mut stdin) = child.stdin {
+    if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(data.as_bytes())
             .map_err(|e| Error::Auth(format!("failed to write to ssh-keygen stdin: {e}")))?;
