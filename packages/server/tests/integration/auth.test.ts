@@ -1,34 +1,22 @@
 import {
   HttpBody,
   HttpClient,
-  HttpRouter,
   HttpServer,
-  HttpServerResponse,
 } from "@effect/platform"
 import { NodeCommandExecutor, NodeFileSystem, NodeHttpServer } from "@effect/platform-node"
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
 import * as crypto from "node:crypto"
 import * as jose from "jose"
-import { handleLogin } from "../../src/auth/login.js"
 import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
-import { authMiddleware } from "../../src/auth/middleware.js"
 import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
-import { handleRevoke } from "../../src/auth/revoke.js"
 import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
-import { handleWhoami } from "../../src/auth/whoami.js"
 import { AppConfig, AppConfigTag } from "../../src/config.js"
+import { router } from "../../src/router.js"
 
 const JWT_SECRET = new TextEncoder().encode("test-secret-that-is-at-least-32-bytes-long")
 
 const TestConfigLayer = Layer.succeed(AppConfigTag, new AppConfig(0, JWT_SECRET))
-
-const router = HttpRouter.empty.pipe(
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.post("/auth/login", handleLogin),
-  HttpRouter.get("/whoami", authMiddleware(handleWhoami)),
-  HttpRouter.post("/auth/revoke", authMiddleware(handleRevoke)),
-)
 
 const TestLayer = Layer.mergeAll(
   NodeHttpServer.layerTest,
