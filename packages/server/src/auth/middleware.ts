@@ -44,16 +44,17 @@ export const authMiddleware =
         )
       }
 
-      const payload = verifyResult.right.payload as { sub?: string; ghuser?: string; jti?: string }
-      if (!payload.sub || !payload.ghuser || !payload.jti) {
+      const { payload } = verifyResult.right
+      if (typeof payload.sub !== "string" || typeof payload["ghuser"] !== "string" || typeof payload.jti !== "string") {
         return yield* HttpServerResponse.json(
           { error: "invalid token claims" },
           { status: 401 },
         )
       }
+      const claims = { sub: payload.sub, ghuser: payload["ghuser"], jti: payload.jti }
 
       const denylist = yield* TokenDenylist
-      const revoked = yield* denylist.isRevoked(payload.jti)
+      const revoked = yield* denylist.isRevoked(claims.jti)
       if (revoked) {
         return yield* HttpServerResponse.json(
           { error: "token has been revoked" },
@@ -62,6 +63,6 @@ export const authMiddleware =
       }
 
       return yield* handler.pipe(
-        Effect.provideService(AuthClaims, { sub: payload.sub, ghuser: payload.ghuser, jti: payload.jti }),
+        Effect.provideService(AuthClaims, claims),
       )
     })
