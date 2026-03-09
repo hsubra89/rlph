@@ -126,6 +126,7 @@ The CLI authenticates against the server using the developer's existing SSH key 
 - **Schema validation** — Request bodies are decoded with `Effect.Schema`, preventing type confusion from unchecked casts
 - **SSH key sanitization** — Control characters (newlines, etc.) in public key parts are rejected to prevent allowed_signers file injection
 - **Token revocation** — JWTs carry a `jti` claim; `/auth/revoke` adds it to an in-memory denylist checked on every authenticated request
+- **JWT secret enforcement** — `BRRR_JWT_SECRET` must be at least 32 bytes (256 bits); server refuses to start otherwise
 - **Generic error messages** — Signature verification failures return a generic error without exposing internal failure reasons
 
 ## Endpoints
