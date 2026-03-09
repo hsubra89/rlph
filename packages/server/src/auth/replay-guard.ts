@@ -21,9 +21,7 @@ export const ReplayGuardLive = Layer.scoped(
     yield* Effect.forkScoped(
       Effect.repeat(
         Clock.currentTimeMillis.pipe(
-          Effect.flatMap((now) =>
-            Ref.update(ref, (map) => pruneExpired(map, (expiry) => expiry <= now)),
-          ),
+          Effect.flatMap((now) => Ref.update(ref, (map) => pruneExpired(map, (expiry) => expiry <= now))),
         ),
         Schedule.fixed(Duration.millis(TTL_MS)),
       ),

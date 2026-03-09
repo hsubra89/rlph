@@ -2,12 +2,12 @@ import { Command, CommandExecutor, FileSystem } from "@effect/platform"
 import { Data, Effect, Either } from "effect"
 import * as crypto from "node:crypto"
 
-export class FingerprintError extends Data.TaggedError("FingerprintError")<{}> { }
+export class FingerprintError extends Data.TaggedError("FingerprintError")<{}> {}
 
 export class SshVerifyError extends Data.TaggedError("SshVerifyError")<{
   readonly reason: "spawn_failed" | "signature_invalid" | "setup_failed"
   readonly cause?: unknown
-}> { }
+}> {}
 
 // eslint-disable-next-line no-control-regex
 const controlCharRe = /[\x00-\x1f\x7f]/
@@ -36,9 +36,9 @@ export function verifySshSignature(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
 
-    const tmpDir = yield* fs.makeTempDirectoryScoped({ prefix: "brrr-verify-" }).pipe(
-      Effect.mapError((e) => new SshVerifyError({ reason: "setup_failed", cause: e })),
-    )
+    const tmpDir = yield* fs
+      .makeTempDirectoryScoped({ prefix: "brrr-verify-" })
+      .pipe(Effect.mapError((e) => new SshVerifyError({ reason: "setup_failed", cause: e })))
 
     const sigFile = `${tmpDir}/sig`
     const allowedSignersFile = `${tmpDir}/allowed_signers`
@@ -52,20 +52,25 @@ export function verifySshSignature(
 
     const allowedSignerLine = `verify@brrr ${keyParts[0]} ${keyParts[1]}`
 
-    yield* fs.writeFileString(sigFile, signature).pipe(
-      Effect.mapError((e) => new SshVerifyError({ reason: "setup_failed", cause: e })),
-    )
-    yield* fs.writeFileString(allowedSignersFile, allowedSignerLine + "\n").pipe(
-      Effect.mapError((e) => new SshVerifyError({ reason: "setup_failed", cause: e })),
-    )
+    yield* fs
+      .writeFileString(sigFile, signature)
+      .pipe(Effect.mapError((e) => new SshVerifyError({ reason: "setup_failed", cause: e })))
+    yield* fs
+      .writeFileString(allowedSignersFile, allowedSignerLine + "\n")
+      .pipe(Effect.mapError((e) => new SshVerifyError({ reason: "setup_failed", cause: e })))
 
     const cmd = Command.make(
       "ssh-keygen",
-      "-Y", "verify",
-      "-f", allowedSignersFile,
-      "-I", "verify@brrr",
-      "-n", "brrr",
-      "-s", sigFile,
+      "-Y",
+      "verify",
+      "-f",
+      allowedSignersFile,
+      "-I",
+      "verify@brrr",
+      "-n",
+      "brrr",
+      "-s",
+      sigFile,
     ).pipe(Command.feed(data))
 
     const code = yield* Command.exitCode(cmd).pipe(
@@ -75,7 +80,5 @@ export function verifySshSignature(
     if (code !== 0) {
       return yield* Effect.fail(new SshVerifyError({ reason: "signature_invalid" }))
     }
-
   }).pipe(Effect.scoped)
-
 }

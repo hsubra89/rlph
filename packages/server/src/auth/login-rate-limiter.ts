@@ -9,7 +9,10 @@ export interface LoginRateLimiterShape {
   readonly check: (ip: string) => Effect.Effect<boolean>
 }
 
-export class LoginRateLimiter extends Context.Tag("LoginRateLimiter")<LoginRateLimiter, LoginRateLimiterShape>() {}
+export class LoginRateLimiter extends Context.Tag("LoginRateLimiter")<
+  LoginRateLimiter,
+  LoginRateLimiterShape
+>() {}
 
 /** In-memory per-IP sliding window rate limiter. Swap for Redis-backed implementation to scale horizontally. */
 export const LoginRateLimiterLive = Layer.scoped(

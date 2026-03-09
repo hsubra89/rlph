@@ -10,7 +10,10 @@
     "test": "vitest run --dir tests/unit",
     "test:integration": "vitest run --dir tests/integration",
     "test:all": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "oxlint src/ tests/",
+    "fmt": "oxfmt --write src/ tests/",
+    "fmt:check": "oxfmt --check src/ tests/"
   },
   "dependencies": {
     "@effect/platform": "^0.94.5",

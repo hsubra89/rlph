@@ -70,9 +70,7 @@ describe("verifySshSignature", () => {
   })
 
   it.live("succeeds with valid signature", () =>
-    verifySshSignature(pubkey, validSignature, signedData).pipe(
-      Effect.provide(PlatformLive),
-    ),
+    verifySshSignature(pubkey, validSignature, signedData).pipe(Effect.provide(PlatformLive)),
   )
 
   it.live("fails with signature_invalid for wrong data", () =>

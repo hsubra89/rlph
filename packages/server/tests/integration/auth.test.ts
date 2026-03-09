@@ -1,8 +1,4 @@
-import {
-  HttpBody,
-  HttpClient,
-  HttpServer,
-} from "@effect/platform"
+import { HttpBody, HttpClient, HttpServer } from "@effect/platform"
 import { NodeCommandExecutor, NodeFileSystem, NodeHttpServer } from "@effect/platform-node"
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
@@ -182,9 +178,7 @@ describe("auth flow", () => {
     Effect.gen(function* () {
       yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
-      const token = yield* Effect.promise(() =>
-        mintJwt({ ghuser: "alice", sub: "SHA256:fp" }),
-      )
+      const token = yield* Effect.promise(() => mintJwt({ ghuser: "alice", sub: "SHA256:fp" }))
       const res = yield* client.get("/whoami", {
         headers: { authorization: `Bearer ${token}` },
       })
@@ -200,9 +194,7 @@ describe("auth flow", () => {
       const client = yield* HttpClient.HttpClient
 
       const jti = crypto.randomUUID()
-      const token = yield* Effect.promise(() =>
-        mintJwt({ ghuser: "bob", sub: "SHA256:fp2", jti }),
-      )
+      const token = yield* Effect.promise(() => mintJwt({ ghuser: "bob", sub: "SHA256:fp2", jti }))
       const auth = { authorization: `Bearer ${token}` }
 
       // Token works before revocation
@@ -232,12 +224,8 @@ describe("auth flow", () => {
 
       const jti1 = crypto.randomUUID()
       const jti2 = crypto.randomUUID()
-      const token1 = yield* Effect.promise(() =>
-        mintJwt({ ghuser: "carol", sub: "SHA256:fp3", jti: jti1 }),
-      )
-      const token2 = yield* Effect.promise(() =>
-        mintJwt({ ghuser: "dave", sub: "SHA256:fp4", jti: jti2 }),
-      )
+      const token1 = yield* Effect.promise(() => mintJwt({ ghuser: "carol", sub: "SHA256:fp3", jti: jti1 }))
+      const token2 = yield* Effect.promise(() => mintJwt({ ghuser: "dave", sub: "SHA256:fp4", jti: jti2 }))
 
       // Revoke token1 — send jti2 in body to confirm the body is ignored
       const revokeRes = yield* client.post("/auth/revoke", {

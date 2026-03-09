@@ -10,7 +10,7 @@ import { sshFingerprint, verifySshSignature } from "./ssh.js"
 
 export class JwtSignError extends Data.TaggedError("JwtSignError")<{
   readonly cause: unknown
-}> { }
+}> {}
 
 const LoginBody = Schema.Struct({
   username: Schema.String.pipe(Schema.maxLength(39)),
@@ -28,16 +28,11 @@ export const handleLogin = Effect.gen(function* () {
   const ip = Option.getOrElse(request.remoteAddress, () => "unknown")
   const allowed = yield* rateLimiter.check(ip)
   if (!allowed) {
-    return yield* HttpServerResponse.json(
-      { error: "too many requests" },
-      { status: 429 },
-    )
+    return yield* HttpServerResponse.json({ error: "too many requests" }, { status: 429 })
   }
 
   const json = yield* request.json
-  const decoded = yield* Effect.either(
-    Schema.decodeUnknown(LoginBody)(json),
-  )
+  const decoded = yield* Effect.either(Schema.decodeUnknown(LoginBody)(json))
 
   if (Either.isLeft(decoded)) {
     return yield* HttpServerResponse.json(
@@ -52,20 +47,14 @@ export const handleLogin = Effect.gen(function* () {
   const now = unixNowSecs()
 
   if (Math.abs(now - timestamp) > TIMESTAMP_FRESHNESS_SECS) {
-    return yield* HttpServerResponse.json(
-      { error: "timestamp too stale" },
-      { status: 401 },
-    )
+    return yield* HttpServerResponse.json({ error: "timestamp too stale" }, { status: 401 })
   }
 
   // Reject replayed (username, timestamp) pairs within the freshness window
   const replayGuard = yield* ReplayGuard
   const isReplay = yield* replayGuard.checkAndMark(username, timestamp)
   if (isReplay) {
-    return yield* HttpServerResponse.json(
-      { error: "duplicate request" },
-      { status: 401 },
-    )
+    return yield* HttpServerResponse.json({ error: "duplicate request" }, { status: 401 })
   }
 
   // Fetch GitHub public keys for the user
@@ -74,17 +63,11 @@ export const handleLogin = Effect.gen(function* () {
   )
 
   if (Either.isLeft(ghKeysResponse)) {
-    return yield* HttpServerResponse.json(
-      { error: "github api unavailable" },
-      { status: 502 },
-    )
+    return yield* HttpServerResponse.json({ error: "github api unavailable" }, { status: 502 })
   }
 
   if (ghKeysResponse.right.status !== 200) {
-    return yield* HttpServerResponse.json(
-      { error: `GitHub user '${username}' not found` },
-      { status: 403 },
-    )
+    return yield* HttpServerResponse.json({ error: `GitHub user '${username}' not found` }, { status: 403 })
   }
 
   const ghKeysText = yield* ghKeysResponse.right.text
@@ -110,15 +93,10 @@ export const handleLogin = Effect.gen(function* () {
   // Reconstruct payload and verify signature
   const payload = `${username}\n${fingerprint}\n${timestamp}`
 
-  const verifyResult = yield* Effect.either(
-    verifySshSignature(matchingKey, signature, payload),
-  )
+  const verifyResult = yield* Effect.either(verifySshSignature(matchingKey, signature, payload))
 
   if (Either.isLeft(verifyResult)) {
-    return yield* HttpServerResponse.json(
-      { error: "signature verification failed" },
-      { status: 401 },
-    )
+    return yield* HttpServerResponse.json({ error: "signature verification failed" }, { status: 401 })
   }
 
   // Issue JWT with unique JTI for revocation support

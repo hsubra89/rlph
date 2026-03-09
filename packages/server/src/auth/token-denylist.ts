@@ -48,10 +48,8 @@ export const TokenDenylistLive = Layer.scoped(
        * The entry expires automatically after JWT_LIFETIME_DURATION, so no
        * revoked token can outlive its own validity window.
        */
-      revoke: (jti: string) =>
-        Ref.update(store, (map) => new Map(map).set(jti, Date.now() + ttlMs)),
-      isRevoked: (jti: string) =>
-        Ref.get(store).pipe(Effect.map((map) => map.has(jti))),
+      revoke: (jti: string) => Ref.update(store, (map) => new Map(map).set(jti, Date.now() + ttlMs)),
+      isRevoked: (jti: string) => Ref.get(store).pipe(Effect.map((map) => map.has(jti))),
     }
   }),
 )
