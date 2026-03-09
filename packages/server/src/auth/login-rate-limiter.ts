@@ -1,4 +1,5 @@
-import { Chunk, Clock, Context, Effect, HashMap, Layer, Ref } from "effect"
+import { Chunk, Clock, Context, Duration, Effect, HashMap, Layer, Ref, Schedule } from "effect"
+import { pruneExpired } from "./map-utils.js"
 
 const WINDOW_MS = 10_000
 const MAX_REQUESTS = 5
@@ -16,6 +17,22 @@ export const LoginRateLimiterLive = Layer.effect(
   Effect.gen(function* () {
     const ref = yield* Ref.make(HashMap.empty<string, Chunk.Chunk<number>>())
 
+    // Periodic bulk eviction of all stale entries so the map doesn't grow unboundedly.
+    yield* Effect.forkDaemon(
+      Effect.repeat(
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) =>
+            Ref.update(ref, (map) =>
+              pruneExpired(map, (timestamps) =>
+                Chunk.isEmpty(Chunk.filter(timestamps, (t) => t > now - WINDOW_MS)),
+              ),
+            ),
+          ),
+        ),
+        Schedule.fixed(Duration.millis(WINDOW_MS)),
+      ),
+    )
+
     return {
       check: (ip: string) =>
         Effect.gen(function* () {
@@ -24,23 +41,18 @@ export const LoginRateLimiterLive = Layer.effect(
           return yield* Ref.modify(ref, (map) => {
             const cutoff = now - WINDOW_MS
 
-            // Prune expired entries
-            let pruned = map
-            for (const [key, timestamps] of map) {
-              const filtered = Chunk.filter(timestamps, (t) => t > cutoff)
-              if (Chunk.isEmpty(filtered)) pruned = HashMap.remove(pruned, key)
-              else pruned = HashMap.set(pruned, key, filtered)
-            }
-
-            const timestamps = HashMap.get(pruned, ip).pipe(
-              (opt) => (opt._tag === "Some" ? opt.value : Chunk.empty<number>()),
-            )
+            // Lazy: only filter timestamps for this IP, not the entire map.
+            const existing = HashMap.get(map, ip)
+            const timestamps =
+              existing._tag === "Some"
+                ? Chunk.filter(existing.value, (t) => t > cutoff)
+                : Chunk.empty<number>()
 
             if (Chunk.size(timestamps) >= MAX_REQUESTS) {
-              return [false, pruned] as const
+              return [false, HashMap.set(map, ip, timestamps)] as const
             }
 
-            return [true, HashMap.set(pruned, ip, Chunk.append(timestamps, now))] as const
+            return [true, HashMap.set(map, ip, Chunk.append(timestamps, now))] as const
           })
         }),
     }

@@ -1,5 +1,6 @@
-import { Clock, Context, Effect, HashMap, Layer, Ref } from "effect"
+import { Clock, Context, Duration, Effect, HashMap, Layer, Ref, Schedule } from "effect"
 import { TIMESTAMP_FRESHNESS_SECS } from "./constants.js"
+import { pruneExpired } from "./map-utils.js"
 
 export interface ReplayGuardShape {
   /** Returns true if this (username, timestamp) pair has already been used. */
@@ -16,6 +17,18 @@ export const ReplayGuardLive = Layer.effect(
   Effect.gen(function* () {
     const ref = yield* Ref.make(HashMap.empty<string, number>())
 
+    // Periodic bulk eviction of all expired entries so the map doesn't grow unboundedly.
+    yield* Effect.forkDaemon(
+      Effect.repeat(
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) =>
+            Ref.update(ref, (map) => pruneExpired(map, (expiry) => expiry <= now)),
+          ),
+        ),
+        Schedule.fixed(Duration.millis(TTL_MS)),
+      ),
+    )
+
     return {
       checkAndMark: (username: string, timestamp: number) =>
         Effect.gen(function* () {
@@ -23,17 +36,18 @@ export const ReplayGuardLive = Layer.effect(
           const key = `${username}:${timestamp}`
 
           return yield* Ref.modify(ref, (map) => {
-            // Evict expired entries
-            let pruned = map
-            for (const [k, expiry] of map) {
-              if (expiry <= now) pruned = HashMap.remove(pruned, k)
+            // Lazy: only check/evict the single key being looked up, not the entire map.
+            let updated = map
+            const existingExpiry = HashMap.get(map, key)
+            if (existingExpiry._tag === "Some" && existingExpiry.value <= now) {
+              updated = HashMap.remove(map, key)
             }
 
-            if (HashMap.has(pruned, key)) {
-              return [true, pruned] as const
+            if (HashMap.has(updated, key)) {
+              return [true, updated] as const
             }
 
-            return [false, HashMap.set(pruned, key, now + TTL_MS)] as const
+            return [false, HashMap.set(updated, key, now + TTL_MS)] as const
           })
         }),
     }
