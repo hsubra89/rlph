@@ -109,7 +109,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
             let server_url = server
                 .clone()
                 .or(file_config.server_url)
-                .unwrap_or_else(|| "http://localhost:3000".to_string());
+                .unwrap_or_else(|| brrr::auth::DEFAULT_SERVER_URL.to_string());
             validate_server_url_scheme(&server_url)?;
             let (username, _token) = brrr::auth::authenticate(&server_url)?;
             info!(username = %username, "authenticated");
