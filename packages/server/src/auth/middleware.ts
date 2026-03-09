@@ -10,7 +10,7 @@ export class AuthClaims extends Context.Tag("AuthClaims")<AuthClaims, {
 }>() {}
 
 export class JwtVerifyError extends Data.TaggedError("JwtVerifyError")<{
-  readonly reason: "invalid_token" | "invalid_claims"
+  readonly reason: "invalid_token"
 }> {}
 
 export const authMiddleware =
