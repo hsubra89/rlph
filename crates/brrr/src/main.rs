@@ -82,6 +82,21 @@ fn install_sigint_handler(first_message: &'static str) -> watch::Receiver<bool> 
     rx
 }
 
+fn validate_server_url_scheme(url: &str) -> Result<(), Error> {
+    let (scheme, rest) = url.split_once("://").ok_or_else(|| {
+        Error::ConfigValidation(format!("invalid server URL (missing scheme): {url}"))
+    })?;
+    let host_and_port = rest.split('/').next().unwrap_or(rest);
+    let host = host_and_port.split(':').next().unwrap_or(host_and_port);
+    let is_loopback = matches!(host, "localhost" | "127.0.0.1" | "::1");
+    if !is_loopback && scheme == "http" {
+        return Err(Error::ConfigValidation(format!(
+            "insecure server URL: remote host '{host}' must use https, not http"
+        )));
+    }
+    Ok(())
+}
+
 async fn run(cli: Cli) -> Result<i32, Error> {
     trace!(verbose = cli.verbose, format = %cli.log_format, "logging initialized");
     debug!("brrr starting");
@@ -95,6 +110,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
                 .clone()
                 .or(file_config.server_url)
                 .unwrap_or_else(|| "http://localhost:3000".to_string());
+            validate_server_url_scheme(&server_url)?;
             let username = brrr::auth::authenticate(&server_url)?;
             info!(username = %username, "authenticated");
             eprintln!("Authenticated as {username}");
