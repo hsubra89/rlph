@@ -2,9 +2,7 @@ import { Command, CommandExecutor, FileSystem } from "@effect/platform"
 import { Data, Effect, Either } from "effect"
 import * as crypto from "node:crypto"
 
-export class FingerprintError extends Data.TaggedError("FingerprintError")<{
-  readonly reason: "missing_key_data"
-}> { }
+export class FingerprintError extends Data.TaggedError("FingerprintError")<{}> { }
 
 export class SshVerifyError extends Data.TaggedError("SshVerifyError")<{
   readonly reason: "spawn_failed" | "signature_invalid" | "setup_failed"
@@ -14,7 +12,7 @@ export class SshVerifyError extends Data.TaggedError("SshVerifyError")<{
 export function sshFingerprint(pubkey: string): Either.Either<string, FingerprintError> {
   const parts = pubkey.trim().split(/\s+/)
   const keyData = parts[1]
-  if (!keyData) return Either.left(new FingerprintError({ reason: "missing_key_data" }))
+  if (!keyData) return Either.left(new FingerprintError())
   const hash = crypto.createHash("sha256").update(Buffer.from(keyData, "base64")).digest("base64")
   return Either.right(`SHA256:${hash.replace(/=+$/, "")}`)
 }
