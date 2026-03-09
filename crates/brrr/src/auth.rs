@@ -196,7 +196,7 @@ fn ssh_fingerprint(pubkey: &str) -> Result<String, Error> {
 
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(&raw);
-    let b64 = BASE64_STANDARD.encode(&hash);
+    let b64 = BASE64_STANDARD.encode(hash);
     let trimmed = b64.trim_end_matches('=');
     Ok(format!("SHA256:{trimmed}"))
 }
@@ -389,7 +389,7 @@ mod tests {
         // SHA256 of [0,0,0] is a known hash
         use sha2::{Digest, Sha256};
         let expected_hash = Sha256::digest([0u8, 0, 0]);
-        let expected_b64 = BASE64_STANDARD.encode(&expected_hash);
+        let expected_b64 = BASE64_STANDARD.encode(expected_hash);
         let expected = format!("SHA256:{}", expected_b64.trim_end_matches('='));
         assert_eq!(fp, expected);
     }
