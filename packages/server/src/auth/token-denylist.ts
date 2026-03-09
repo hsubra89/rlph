@@ -15,7 +15,7 @@ export const TokenDenylistLive = Layer.effect(
   Effect.gen(function* () {
     const cache = yield* Cache.make({
       capacity: 50_000,
-      timeToLive: "1 hours",
+      timeToLive: "1 hour",
       lookup: (_: string) => Effect.void,
     })
 
