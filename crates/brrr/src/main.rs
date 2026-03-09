@@ -103,11 +103,10 @@ async fn run(cli: Cli) -> Result<i32, Error> {
 
     let mut exit_code = 0;
 
+    let file_config = load_file_config_from_cli(&cli).unwrap_or_default();
     match cli.command {
-        CliCommand::Auth { ref server } => {
-            let file_config = load_file_config_from_cli(&cli).unwrap_or_default();
+        CliCommand::Auth { server } => {
             let server_url = server
-                .clone()
                 .or(file_config.server_url)
                 .unwrap_or_else(|| brrr::auth::DEFAULT_SERVER_URL.to_string());
             validate_server_url_scheme(&server_url)?;
