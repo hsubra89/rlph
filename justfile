@@ -4,10 +4,12 @@ check: fmt-check lint test ts-build
 # Format check
 fmt-check:
     cargo fmt --all -- --check
+    pnpm --filter '@brrr/*' run fmt:check
 
 # Lint
 lint:
     cargo clippy --all-targets --all-features -- -D warnings
+    pnpm --filter '@brrr/*' run lint
 
 # Unit + lib tests
 test:
@@ -24,6 +26,7 @@ integration-all:
 # Format (fix)
 fmt:
     cargo fmt --all
+    pnpm --filter '@brrr/*' run fmt
 
 # TypeScript build
 ts-build:

@@ -10,9 +10,11 @@ Mixed-language monorepo: Rust CLI (`crates/`) + TypeScript packages (`packages/`
 
 ## Commands
 
-- **All checks:** `just check`
-- **Format:** `cargo fmt --all -- --check`
-- **Lint:** `cargo clippy --all-targets --all-features -- -D warnings`
+- **All checks:** `just check` (covers both Rust and TS: fmt-check + lint + test + ts-build)
+- **Format:** `just fmt` (Rust + TS) / `just fmt-check` (verify only)
+- **Lint (Rust):** `cargo clippy --all-targets --all-features -- -D warnings`
+- **Lint (TS):** `pnpm --filter '@brrr/*' run lint` (oxlint)
+- **Format (TS):** `pnpm --filter '@brrr/*' run fmt` (oxfmt)
 - **Test:** `cargo nextest run`
 - **Integration (CI gate):** `cargo nextest run --profile integration -E 'binary(cli_binary)'`
 - **Integration (full local sweep, optional):** `cargo nextest run --profile integration`
