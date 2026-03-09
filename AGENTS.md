@@ -31,6 +31,6 @@ Mixed-language monorepo: Rust CLI (`crates/`) + TypeScript packages (`packages/`
 Read when working in the relevant area:
 
 - [Architecture](docs/architecture.md) — crate structure, orchestrator pipeline, core traits, module responsibilities
-- [Testing](docs/testing.md) — mocking strategy, integration tests, execution policy
-- [Conventions](docs/conventions.md) — error handling, async patterns, config merge, dependencies
-- [Engineering Checklist](docs/engineering-checklist.md) — CI gates, design principles, async safety, testing rigor
+- [Testing](docs/testing.md) — mocking strategy, integration tests, execution policy, coverage expectations
+- [Conventions](docs/conventions.md) — design principles, error handling, async patterns, config merge, observability
+- [Specifications/](specs/) — specification files for systems built and being built
