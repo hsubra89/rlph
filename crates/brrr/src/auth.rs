@@ -15,6 +15,7 @@ use tracing::{debug, info};
 use base64::prelude::*;
 
 pub const DEFAULT_SERVER_URL: &str = "http://localhost:3000";
+const JWT_FALLBACK_LIFETIME_SECS: u64 = 3600;
 use sha2::{Digest, Sha256};
 
 use crate::error::Error;
@@ -287,7 +288,7 @@ pub fn authenticate(server_url: &str) -> Result<(String, String), Error> {
     // Decode JWT to get expiry (simple base64 decode of payload)
     let expires_at = jwt_expiry(&token).unwrap_or_else(|| {
         // Fallback: 1 hour from now
-        unix_now_secs() + 3600
+        unix_now_secs() + JWT_FALLBACK_LIFETIME_SECS
     });
 
     let session = Session { token, expires_at };
