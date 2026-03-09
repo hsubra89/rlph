@@ -2,8 +2,10 @@
 //!
 //! Flow: discover SSH key → compute fingerprint → get GitHub username → sign `{username}\n{fingerprint}\n{timestamp}` → POST /auth/login → store JWT.
 
-use std::fs;
+use std::fs::{self, DirBuilder};
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -294,7 +296,12 @@ pub fn authenticate(server_url: &str) -> Result<String, Error> {
     // Persist session to disk
     let session_file = session_path()?;
     if let Some(parent) = session_file.parent() {
-        fs::create_dir_all(parent)
+        let mut builder = DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        builder.mode(0o700);
+        builder
+            .create(parent)
             .map_err(|e| Error::Auth(format!("failed to create config dir: {e}")))?;
     }
 
@@ -311,8 +318,17 @@ pub fn authenticate(server_url: &str) -> Result<String, Error> {
     let session = Session { token, expires_at };
     let json = serde_json::to_string_pretty(&session)
         .map_err(|e| Error::Auth(format!("failed to serialize session: {e}")))?;
-    fs::write(&session_file, json)
-        .map_err(|e| Error::Auth(format!("failed to write session file: {e}")))?;
+    {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+        let mut file = opts
+            .open(&session_file)
+            .map_err(|e| Error::Auth(format!("failed to open session file: {e}")))?;
+        file.write_all(json.as_bytes())
+            .map_err(|e| Error::Auth(format!("failed to write session file: {e}")))?;
+    }
 
     info!(path = %session_file.display(), "session saved");
     Ok(username)
