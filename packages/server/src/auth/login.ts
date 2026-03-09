@@ -1,7 +1,8 @@
 import { FetchHttpClient, HttpClient, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Data, Effect, Either, Schema } from "effect"
+import { Data, Effect, Either, Option, Schema } from "effect"
 import * as crypto from "node:crypto"
 import * as jose from "jose"
+import { LoginRateLimiter } from "./login-rate-limiter.js"
 import { ReplayGuard } from "./replay-guard.js"
 import { sshFingerprint, verifySshSignature } from "./ssh.js"
 
@@ -19,6 +20,18 @@ const LoginBody = Schema.Struct({
 export const makeHandleLogin = (jwtSecret: Uint8Array) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
+
+    // Rate limit by client IP before any further processing
+    const rateLimiter = yield* LoginRateLimiter
+    const ip = Option.getOrElse(request.remoteAddress, () => "unknown")
+    const allowed = yield* rateLimiter.check(ip)
+    if (!allowed) {
+      return yield* HttpServerResponse.json(
+        { error: "too many requests" },
+        { status: 429 },
+      )
+    }
+
     const json = yield* request.json
     const decoded = yield* Effect.either(
       Schema.decodeUnknown(LoginBody)(json),

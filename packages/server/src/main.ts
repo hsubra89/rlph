@@ -3,6 +3,7 @@ import { NodeCommandExecutor, NodeFileSystem, NodeHttpServer, NodeRuntime } from
 import { Config, Effect, Layer, Redacted } from "effect"
 import { createServer } from "node:http"
 import { makeHandleLogin } from "./auth/login.js"
+import { LoginRateLimiterLive } from "./auth/login-rate-limiter.js"
 import { makeAuthMiddleware } from "./auth/middleware.js"
 import { ReplayGuardLive } from "./auth/replay-guard.js"
 import { handleRevoke } from "./auth/revoke.js"
@@ -31,6 +32,7 @@ const program = Effect.gen(function* () {
     Layer.provide(PlatformLive),
     Layer.provide(ReplayGuardLive),
     Layer.provide(TokenDenylistLive),
+    Layer.provide(LoginRateLimiterLive),
   )
 
   yield* Effect.logInfo(`Server starting on port ${port}`)

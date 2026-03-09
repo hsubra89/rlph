@@ -11,6 +11,7 @@ import { Effect, Layer } from "effect"
 import * as crypto from "node:crypto"
 import * as jose from "jose"
 import { makeHandleLogin } from "../../src/auth/login.js"
+import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
 import { makeAuthMiddleware } from "../../src/auth/middleware.js"
 import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
 import { handleRevoke } from "../../src/auth/revoke.js"
@@ -34,6 +35,7 @@ const TestLayer = Layer.mergeAll(
   NodeCommandExecutor.layer.pipe(Layer.provideMerge(NodeFileSystem.layer)),
   ReplayGuardLive,
   TokenDenylistLive,
+  LoginRateLimiterLive,
 )
 
 function mintJwt(opts: { ghuser: string; sub: string; jti?: string }) {
@@ -126,6 +128,39 @@ describe("auth flow", () => {
       expect(res2.status).toBe(401)
       const body = yield* res2.json
       expect(body).toEqual({ error: "duplicate request" })
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.scoped("POST /auth/login returns 429 after too many requests", () =>
+    Effect.gen(function* () {
+      yield* makeRouter().pipe(HttpServer.serveEffect())
+      const client = yield* HttpClient.HttpClient
+
+      // Send 5 requests (the limit) — all should get through (fail at GitHub, 403)
+      for (let i = 0; i < 5; i++) {
+        const res = yield* client.post("/auth/login", {
+          body: HttpBody.unsafeJson({
+            username: `ratelimituser${i}`,
+            fingerprint: "SHA256:abc",
+            timestamp: Math.floor(Date.now() / 1000),
+            signature: "fake",
+          }),
+        })
+        expect(res.status).not.toBe(429)
+      }
+
+      // 6th request should be rate-limited
+      const res = yield* client.post("/auth/login", {
+        body: HttpBody.unsafeJson({
+          username: "ratelimituser-extra",
+          fingerprint: "SHA256:abc",
+          timestamp: Math.floor(Date.now() / 1000),
+          signature: "fake",
+        }),
+      })
+      expect(res.status).toBe(429)
+      const body = yield* res.json
+      expect(body).toEqual({ error: "too many requests" })
     }).pipe(Effect.provide(TestLayer)),
   )
 
