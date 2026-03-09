@@ -111,7 +111,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
                 .or(file_config.server_url)
                 .unwrap_or_else(|| "http://localhost:3000".to_string());
             validate_server_url_scheme(&server_url)?;
-            let username = brrr::auth::authenticate(&server_url)?;
+            let (username, _token) = brrr::auth::authenticate(&server_url)?;
             info!(username = %username, "authenticated");
             eprintln!("Authenticated as {username}");
         }

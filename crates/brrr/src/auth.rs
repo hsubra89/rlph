@@ -233,7 +233,8 @@ pub fn load_token() -> Result<Option<String>, Error> {
 }
 
 /// Runs the single-round-trip auth flow and stores the resulting JWT.
-pub fn authenticate(server_url: &str) -> Result<String, Error> {
+/// Returns `(username, token)`.
+pub fn authenticate(server_url: &str) -> Result<(String, String), Error> {
     let (private_key_path, pubkey) = discover_pubkey()?;
     let username = github_username()?;
     let fingerprint = ssh_fingerprint(&pubkey)?;
@@ -303,7 +304,8 @@ pub fn authenticate(server_url: &str) -> Result<String, Error> {
     }
 
     info!(path = %session_file.display(), "session saved");
-    Ok(username)
+    let token = session.token;
+    Ok((username, token))
 }
 
 /// Loads existing token or re-authenticates.
@@ -312,8 +314,8 @@ pub fn ensure_authenticated(server_url: &str) -> Result<String, Error> {
         debug!("using cached token");
         return Ok(token);
     }
-    authenticate(server_url)?;
-    load_token()?.ok_or_else(|| Error::Auth("authentication succeeded but token not found".into()))
+    let (_username, token) = authenticate(server_url)?;
+    Ok(token)
 }
 
 /// Extracts `exp` from a JWT payload (no signature verification, just parsing).
