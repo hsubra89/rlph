@@ -13,10 +13,10 @@ export class JwtSignError extends Data.TaggedError("JwtSignError")<{
 }> { }
 
 const LoginBody = Schema.Struct({
-  username: Schema.String,
-  fingerprint: Schema.String,
-  timestamp: Schema.Number,
-  signature: Schema.String,
+  username: Schema.String.pipe(Schema.maxLength(39)),
+  fingerprint: Schema.String.pipe(Schema.maxLength(100)),
+  timestamp: Schema.Number.pipe(Schema.int()),
+  signature: Schema.String.pipe(Schema.maxLength(2048)),
 })
 
 export const handleLogin = Effect.gen(function* () {
