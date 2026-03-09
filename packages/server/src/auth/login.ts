@@ -73,7 +73,14 @@ export const handleLogin = Effect.gen(function* () {
     HttpClient.get(`https://github.com/${encodeURIComponent(username)}.keys`),
   )
 
-  if (Either.isLeft(ghKeysResponse) || ghKeysResponse.right.status !== 200) {
+  if (Either.isLeft(ghKeysResponse)) {
+    return yield* HttpServerResponse.json(
+      { error: "github api unavailable" },
+      { status: 502 },
+    )
+  }
+
+  if (ghKeysResponse.right.status !== 200) {
     return yield* HttpServerResponse.json(
       { error: `GitHub user '${username}' not found` },
       { status: 403 },
