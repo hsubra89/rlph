@@ -83,13 +83,11 @@ fn install_sigint_handler(first_message: &'static str) -> watch::Receiver<bool> 
 }
 
 fn validate_server_url_scheme(url: &str) -> Result<(), Error> {
-    let (scheme, rest) = url.split_once("://").ok_or_else(|| {
-        Error::ConfigValidation(format!("invalid server URL (missing scheme): {url}"))
-    })?;
-    let host_and_port = rest.split('/').next().unwrap_or(rest);
-    let host = host_and_port.split(':').next().unwrap_or(host_and_port);
+    let parsed = url::Url::parse(url)
+        .map_err(|_| Error::ConfigValidation(format!("invalid server URL: {url}")))?;
+    let host = parsed.host_str().unwrap_or("");
     let is_loopback = matches!(host, "localhost" | "127.0.0.1" | "::1");
-    if !is_loopback && scheme == "http" {
+    if !is_loopback && parsed.scheme() == "http" {
         return Err(Error::ConfigValidation(format!(
             "insecure server URL: remote host '{host}' must use https, not http"
         )));
