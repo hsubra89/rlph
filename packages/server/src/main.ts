@@ -1,4 +1,4 @@
-import { HttpRouter, HttpServer, HttpServerResponse } from "@effect/platform"
+import { FetchHttpClient, HttpRouter, HttpServer, HttpServerResponse } from "@effect/platform"
 import { NodeCommandExecutor, NodeFileSystem, NodeHttpServer, NodeRuntime } from "@effect/platform-node"
 import { Config, Effect, Layer, Redacted } from "effect"
 import { createServer } from "node:http"
@@ -33,6 +33,7 @@ const program = Effect.gen(function* () {
     Layer.provide(ReplayGuardLive),
     Layer.provide(TokenDenylistLive),
     Layer.provide(LoginRateLimiterLive),
+    Layer.provide(FetchHttpClient.layer),
   )
 
   yield* Effect.logInfo(`Server starting on port ${port}`)

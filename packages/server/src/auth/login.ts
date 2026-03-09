@@ -1,4 +1,4 @@
-import { FetchHttpClient, HttpClient, HttpServerRequest, HttpServerResponse } from "@effect/platform"
+import { HttpClient, HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Data, Effect, Either, Option, Schema } from "effect"
 import * as crypto from "node:crypto"
 import * as jose from "jose"
@@ -68,9 +68,7 @@ export const makeHandleLogin = (jwtSecret: Uint8Array) =>
 
     // Fetch GitHub public keys for the user
     const ghKeysResponse = yield* Effect.either(
-      HttpClient.get(`https://github.com/${encodeURIComponent(username)}.keys`).pipe(
-        Effect.provide(FetchHttpClient.layer),
-      ),
+      HttpClient.get(`https://github.com/${encodeURIComponent(username)}.keys`),
     )
 
     if (Either.isLeft(ghKeysResponse) || ghKeysResponse.right.status !== 200) {
