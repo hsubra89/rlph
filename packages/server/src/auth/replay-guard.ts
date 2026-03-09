@@ -1,4 +1,4 @@
-import { Cache, Context, Effect, Layer } from "effect"
+import { Clock, Context, Effect, HashMap, Layer, Ref } from "effect"
 
 export interface ReplayGuardShape {
   /** Returns true if this (username, timestamp) pair has already been used. */
@@ -7,23 +7,33 @@ export interface ReplayGuardShape {
 
 export class ReplayGuard extends Context.Tag("ReplayGuard")<ReplayGuard, ReplayGuardShape>() {}
 
-/** In-memory replay guard backed by Effect Cache with TTL. Swap for Redis-backed implementation to scale horizontally. */
+const TTL_MS = 60_000
+
+/** In-memory replay guard backed by a Ref<HashMap>. Swap for Redis-backed implementation to scale horizontally. */
 export const ReplayGuardLive = Layer.effect(
   ReplayGuard,
   Effect.gen(function* () {
-    const cache = yield* Cache.make({
-      capacity: 10_000,
-      timeToLive: "60 seconds",
-      lookup: (_: string) => Effect.void,
-    })
+    const ref = yield* Ref.make(HashMap.empty<string, number>())
 
     return {
       checkAndMark: (username: string, timestamp: number) =>
         Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis
           const key = `${username}:${timestamp}`
-          const seen = yield* cache.contains(key)
-          if (!seen) yield* cache.get(key)
-          return seen
+
+          return yield* Ref.modify(ref, (map) => {
+            // Evict expired entries
+            let pruned = map
+            for (const [k, expiry] of map) {
+              if (expiry <= now) pruned = HashMap.remove(pruned, k)
+            }
+
+            if (HashMap.has(pruned, key)) {
+              return [true, pruned] as const
+            }
+
+            return [false, HashMap.set(pruned, key, now + TTL_MS)] as const
+          })
         }),
     }
   }),
