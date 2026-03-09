@@ -133,7 +133,10 @@ fn github_username() -> Result<String, Error> {
         )));
     }
 
-    let username = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let username = String::from_utf8(output.stdout)
+        .map_err(|e| Error::Auth(format!("gh returned non-UTF-8 username: {e}")))?
+        .trim()
+        .to_string();
     if username.is_empty() {
         return Err(Error::Auth("gh returned empty username".into()));
     }
@@ -172,7 +175,8 @@ fn ssh_sign(private_key_path: &Path, data: &str) -> Result<String, Error> {
         return Err(Error::Auth(format!("ssh-keygen signing failed: {stderr}")));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    String::from_utf8(output.stdout)
+        .map_err(|e| Error::Auth(format!("ssh-keygen returned non-UTF-8 output: {e}")))
 }
 
 /// Computes the SHA256 fingerprint of a public key string.
