@@ -12,13 +12,13 @@ export class ReplayGuard extends Context.Tag("ReplayGuard")<ReplayGuard, ReplayG
 const TTL_MS = 2 * TIMESTAMP_FRESHNESS_SECS * 1000
 
 /** In-memory replay guard backed by a Ref<HashMap>. Swap for Redis-backed implementation to scale horizontally. */
-export const ReplayGuardLive = Layer.effect(
+export const ReplayGuardLive = Layer.scoped(
   ReplayGuard,
   Effect.gen(function* () {
     const ref = yield* Ref.make(HashMap.empty<string, number>())
 
     // Periodic bulk eviction of all expired entries so the map doesn't grow unboundedly.
-    yield* Effect.forkDaemon(
+    yield* Effect.forkScoped(
       Effect.repeat(
         Clock.currentTimeMillis.pipe(
           Effect.flatMap((now) =>
