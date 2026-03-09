@@ -1,25 +1,22 @@
 import { FetchHttpClient, HttpRouter, HttpServer, HttpServerResponse } from "@effect/platform"
 import { NodeCommandExecutor, NodeFileSystem, NodeHttpServer, NodeRuntime } from "@effect/platform-node"
-import { Config, Effect, Layer, Redacted } from "effect"
+import { Effect, Layer } from "effect"
 import { createServer } from "node:http"
-import { makeHandleLogin } from "./auth/login.js"
+import { handleLogin } from "./auth/login.js"
 import { LoginRateLimiterLive } from "./auth/login-rate-limiter.js"
-import { makeAuthMiddleware } from "./auth/middleware.js"
+import { authMiddleware } from "./auth/middleware.js"
 import { ReplayGuardLive } from "./auth/replay-guard.js"
 import { handleRevoke } from "./auth/revoke.js"
 import { TokenDenylistLive } from "./auth/token-denylist.js"
 import { handleWhoami } from "./auth/whoami.js"
+import { AppConfigTag, AppConfigLiveLayer } from "./config.js"
 
 const program = Effect.gen(function* () {
-  const port = yield* Config.integer("BRRR_PORT").pipe(Config.withDefault(3000))
-  const secret = yield* Config.redacted("BRRR_JWT_SECRET")
-  const jwtSecret = new TextEncoder().encode(Redacted.value(secret))
-
-  const authMiddleware = makeAuthMiddleware(jwtSecret)
+  const { port } = yield* AppConfigTag
 
   const router = HttpRouter.empty.pipe(
     HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-    HttpRouter.post("/auth/login", makeHandleLogin(jwtSecret)),
+    HttpRouter.post("/auth/login", handleLogin),
     HttpRouter.get("/whoami", authMiddleware(handleWhoami)),
     HttpRouter.post("/auth/revoke", authMiddleware(handleRevoke)),
   )
@@ -34,10 +31,11 @@ const program = Effect.gen(function* () {
     Layer.provide(TokenDenylistLive),
     Layer.provide(LoginRateLimiterLive),
     Layer.provide(FetchHttpClient.layer),
+    Layer.provide(AppConfigLiveLayer),
   )
 
   yield* Effect.logInfo(`Server starting on port ${port}`)
   yield* Layer.launch(HttpLive)
 })
 
-NodeRuntime.runMain(program)
+NodeRuntime.runMain(program.pipe(Effect.provide(AppConfigLiveLayer)))

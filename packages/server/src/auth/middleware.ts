@@ -1,6 +1,7 @@
 import { HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Context, Data, Effect, Either } from "effect"
 import * as jose from "jose"
+import { AppConfigTag } from "../config.js"
 import { TokenDenylist } from "./token-denylist.js"
 
 export class AuthClaims extends Context.Tag("AuthClaims")<AuthClaims, {
@@ -12,9 +13,10 @@ export class JwtVerifyError extends Data.TaggedError("JwtVerifyError")<{
   readonly reason: "invalid_token" | "invalid_claims"
 }> {}
 
-export const makeAuthMiddleware = (jwtSecret: Uint8Array) =>
+export const authMiddleware =
   <E, R>(handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R | AuthClaims>) =>
     Effect.gen(function* () {
+      const { jwtSecret } = yield* AppConfigTag
       const request = yield* HttpServerRequest.HttpServerRequest
       const authHeader = request.headers["authorization"]
 

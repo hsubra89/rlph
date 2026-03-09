@@ -2,6 +2,7 @@ import { HttpClient, HttpServerRequest, HttpServerResponse } from "@effect/platf
 import { Data, Effect, Either, Option, Schema } from "effect"
 import * as crypto from "node:crypto"
 import * as jose from "jose"
+import { AppConfigTag } from "../config.js"
 import { LoginRateLimiter } from "./login-rate-limiter.js"
 import { ReplayGuard } from "./replay-guard.js"
 import { sshFingerprint, verifySshSignature } from "./ssh.js"
@@ -17,8 +18,8 @@ const LoginBody = Schema.Struct({
   signature: Schema.String,
 })
 
-export const makeHandleLogin = (jwtSecret: Uint8Array) =>
-  Effect.gen(function* () {
+export const handleLogin = Effect.gen(function* () {
+    const { jwtSecret } = yield* AppConfigTag
     const request = yield* HttpServerRequest.HttpServerRequest
 
     // Rate limit by client IP before any further processing
