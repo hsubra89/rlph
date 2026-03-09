@@ -53,7 +53,7 @@ The CLI authenticates against the server using the developer's existing SSH key 
    │ ◄────────────────────────── │                              │
    │                             │                              │
    │  CLI stores JWT in          │                              │
-   │  ~/.config/rlph/session.json│                              │
+   │  ~/.config/brrr/session.json│                              │
    │                             │                              │
 ```
 
@@ -91,21 +91,32 @@ The CLI authenticates against the server using the developer's existing SSH key 
 
 ## Token Refresh
 
+Handled by `AuthClient`, which wraps every authenticated request with retry-once-on-401 logic:
+
 ```
-  CLI                          Server
-   │                             │
-   │  Any request                │
-   │  Authorization: Bearer <jwt>│
-   │ ──────────────────────────► │
-   │                             │
-   │  401 Unauthorized           │
-   │ ◄────────────────────────── │
-   │                             │
-   │  Re-run auth flow           │
-   │  (automatic, no user input) │
-   │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ► │
-   │                             │
+  CLI (AuthClient)               Server
+   │                               │
+   │  Any request                  │
+   │  Authorization: Bearer <jwt>  │
+   │ ────────────────────────────► │
+   │                               │
+   │  401 Unauthorized             │
+   │ ◄──────────────────────────── │
+   │                               │
+   │  Re-run SSH auth flow         │
+   │  (automatic, no user input)   │
+   │  ← obtains fresh JWT         │
+   │                               │
+   │  Retry original request       │
+   │  Authorization: Bearer <new>  │
+   │ ────────────────────────────► │
+   │                               │
+   │  200 OK (or error)            │
+   │ ◄──────────────────────────── │
+   │                               │
 ```
+
+If the retry also returns 401, the error propagates to the caller (no infinite loop).
 
 ## JWT Claims
 

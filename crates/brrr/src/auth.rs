@@ -18,6 +18,108 @@ use sha2::{Digest, Sha256};
 use crate::error::Error;
 
 pub const DEFAULT_SERVER_URL: &str = "http://localhost:3000";
+
+// ---------------------------------------------------------------------------
+// AuthClient: authenticated requests with automatic 401 retry
+// ---------------------------------------------------------------------------
+
+/// Injectable authentication strategy.
+pub trait Authenticator {
+    fn authenticate(&self, server_url: &str) -> Result<String, Error>;
+}
+
+/// Production authenticator — runs the SSH-signed login flow.
+pub struct SshAuthenticator;
+
+impl Authenticator for SshAuthenticator {
+    fn authenticate(&self, server_url: &str) -> Result<String, Error> {
+        let (_username, token) = authenticate(server_url)?;
+        Ok(token)
+    }
+}
+
+/// Signals from the request closure back to [`AuthClient`].
+pub enum RequestError {
+    /// Server returned 401 — `AuthClient` will re-authenticate and retry once.
+    Unauthorized,
+    /// Any non-auth failure.
+    Other(Error),
+}
+
+impl From<Error> for RequestError {
+    fn from(e: Error) -> Self {
+        RequestError::Other(e)
+    }
+}
+
+/// Authenticated HTTP client with transparent 401 retry.
+///
+/// Manages a cached token and re-authenticates at most once per `request` call
+/// when the server responds with 401 Unauthorized.
+pub struct AuthClient<A> {
+    server_url: String,
+    token: std::cell::RefCell<Option<String>>,
+    auth: A,
+}
+
+impl<A: Authenticator> AuthClient<A> {
+    /// Creates a new client. Call [`AuthClient::with_cached_token`] to preload
+    /// a token from disk.
+    pub fn new(server_url: String, auth: A) -> Self {
+        Self {
+            server_url,
+            token: std::cell::RefCell::new(None),
+            auth,
+        }
+    }
+
+    /// Creates a client with a pre-loaded token from disk (if available).
+    pub fn with_cached_token(server_url: String, auth: A) -> Result<Self, Error> {
+        let token = load_token()?;
+        Ok(Self {
+            server_url,
+            token: std::cell::RefCell::new(token),
+            auth,
+        })
+    }
+
+    /// Execute `f` with a valid auth token. On [`RequestError::Unauthorized`],
+    /// re-authenticates and retries `f` exactly once.
+    pub fn request<F, T>(&self, f: F) -> Result<T, Error>
+    where
+        F: Fn(&str) -> Result<T, RequestError>,
+    {
+        let token = self.ensure_token()?;
+        match f(&token) {
+            Ok(val) => Ok(val),
+            Err(RequestError::Unauthorized) => {
+                debug!("received 401, re-authenticating");
+                let token = self.refresh_token()?;
+                match f(&token) {
+                    Ok(val) => Ok(val),
+                    Err(RequestError::Unauthorized) => {
+                        Err(Error::Auth("unauthorized after re-authentication".into()))
+                    }
+                    Err(RequestError::Other(e)) => Err(e),
+                }
+            }
+            Err(RequestError::Other(e)) => Err(e),
+        }
+    }
+
+    fn ensure_token(&self) -> Result<String, Error> {
+        if let Some(ref token) = *self.token.borrow() {
+            return Ok(token.clone());
+        }
+        self.refresh_token()
+    }
+
+    fn refresh_token(&self) -> Result<String, Error> {
+        let token = self.auth.authenticate(&self.server_url)?;
+        *self.token.borrow_mut() = Some(token.clone());
+        Ok(token)
+    }
+}
 const JWT_FALLBACK_LIFETIME_SECS: u64 = 3600;
 
 fn unix_now_secs() -> u64 {
@@ -336,6 +438,99 @@ fn jwt_expiry(token: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Fake authenticator that returns predictable tokens.
+    struct FakeAuth {
+        call_count: AtomicU32,
+    }
+
+    impl FakeAuth {
+        fn new() -> Self {
+            Self {
+                call_count: AtomicU32::new(0),
+            }
+        }
+    }
+
+    impl Authenticator for FakeAuth {
+        fn authenticate(&self, _server_url: &str) -> Result<String, Error> {
+            let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+            Ok(format!("token-{n}"))
+        }
+    }
+
+    #[test]
+    fn auth_client_successful_request_passes_through() {
+        let client = AuthClient::new("http://test".into(), FakeAuth::new());
+
+        let result = client.request(|token| Ok(format!("got-{token}")));
+
+        assert_eq!(result.unwrap(), "got-token-0");
+    }
+
+    #[test]
+    fn auth_client_retries_on_401_with_fresh_token() {
+        let client = AuthClient::new("http://test".into(), FakeAuth::new());
+        let call_count = AtomicU32::new(0);
+
+        let result = client.request(|token| {
+            let n = call_count.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                // First call: simulate 401
+                Err(RequestError::Unauthorized)
+            } else {
+                // Retry: should have a fresh token
+                Ok(format!("got-{token}"))
+            }
+        });
+
+        assert_eq!(result.unwrap(), "got-token-1");
+        assert_eq!(call_count.load(Ordering::SeqCst), 2); // closure called twice
+    }
+
+    #[test]
+    fn auth_client_uses_cached_token_without_authenticating() {
+        let auth = FakeAuth::new();
+        let client = AuthClient {
+            server_url: "http://test".into(),
+            token: std::cell::RefCell::new(Some("cached-token".into())),
+            auth,
+        };
+
+        let result = client.request(|token| Ok(token.to_string()));
+
+        assert_eq!(result.unwrap(), "cached-token");
+        assert_eq!(client.auth.call_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn auth_client_returns_error_on_double_401() {
+        let client = AuthClient::new("http://test".into(), FakeAuth::new());
+
+        let result: Result<String, Error> =
+            client.request(|_token| Err(RequestError::Unauthorized));
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unauthorized after re-authentication"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn auth_client_non_401_error_passes_through() {
+        let client = AuthClient::new("http://test".into(), FakeAuth::new());
+
+        let result: Result<String, Error> = client.request(|_token| {
+            Err(RequestError::Other(Error::Auth(
+                "connection refused".into(),
+            )))
+        });
+
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("connection refused"), "{err}");
+    }
 
     #[test]
     fn test_jwt_expiry_extraction() {
