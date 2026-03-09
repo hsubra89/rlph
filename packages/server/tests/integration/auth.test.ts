@@ -161,7 +161,7 @@ describe("auth flow", () => {
       const res = yield* client.get("/whoami")
       expect(res.status).toBe(401)
       const body = yield* res.json
-      expect(body).toEqual({ error: "Missing or invalid Authorization header" })
+      expect(body).toEqual({ error: "missing or invalid authorization header" })
     }).pipe(Effect.provide(TestLayer)),
   )
 
@@ -174,7 +174,7 @@ describe("auth flow", () => {
       })
       expect(res.status).toBe(401)
       const body = yield* res.json
-      expect(body).toEqual({ error: "Invalid or expired token" })
+      expect(body).toEqual({ error: "invalid or expired token" })
     }).pipe(Effect.provide(TestLayer)),
   )
 
@@ -221,7 +221,7 @@ describe("auth flow", () => {
       const res2 = yield* client.get("/whoami", { headers: auth })
       expect(res2.status).toBe(401)
       const body = yield* res2.json
-      expect(body).toEqual({ error: "Token has been revoked" })
+      expect(body).toEqual({ error: "token has been revoked" })
     }).pipe(Effect.provide(TestLayer)),
   )
 
