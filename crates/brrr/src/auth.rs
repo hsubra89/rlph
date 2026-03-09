@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use base64::prelude::*;
+use sha2::{Digest, Sha256};
 
 use crate::error::Error;
 
@@ -194,7 +195,6 @@ fn ssh_fingerprint(pubkey: &str) -> Result<String, Error> {
         .decode(key_data)
         .map_err(|_| Error::Auth("public key base64 decode failed".into()))?;
 
-    use sha2::{Digest, Sha256};
     let hash = Sha256::digest(&raw);
     let b64 = BASE64_STANDARD.encode(hash);
     let trimmed = b64.trim_end_matches('=');
