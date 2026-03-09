@@ -209,10 +209,9 @@ describe("auth flow", () => {
       const res1 = yield* client.get("/whoami", { headers: auth })
       expect(res1.status).toBe(200)
 
-      // Revoke the token
+      // Revoke the token (no body needed — endpoint uses caller's own JTI)
       const revokeRes = yield* client.post("/auth/revoke", {
         headers: auth,
-        body: HttpBody.unsafeJson({ jti }),
       })
       expect(revokeRes.status).toBe(200)
       const revokeBody = yield* revokeRes.json
@@ -226,20 +225,38 @@ describe("auth flow", () => {
     }).pipe(Effect.provide(TestLayer)),
   )
 
-  it.scoped("POST /auth/revoke rejects missing jti with 400", () =>
+  it.scoped("POST /auth/revoke only revokes caller's own token", () =>
     Effect.gen(function* () {
       yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
-      const token = yield* Effect.promise(() =>
-        mintJwt({ ghuser: "carol", sub: "SHA256:fp3" }),
+
+      const jti1 = crypto.randomUUID()
+      const jti2 = crypto.randomUUID()
+      const token1 = yield* Effect.promise(() =>
+        mintJwt({ ghuser: "carol", sub: "SHA256:fp3", jti: jti1 }),
       )
-      const res = yield* client.post("/auth/revoke", {
-        headers: { authorization: `Bearer ${token}` },
-        body: HttpBody.unsafeJson({}),
+      const token2 = yield* Effect.promise(() =>
+        mintJwt({ ghuser: "dave", sub: "SHA256:fp4", jti: jti2 }),
+      )
+
+      // Revoke token1 — send jti2 in body to confirm the body is ignored
+      const revokeRes = yield* client.post("/auth/revoke", {
+        headers: { authorization: `Bearer ${token1}` },
+        body: HttpBody.unsafeJson({ jti: jti2 }),
       })
-      expect(res.status).toBe(400)
-      const body = yield* res.json
-      expect(body).toEqual({ error: "jti is required" })
+      expect(revokeRes.status).toBe(200)
+
+      // token1 is revoked
+      const res1 = yield* client.get("/whoami", {
+        headers: { authorization: `Bearer ${token1}` },
+      })
+      expect(res1.status).toBe(401)
+
+      // token2 is unaffected
+      const res2 = yield* client.get("/whoami", {
+        headers: { authorization: `Bearer ${token2}` },
+      })
+      expect(res2.status).toBe(200)
     }).pipe(Effect.provide(TestLayer)),
   )
 })
