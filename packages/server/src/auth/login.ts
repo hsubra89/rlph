@@ -20,113 +20,113 @@ const LoginBody = Schema.Struct({
 })
 
 export const handleLogin = Effect.gen(function* () {
-    const { jwtSecret } = yield* AppConfigTag
-    const request = yield* HttpServerRequest.HttpServerRequest
+  const { jwtSecret } = yield* AppConfigTag
+  const request = yield* HttpServerRequest.HttpServerRequest
 
-    // Rate limit by client IP before any further processing
-    const rateLimiter = yield* LoginRateLimiter
-    const ip = Option.getOrElse(request.remoteAddress, () => "unknown")
-    const allowed = yield* rateLimiter.check(ip)
-    if (!allowed) {
-      return yield* HttpServerResponse.json(
-        { error: "too many requests" },
-        { status: 429 },
-      )
-    }
-
-    const json = yield* request.json
-    const decoded = yield* Effect.either(
-      Schema.decodeUnknown(LoginBody)(json),
+  // Rate limit by client IP before any further processing
+  const rateLimiter = yield* LoginRateLimiter
+  const ip = Option.getOrElse(request.remoteAddress, () => "unknown")
+  const allowed = yield* rateLimiter.check(ip)
+  if (!allowed) {
+    return yield* HttpServerResponse.json(
+      { error: "too many requests" },
+      { status: 429 },
     )
+  }
 
-    if (Either.isLeft(decoded)) {
-      return yield* HttpServerResponse.json(
-        { error: "username, fingerprint, timestamp, and signature required" },
-        { status: 400 },
-      )
-    }
+  const json = yield* request.json
+  const decoded = yield* Effect.either(
+    Schema.decodeUnknown(LoginBody)(json),
+  )
 
-    const { username, fingerprint, timestamp, signature } = decoded.right
-
-    // Check timestamp freshness (60s window)
-    const now = unixNowSecs()
-
-    if (Math.abs(now - timestamp) > TIMESTAMP_FRESHNESS_SECS) {
-      return yield* HttpServerResponse.json(
-        { error: "timestamp too stale" },
-        { status: 401 },
-      )
-    }
-
-    // Reject replayed (username, timestamp) pairs within the freshness window
-    const replayGuard = yield* ReplayGuard
-    const isReplay = yield* replayGuard.checkAndMark(username, timestamp)
-    if (isReplay) {
-      return yield* HttpServerResponse.json(
-        { error: "duplicate request" },
-        { status: 401 },
-      )
-    }
-
-    // Fetch GitHub public keys for the user
-    const ghKeysResponse = yield* Effect.either(
-      HttpClient.get(`https://github.com/${encodeURIComponent(username)}.keys`),
+  if (Either.isLeft(decoded)) {
+    return yield* HttpServerResponse.json(
+      { error: "username, fingerprint, timestamp, and signature required" },
+      { status: 400 },
     )
+  }
 
-    if (Either.isLeft(ghKeysResponse) || ghKeysResponse.right.status !== 200) {
-      return yield* HttpServerResponse.json(
-        { error: `GitHub user '${username}' not found` },
-        { status: 403 },
-      )
-    }
+  const { username, fingerprint, timestamp, signature } = decoded.right
 
-    const ghKeysText = yield* ghKeysResponse.right.text
+  // Check timestamp freshness (60s window)
+  const now = unixNowSecs()
 
-    const ghKeys = ghKeysText
-      .split("\n")
-      .map((k) => k.trim())
-      .filter((k) => k.length > 0)
-
-    // Find the key matching the submitted fingerprint
-    const matchingKey = ghKeys.find((key) => {
-      const fp = sshFingerprint(key)
-      return Either.isRight(fp) && fp.right === fingerprint
-    })
-
-    if (!matchingKey) {
-      return yield* HttpServerResponse.json(
-        { error: "fingerprint does not match any GitHub key" },
-        { status: 403 },
-      )
-    }
-
-    // Reconstruct payload and verify signature
-    const payload = `${username}\n${fingerprint}\n${timestamp}`
-
-    const verifyResult = yield* Effect.either(
-      verifySshSignature(matchingKey, signature, payload),
+  if (Math.abs(now - timestamp) > TIMESTAMP_FRESHNESS_SECS) {
+    return yield* HttpServerResponse.json(
+      { error: "timestamp too stale" },
+      { status: 401 },
     )
+  }
 
-    if (Either.isLeft(verifyResult)) {
-      return yield* HttpServerResponse.json(
-        { error: "signature verification failed" },
-        { status: 401 },
-      )
-    }
+  // Reject replayed (username, timestamp) pairs within the freshness window
+  const replayGuard = yield* ReplayGuard
+  const isReplay = yield* replayGuard.checkAndMark(username, timestamp)
+  if (isReplay) {
+    return yield* HttpServerResponse.json(
+      { error: "duplicate request" },
+      { status: 401 },
+    )
+  }
 
-    // Issue JWT with unique JTI for revocation support
-    const jti = crypto.randomUUID()
-    const token = yield* Effect.tryPromise({
-      try: () =>
-        new jose.SignJWT({ ghuser: username })
-          .setProtectedHeader({ alg: "HS256" })
-          .setSubject(fingerprint)
-          .setJti(jti)
-          .setIssuedAt()
-          .setExpirationTime(JWT_EXPIRY)
-          .sign(jwtSecret),
-      catch: (cause) => new JwtSignError({ cause }),
-    })
+  // Fetch GitHub public keys for the user
+  const ghKeysResponse = yield* Effect.either(
+    HttpClient.get(`https://github.com/${encodeURIComponent(username)}.keys`),
+  )
 
-    return yield* HttpServerResponse.json({ token })
+  if (Either.isLeft(ghKeysResponse) || ghKeysResponse.right.status !== 200) {
+    return yield* HttpServerResponse.json(
+      { error: `GitHub user '${username}' not found` },
+      { status: 403 },
+    )
+  }
+
+  const ghKeysText = yield* ghKeysResponse.right.text
+
+  const ghKeys = ghKeysText
+    .split("\n")
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0)
+
+  // Find the key matching the submitted fingerprint
+  const matchingKey = ghKeys.find((key) => {
+    const fp = sshFingerprint(key)
+    return Either.isRight(fp) && fp.right === fingerprint
   })
+
+  if (!matchingKey) {
+    return yield* HttpServerResponse.json(
+      { error: "fingerprint does not match any GitHub key" },
+      { status: 403 },
+    )
+  }
+
+  // Reconstruct payload and verify signature
+  const payload = `${username}\n${fingerprint}\n${timestamp}`
+
+  const verifyResult = yield* Effect.either(
+    verifySshSignature(matchingKey, signature, payload),
+  )
+
+  if (Either.isLeft(verifyResult)) {
+    return yield* HttpServerResponse.json(
+      { error: "signature verification failed" },
+      { status: 401 },
+    )
+  }
+
+  // Issue JWT with unique JTI for revocation support
+  const jti = crypto.randomUUID()
+  const token = yield* Effect.tryPromise({
+    try: () =>
+      new jose.SignJWT({ ghuser: username })
+        .setProtectedHeader({ alg: "HS256" })
+        .setSubject(fingerprint)
+        .setJti(jti)
+        .setIssuedAt()
+        .setExpirationTime(JWT_EXPIRY)
+        .sign(jwtSecret),
+    catch: (cause) => new JwtSignError({ cause }),
+  })
+
+  return yield* HttpServerResponse.json({ token })
+})
