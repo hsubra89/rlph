@@ -9,7 +9,7 @@ export interface ReplayGuardShape {
 
 export class ReplayGuard extends Context.Tag("ReplayGuard")<ReplayGuard, ReplayGuardShape>() {}
 
-const TTL_MS = TIMESTAMP_FRESHNESS_SECS * 1000
+const TTL_MS = 2 * TIMESTAMP_FRESHNESS_SECS * 1000
 
 /** In-memory replay guard backed by a Ref<HashMap>. Swap for Redis-backed implementation to scale horizontally. */
 export const ReplayGuardLive = Layer.effect(
