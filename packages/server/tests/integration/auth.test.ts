@@ -8,6 +8,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
 import * as crypto from "node:crypto"
 import * as jose from "jose"
+import { JWT_EXPIRY, unixNowSecs } from "../../src/auth/constants.js"
 import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
 import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
 import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
@@ -33,7 +34,7 @@ function mintJwt(opts: { ghuser: string; sub: string; jti?: string }) {
     .setSubject(opts.sub)
     .setJti(opts.jti ?? crypto.randomUUID())
     .setIssuedAt()
-    .setExpirationTime("1h")
+    .setExpirationTime(JWT_EXPIRY)
     .sign(JWT_SECRET)
 }
 
@@ -100,7 +101,7 @@ describe("auth flow", () => {
     Effect.gen(function* () {
       yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
-      const timestamp = Math.floor(Date.now() / 1000)
+      const timestamp = unixNowSecs()
       const loginBody = HttpBody.unsafeJson({
         username: "replayuser",
         fingerprint: "SHA256:abc",
@@ -131,7 +132,7 @@ describe("auth flow", () => {
           body: HttpBody.unsafeJson({
             username: `ratelimituser${i}`,
             fingerprint: "SHA256:abc",
-            timestamp: Math.floor(Date.now() / 1000),
+            timestamp: unixNowSecs(),
             signature: "fake",
           }),
         })
@@ -143,7 +144,7 @@ describe("auth flow", () => {
         body: HttpBody.unsafeJson({
           username: "ratelimituser-extra",
           fingerprint: "SHA256:abc",
-          timestamp: Math.floor(Date.now() / 1000),
+          timestamp: unixNowSecs(),
           signature: "fake",
         }),
       })

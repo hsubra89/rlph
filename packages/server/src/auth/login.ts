@@ -3,6 +3,7 @@ import { Data, Effect, Either, Option, Schema } from "effect"
 import * as crypto from "node:crypto"
 import * as jose from "jose"
 import { AppConfigTag } from "../config.js"
+import { JWT_EXPIRY, TIMESTAMP_FRESHNESS_SECS, unixNowSecs } from "./constants.js"
 import { LoginRateLimiter } from "./login-rate-limiter.js"
 import { ReplayGuard } from "./replay-guard.js"
 import { sshFingerprint, verifySshSignature } from "./ssh.js"
@@ -48,9 +49,9 @@ export const handleLogin = Effect.gen(function* () {
     const { username, fingerprint, timestamp, signature } = decoded.right
 
     // Check timestamp freshness (60s window)
-    const now = Math.floor(Date.now() / 1000)
+    const now = unixNowSecs()
 
-    if (Math.abs(now - timestamp) > 60) {
+    if (Math.abs(now - timestamp) > TIMESTAMP_FRESHNESS_SECS) {
       return yield* HttpServerResponse.json(
         { error: "timestamp too stale" },
         { status: 401 },
@@ -122,7 +123,7 @@ export const handleLogin = Effect.gen(function* () {
           .setSubject(fingerprint)
           .setJti(jti)
           .setIssuedAt()
-          .setExpirationTime("1h")
+          .setExpirationTime(JWT_EXPIRY)
           .sign(jwtSecret),
       catch: (cause) => new JwtSignError({ cause }),
     })

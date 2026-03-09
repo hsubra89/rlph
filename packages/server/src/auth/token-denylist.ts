@@ -1,4 +1,5 @@
 import { Cache, Context, Effect, Layer } from "effect"
+import { JWT_LIFETIME_DURATION } from "./constants.js"
 
 export interface TokenDenylistShape {
   /** Mark a JTI as revoked. */
@@ -15,7 +16,7 @@ export const TokenDenylistLive = Layer.effect(
   Effect.gen(function* () {
     const cache = yield* Cache.make({
       capacity: 50_000,
-      timeToLive: "1 hour",
+      timeToLive: JWT_LIFETIME_DURATION,
       lookup: (_: string) => Effect.void,
     })
 
