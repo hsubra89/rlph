@@ -32,7 +32,7 @@ export const authMiddleware =
 
       const verifyResult = yield* Effect.either(
         Effect.tryPromise({
-          try: () => jose.jwtVerify(token, jwtSecret),
+          try: () => jose.jwtVerify(token, jwtSecret, { algorithms: ["HS256"] }),
           catch: () => new JwtVerifyError({ reason: "invalid_token" }),
         }),
       )
