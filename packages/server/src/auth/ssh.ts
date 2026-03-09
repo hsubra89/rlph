@@ -70,7 +70,6 @@ export function verifySshSignature(
       return yield* Effect.fail(new SshVerifyError({ reason: "signature_invalid" }))
     }
 
-    return yield* Effect.void
   }).pipe(Effect.scoped)
 
 }
