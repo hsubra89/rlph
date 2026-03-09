@@ -4,24 +4,16 @@ CLI binary crate. Orchestrates the autonomous AI dev loop: fetch tasks, run codi
 
 ## Orchestrator Pipeline
 
-```
-Fetch tasks (TaskSource) → filter by dependency graph
-  → Choose phase: agent picks task
-  → Create worktree
-  → Implement phase: agent codes in worktree
-  → Push + submit PR (SubmissionBackend)
-  → Review pipeline (parallel phases → aggregate → post findings)
-  → Cleanup worktree
-```
+See [docs/architecture.md](../../docs/architecture.md#orchestrator-pipeline) for the full pipeline. In brief: fetch → choose (skipped if one eligible) → implement → PR → review → cleanup.
 
 ## Core Traits
 
-All extensibility via traits dispatched through enums (`AnySource`, `AnyRunner`):
+See [docs/architecture.md](../../docs/architecture.md#core-traits). Key file locations in this crate:
 
-- **`TaskSource`** (`sources/mod.rs`) — fetch/filter tasks. Impls: `GitHubSource` (gh CLI), `LinearSource` (API).
-- **`AgentRunner`** (`runner.rs`) — run agent for a phase. Impls: `ClaudeRunner`, `CodexRunner`, `OpencodeRunner`, `CallbackRunner` (tests).
-- **`SubmissionBackend`** (`submission.rs`) — submit PRs, upsert review comments. Impl: `GitHubSubmission` (gh CLI).
-- **`ReviewRunnerFactory`** (`orchestrator.rs`) — inject mock runners for review phases in tests.
+- **`TaskSource`** — `sources/mod.rs`
+- **`AgentRunner`** — `runner.rs`
+- **`SubmissionBackend`** — `submission.rs`
+- **`ReviewRunnerFactory`**, **`CorrectionRunner`**, **`ProgressReporter`** — `orchestrator.rs`
 
 ## Module Boundaries
 
@@ -36,29 +28,24 @@ All extensibility via traits dispatched through enums (`AnySource`, `AnyRunner`)
 | `prompts` | Loads templates + user overrides, `{{var}}` substitution | Execute agents |
 | `config` | Merges CLI > file > defaults | Validate business logic |
 
-## Key Patterns
-
-- **`gh` CLI as GitHub layer.** All GitHub ops shell out to `gh` — no Rust HTTP client.
-- **Prompt overrides.** Users place custom templates in `.brrr/prompts/` to override embedded defaults in `src/default_prompts/`.
-- **Review comment upserts.** `<!-- brrr-review -->` HTML marker for idempotent updates.
-- **Untrusted content wrapping.** External PR comments wrapped in `<untrusted-content>` tags.
-- **Process spawning.** Async via `tokio::process::Command` with heartbeat timeout. GitHub/submission ops are sync (`std::process::Command`).
-
 ## Error Handling
 
-Central `Error` enum in `error.rs` with `thiserror`. Module-local error enums nested via `#[from]` + `#[error(transparent)]`. `ProcessTimeout` carries stdout/stderr for resume logic. No `.unwrap()` in library code.
+See [docs/conventions.md](../../docs/conventions.md#error-handling). Crate-specific: `ProcessTimeout` carries stdout/stderr for agent session resume logic.
 
 ## Testing
 
-- Unit tests: in-module `#[cfg(test)]` blocks
-- Integration tests: `tests/` directory (cli_binary, orchestrator, worktree, process, prd, runner-specific)
-- Mocks: hand-rolled (`MockGhClient`, `CallbackRunner`, `ReviewRunnerFactory`)
-- `#[serial_test::serial]` for tests sharing global state
-- Run: `cargo nextest run` (unit) + `cargo nextest run --profile integration -E 'binary(cli_binary)'` (CI gate)
+See [docs/testing.md](../../docs/testing.md). Key mock types in this crate:
+
+- **`MockGhClient`** — `sources/github.rs`
+- **`CallbackRunner`** — `runner.rs`
+- **`ReviewRunnerFactory`** — `orchestrator.rs`
+
+## Key Patterns
+
+See [docs/architecture.md](../../docs/architecture.md#design-decisions) for shared patterns. Crate-specific:
+
+- **Process spawning.** Async via `tokio::process::Command` with heartbeat timeout. GitHub/submission ops are sync (`std::process::Command`).
 
 ## Commands
 
-- **Lint:** `cargo clippy --all-targets --all-features -- -D warnings`
-- **Format:** `cargo fmt --all`
-- **Test:** `cargo nextest run`
-- **Integration:** `cargo nextest run --profile integration -E 'binary(cli_binary)'`
+See root `CLAUDE.md` for canonical commands (`just test`, `just integration`, etc.).
