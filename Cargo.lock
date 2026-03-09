@@ -120,6 +120,7 @@ name = "brrr"
 version = "0.2.0"
 dependencies = [
  "assert_cmd",
+ "base64",
  "brrr-core",
  "clap",
  "dirs",

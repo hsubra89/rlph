@@ -10,25 +10,25 @@ import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
 import * as crypto from "node:crypto"
 import * as jose from "jose"
-import { makeHandleLogin } from "../../src/auth/login.js"
+import { handleLogin } from "../../src/auth/login.js"
 import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
-import { makeAuthMiddleware } from "../../src/auth/middleware.js"
+import { authMiddleware } from "../../src/auth/middleware.js"
 import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
 import { handleRevoke } from "../../src/auth/revoke.js"
 import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
 import { handleWhoami } from "../../src/auth/whoami.js"
+import { AppConfig, AppConfigTag } from "../../src/config.js"
 
-const JWT_SECRET = new TextEncoder().encode("test-secret")
+const JWT_SECRET = new TextEncoder().encode("test-secret-that-is-at-least-32-bytes-long")
 
-function makeRouter() {
-  const authMiddleware = makeAuthMiddleware(JWT_SECRET)
-  return HttpRouter.empty.pipe(
-    HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-    HttpRouter.post("/auth/login", makeHandleLogin(JWT_SECRET)),
-    HttpRouter.get("/whoami", authMiddleware(handleWhoami)),
-    HttpRouter.post("/auth/revoke", authMiddleware(handleRevoke)),
-  )
-}
+const TestConfigLayer = Layer.succeed(AppConfigTag, new AppConfig(0, JWT_SECRET))
+
+const router = HttpRouter.empty.pipe(
+  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
+  HttpRouter.post("/auth/login", handleLogin),
+  HttpRouter.get("/whoami", authMiddleware(handleWhoami)),
+  HttpRouter.post("/auth/revoke", authMiddleware(handleRevoke)),
+)
 
 const TestLayer = Layer.mergeAll(
   NodeHttpServer.layerTest,
@@ -36,6 +36,7 @@ const TestLayer = Layer.mergeAll(
   ReplayGuardLive,
   TokenDenylistLive,
   LoginRateLimiterLive,
+  TestConfigLayer,
 )
 
 function mintJwt(opts: { ghuser: string; sub: string; jti?: string }) {
@@ -51,7 +52,7 @@ function mintJwt(opts: { ghuser: string; sub: string; jti?: string }) {
 describe("auth flow", () => {
   it.scoped("GET /health returns 200", () =>
     Effect.gen(function* () {
-      yield* makeRouter().pipe(HttpServer.serveEffect())
+      yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
       const res = yield* client.get("/health")
       expect(res.status).toBe(200)
@@ -62,7 +63,7 @@ describe("auth flow", () => {
 
   it.scoped("POST /auth/login rejects invalid body with 400", () =>
     Effect.gen(function* () {
-      yield* makeRouter().pipe(HttpServer.serveEffect())
+      yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
       const res = yield* client.post("/auth/login", {
         body: HttpBody.unsafeJson({ bad: "data" }),
@@ -75,7 +76,7 @@ describe("auth flow", () => {
 
   it.scoped("POST /auth/login rejects string timestamp with 400", () =>
     Effect.gen(function* () {
-      yield* makeRouter().pipe(HttpServer.serveEffect())
+      yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
       const res = yield* client.post("/auth/login", {
         body: HttpBody.unsafeJson({
@@ -91,7 +92,7 @@ describe("auth flow", () => {
 
   it.scoped("POST /auth/login rejects stale timestamp with 401", () =>
     Effect.gen(function* () {
-      yield* makeRouter().pipe(HttpServer.serveEffect())
+      yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
       const res = yield* client.post("/auth/login", {
         body: HttpBody.unsafeJson({
@@ -109,7 +110,7 @@ describe("auth flow", () => {
 
   it.scoped("POST /auth/login rejects replayed request with 401", () =>
     Effect.gen(function* () {
-      yield* makeRouter().pipe(HttpServer.serveEffect())
+      yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
       const timestamp = Math.floor(Date.now() / 1000)
       const loginBody = HttpBody.unsafeJson({
@@ -133,7 +134,7 @@ describe("auth flow", () => {
 
   it.scoped("POST /auth/login returns 429 after too many requests", () =>
     Effect.gen(function* () {
-      yield* makeRouter().pipe(HttpServer.serveEffect())
+      yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
 
       // Send 5 requests (the limit) — all should get through (fail at GitHub, 403)
@@ -166,7 +167,7 @@ describe("auth flow", () => {
 
   it.scoped("GET /whoami rejects missing auth header with 401", () =>
     Effect.gen(function* () {
-      yield* makeRouter().pipe(HttpServer.serveEffect())
+      yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
       const res = yield* client.get("/whoami")
       expect(res.status).toBe(401)
@@ -177,7 +178,7 @@ describe("auth flow", () => {
 
   it.scoped("GET /whoami rejects invalid token with 401", () =>
     Effect.gen(function* () {
-      yield* makeRouter().pipe(HttpServer.serveEffect())
+      yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
       const res = yield* client.get("/whoami", {
         headers: { authorization: "Bearer not.a.real.token" },
@@ -190,7 +191,7 @@ describe("auth flow", () => {
 
   it.scoped("GET /whoami succeeds with valid token", () =>
     Effect.gen(function* () {
-      yield* makeRouter().pipe(HttpServer.serveEffect())
+      yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
       const token = yield* Effect.promise(() =>
         mintJwt({ ghuser: "alice", sub: "SHA256:fp" }),
@@ -206,7 +207,7 @@ describe("auth flow", () => {
 
   it.scoped("POST /auth/revoke invalidates token", () =>
     Effect.gen(function* () {
-      yield* makeRouter().pipe(HttpServer.serveEffect())
+      yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
 
       const jti = crypto.randomUUID()
@@ -238,7 +239,7 @@ describe("auth flow", () => {
 
   it.scoped("POST /auth/revoke rejects missing jti with 400", () =>
     Effect.gen(function* () {
-      yield* makeRouter().pipe(HttpServer.serveEffect())
+      yield* router.pipe(HttpServer.serveEffect())
       const client = yield* HttpClient.HttpClient
       const token = yield* Effect.promise(() =>
         mintJwt({ ghuser: "carol", sub: "SHA256:fp3" }),

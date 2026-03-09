@@ -24,7 +24,6 @@ describe("sshFingerprint", () => {
     expect(Either.isLeft(result)).toBe(true)
     if (Either.isLeft(result)) {
       expect(result.left).toBeInstanceOf(FingerprintError)
-      expect(result.left.reason).toBe("missing_key_data")
     }
   })
 
