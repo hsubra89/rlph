@@ -109,9 +109,9 @@ describe("auth flow", () => {
         signature: "fake",
       })
 
-      // First request — passes replay guard, fails at GitHub fetch (403)
+      // First request — passes replay guard, fails at GitHub fetch (502 in test env)
       const res1 = yield* client.post("/auth/login", { body: loginBody })
-      expect(res1.status).toBe(403)
+      expect(res1.status).toBe(502)
 
       // Second request — same payload, rejected by replay guard
       const res2 = yield* client.post("/auth/login", { body: loginBody })

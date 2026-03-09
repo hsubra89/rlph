@@ -12,13 +12,13 @@ export interface LoginRateLimiterShape {
 export class LoginRateLimiter extends Context.Tag("LoginRateLimiter")<LoginRateLimiter, LoginRateLimiterShape>() {}
 
 /** In-memory per-IP sliding window rate limiter. Swap for Redis-backed implementation to scale horizontally. */
-export const LoginRateLimiterLive = Layer.effect(
+export const LoginRateLimiterLive = Layer.scoped(
   LoginRateLimiter,
   Effect.gen(function* () {
     const ref = yield* Ref.make(HashMap.empty<string, Chunk.Chunk<number>>())
 
     // Periodic bulk eviction of all stale entries so the map doesn't grow unboundedly.
-    yield* Effect.forkDaemon(
+    yield* Effect.forkScoped(
       Effect.repeat(
         Clock.currentTimeMillis.pipe(
           Effect.flatMap((now) =>
