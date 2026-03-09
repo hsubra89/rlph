@@ -1,5 +1,13 @@
 # Rust Conventions
 
+## Design Principles
+
+- Keep public API surface minimal (`pub(crate)` by default).
+- Separate pure domain logic from runtime/IO glue.
+- Use additive feature flags and keep defaults lean.
+- Prefer enums/newtypes over stringly-typed state.
+- Avoid panics in non-test code; return structured errors.
+
 ## Error Handling
 
 Central `Error` enum in `error.rs` with `thiserror`. No `anyhow`, no `.unwrap()` in library code.
@@ -15,15 +23,17 @@ Central `Error` enum in `error.rs` with `thiserror`. No `anyhow`, no `.unwrap()`
 - Process spawning is async (`tokio::process::Command`), but GitHub/submission ops are sync (`std::process::Command`).
 - Do not perform blocking work on Tokio worker threads. Use async APIs or `tokio::task::spawn_blocking` when blocking is unavoidable.
 - For external commands/network boundaries, set explicit timeouts and surface stdout/stderr in errors for debugging.
+- Design for cancellation safety and bounded resource usage.
 - Prefer bounded queues/channels when producer rate can exceed consumer rate.
+- Keep `unsafe` blocks minimal, documented, and invariants explicit.
 
 ## Config Merge Precedence
 
 CLI flags > config file values > built-in defaults. This is enforced in `config.rs::merge()`. When adding new config fields, follow the same `cli.field.or(file.field).unwrap_or(default)` pattern.
 
-## Dependencies
+## Observability
 
-Prefer well-established crates over hand-written code. Only roll your own when no popular crate fits.
+- Add `tracing` spans/events around key pipeline steps.
 
 ## API
 

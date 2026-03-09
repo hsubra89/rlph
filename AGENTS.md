@@ -4,36 +4,33 @@ Mixed-language monorepo: Rust CLI (`crates/`) + TypeScript packages (`packages/`
 
 ## Layout
 
-- `crates/brrr/` — Rust binary crate (edition 2024). Autonomous AI dev-loop CLI.
-- `packages/` — TypeScript packages (pnpm workspace).
-- `justfile` — Unified task runner.
+| Directory | Language | What |
+|-----------|----------|------|
+| `crates/brrr/` | Rust 2024 | CLI binary — orchestrator, agent runners, task sources, PR submission |
+| `crates/brrr-core/` | Rust 2024 | Pure domain types — IDs, tasks, dependency graphs, SCC |
+| `packages/server/` | TypeScript (Effect) | Auth API server — SSH login, JWT, rate limiting |
 
 ## Commands
 
-- **All checks:** `just check` (covers both Rust and TS: fmt-check + lint + test + ts-build)
-- **Format:** `just fmt` (Rust + TS) / `just fmt-check` (verify only)
-- **Lint (Rust):** `cargo clippy --all-targets --all-features -- -D warnings`
-- **Lint (TS):** `pnpm --filter '@brrr/*' run lint` (oxlint)
-- **Format (TS):** `pnpm --filter '@brrr/*' run fmt` (oxfmt)
-- **Test:** `cargo nextest run`
-- **Integration (CI gate):** `cargo nextest run --profile integration -E 'binary(cli_binary)'`
-- **Integration (full local sweep, optional):** `cargo nextest run --profile integration`
-- **Single test:** `cargo nextest run -E 'test(test_name)'`
+- **All checks:** `just check` (fmt-check + lint + test + ts-build)
+- **Format:** `just fmt` / `just fmt-check`
+- **Lint:** `just lint` (clippy + oxlint)
+- **Test (unit):** `just test`
+- **Integration (CI gate):** `just integration`
+- **Integration (full):** `just integration-all`
+- **Single Rust test:** `cargo nextest run -E 'test(test_name)'`
+- **TS dev server:** `just ts-dev`
 
 ## Development Methodology
 
-- TDD (red-green-refactor) for features. Use `/tdd` skill.
-- Mirror CI locally before finishing:
-  - `cargo fmt --all -- --check`
-  - `cargo clippy --all-targets --all-features -- -D warnings`
-  - `cargo nextest run`
-  - `cargo nextest run --profile integration -E 'binary(cli_binary)'`
+- TDD (red-green-refactor). Use `/tdd` skill.
+- Mirror CI before finishing: `just check && just integration`
 
 ## Docs
 
 Read when working in the relevant area:
 
-- [Architecture](docs/architecture.md) — key paths, module responsibilities, trait system, orchestrator pipeline
-- [Testing](docs/testing.md) — mocking strategy, integration tests, what to test
-- [Conventions](docs/conventions.md) — error handling, async patterns, dependency policy
-- [Engineering Checklist](docs/engineering-checklist.md) — CI gates, async/concurrency patterns, and release hygiene
+- [Architecture](docs/architecture.md) — crate structure, orchestrator pipeline, core traits, module responsibilities
+- [Testing](docs/testing.md) — mocking strategy, integration tests, execution policy, coverage expectations
+- [Conventions](docs/conventions.md) — design principles, error handling, async patterns, config merge, observability
+- [Specifications/](specs/) — specification files for systems built and being built

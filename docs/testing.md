@@ -42,6 +42,12 @@ Pattern: define a trait for the external dependency, implement it for real + tes
 - **State management:** Concurrent modifications (flock correctness), roundtrip serialization, corruption recovery.
 - **Worktree ops:** Branch name validation, create/remove lifecycle, path canonicalization.
 
+## Test Coverage Expectations
+
+- Cover happy path, failure path, and cancellation behavior.
+- Keep async tests deterministic (avoid fragile sleep-based timing).
+- Add targeted race/concurrency tests for critical paths.
+
 ## Concurrency in Tests
 
 Use `#[serial_test::serial]` for tests that share global state (process signals, file locks). Most unit tests are safe to run in parallel.
