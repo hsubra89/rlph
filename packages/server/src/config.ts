@@ -4,6 +4,7 @@ export class AppConfig {
   constructor(
     readonly port: number,
     readonly jwtSecret: Uint8Array,
+    readonly postgresUrl: Redacted.Redacted,
   ) {}
 }
 
@@ -14,6 +15,7 @@ export const AppConfigLiveLayer: Layer.Layer<AppConfigTag, ConfigError.ConfigErr
   Effect.gen(function* () {
     const port = yield* Config.integer("BRRR_PORT").pipe(Config.withDefault(3000))
     const secret = yield* Config.redacted("BRRR_JWT_SECRET")
+    const postgresUrl = yield* Config.redacted("BRRR_POSTGRES_URL")
     const secretBytes = new TextEncoder().encode(Redacted.value(secret))
     if (secretBytes.length < 32) {
       return yield* Effect.fail(
@@ -23,6 +25,6 @@ export const AppConfigLiveLayer: Layer.Layer<AppConfigTag, ConfigError.ConfigErr
         ),
       )
     }
-    return new AppConfig(port, secretBytes)
+    return new AppConfig(port, secretBytes, postgresUrl)
   }),
 )

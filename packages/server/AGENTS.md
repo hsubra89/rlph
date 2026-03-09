@@ -11,17 +11,19 @@ Auth API server. Handles SSH challenge-response login, JWT token lifecycle, rate
 
 ## Architecture
 
-Entry point (`main.ts`) composes layers:
+Entry point (`main.ts`) runs Postgres migrations, then composes layers:
 
 ```
-ServerLive → PlatformLive → ReplayGuardLive → TokenDenylistLive → LoginRateLimiterLive → FetchHttpClient → AppConfigLiveLayer
+runDatabaseMigrations
+  → ServerLive → NodeContext → ReplayGuardLive → TokenDenylistLive
+  → LoginRateLimiterLive → DatabaseHealthLive → FetchHttpClient → AppConfigLiveLayer
 ```
 
 ### Routes (`router.ts`)
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/health` | No | Health check |
+| GET | `/health` | No | Readiness check backed by Postgres connectivity |
 | POST | `/auth/login` | No | SSH challenge-response → JWT |
 | GET | `/whoami` | Yes | Authenticated user info |
 | POST | `/auth/revoke` | Yes | Token revocation |
@@ -38,12 +40,18 @@ ServerLive → PlatformLive → ReplayGuardLive → TokenDenylistLive → LoginR
 | `replay-guard.ts` | Block replayed (username, timestamp) pairs |
 | `login-rate-limiter.ts` | Per-IP rate limiting |
 | `token-denylist.ts` | Revoked token tracking |
+| `database.ts` | Required Postgres client, health service, and migration runner |
+| `health.ts` | Readiness endpoint backed by `DatabaseHealth` |
 | `constants.ts` | `JWT_EXPIRY`, `TIMESTAMP_FRESHNESS_SECS` |
 | `map-utils.ts` | Effect Map utility functions |
 
 ### Config (`config.ts`)
 
-`AppConfig` context: port (env `BRRR_PORT`, default 3000), JWT secret (env `JWT_SECRET`, must be >= 32 bytes).
+`AppConfig` context:
+
+- port (env `BRRR_PORT`, default 3000)
+- JWT secret (env `BRRR_JWT_SECRET`, must be >= 32 bytes)
+- Postgres URL (env `BRRR_POSTGRES_URL`, required)
 
 ## Effect Patterns
 
