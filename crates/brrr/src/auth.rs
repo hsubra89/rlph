@@ -12,6 +12,8 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
+use base64::prelude::*;
+
 use crate::error::Error;
 
 fn unix_now_secs() -> u64 {
@@ -188,46 +190,15 @@ fn ssh_fingerprint(pubkey: &str) -> Result<String, Error> {
         .nth(1)
         .ok_or_else(|| Error::Auth("public key has no key-data field".into()))?;
 
-    let raw = base64url_decode_standard(key_data)
-        .ok_or_else(|| Error::Auth("public key base64 decode failed".into()))?;
+    let raw = BASE64_STANDARD
+        .decode(key_data)
+        .map_err(|_| Error::Auth("public key base64 decode failed".into()))?;
 
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(&raw);
-    let b64 = base64_encode_standard(&hash);
+    let b64 = BASE64_STANDARD.encode(&hash);
     let trimmed = b64.trim_end_matches('=');
     Ok(format!("SHA256:{trimmed}"))
-}
-
-/// Standard base64 encode (not URL-safe).
-fn base64_encode_standard(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        out.push(TABLE[((triple >> 18) & 0x3F) as usize] as char);
-        out.push(TABLE[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(TABLE[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(TABLE[(triple & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
-}
-
-/// Standard base64 decode (not URL-safe).
-fn base64url_decode_standard(input: &str) -> Option<Vec<u8>> {
-    let mut buf = Vec::new();
-    base64_decode_impl(input.as_bytes(), &mut buf)?;
-    Some(buf)
 }
 
 fn session_path() -> Result<PathBuf, Error> {
@@ -352,48 +323,9 @@ fn jwt_expiry(token: &str) -> Option<u64> {
         return None;
     }
     // Base64url decode the payload
-    let payload = base64url_decode(parts[1])?;
+    let payload = BASE64_URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&payload).ok()?;
     value.get("exp")?.as_u64()
-}
-
-fn base64url_decode(input: &str) -> Option<Vec<u8>> {
-    // URL-safe → standard: replace chars and add padding
-    let standard = input.replace('-', "+").replace('_', "/");
-    let padded = match standard.len() % 4 {
-        2 => format!("{standard}=="),
-        3 => format!("{standard}="),
-        _ => standard,
-    };
-    base64url_decode_standard(&padded)
-}
-
-fn base64_decode_impl(input: &[u8], output: &mut Vec<u8>) -> Option<()> {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut lookup = [255u8; 256];
-    for (i, &c) in TABLE.iter().enumerate() {
-        lookup[c as usize] = i as u8;
-    }
-
-    let mut buf = 0u32;
-    let mut bits = 0;
-    for &byte in input {
-        if byte == b'=' {
-            break;
-        }
-        let val = lookup[byte as usize];
-        if val == 255 {
-            return None;
-        }
-        buf = (buf << 6) | val as u32;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            output.push((buf >> bits) as u8);
-            buf &= (1 << bits) - 1;
-        }
-    }
-    Some(())
 }
 
 #[cfg(test)]
@@ -421,7 +353,7 @@ mod tests {
 
     #[test]
     fn test_base64url_decode() {
-        let decoded = base64url_decode("SGVsbG8").unwrap();
+        let decoded = BASE64_URL_SAFE_NO_PAD.decode("SGVsbG8").unwrap();
         assert_eq!(decoded, b"Hello");
     }
 
@@ -457,7 +389,7 @@ mod tests {
         // SHA256 of [0,0,0] is a known hash
         use sha2::{Digest, Sha256};
         let expected_hash = Sha256::digest([0u8, 0, 0]);
-        let expected_b64 = base64_encode_standard(&expected_hash);
+        let expected_b64 = BASE64_STANDARD.encode(&expected_hash);
         let expected = format!("SHA256:{}", expected_b64.trim_end_matches('='));
         assert_eq!(fp, expected);
     }
