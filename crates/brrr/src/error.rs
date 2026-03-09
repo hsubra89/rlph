@@ -14,6 +14,9 @@ pub enum Error {
     #[error("config validation error: {0}")]
     ConfigValidation(String),
 
+    #[error("auth error: {0}")]
+    Auth(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

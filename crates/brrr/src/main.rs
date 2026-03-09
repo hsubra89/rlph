@@ -8,7 +8,7 @@ use tokio::sync::watch;
 use tracing::{debug, info, trace, warn};
 
 use brrr::cli::{Cli, CliCommand};
-use brrr::config::{Config, resolve_init_config};
+use brrr::config::{Config, load_file_config_from_cli, resolve_init_config};
 use brrr::error::Error;
 use brrr::fix;
 use brrr::fix_comment::format_fix_items_for_display;
@@ -82,6 +82,19 @@ fn install_sigint_handler(first_message: &'static str) -> watch::Receiver<bool> 
     rx
 }
 
+fn validate_server_url_scheme(url: &str) -> Result<(), Error> {
+    let parsed = url::Url::parse(url)
+        .map_err(|_| Error::ConfigValidation(format!("invalid server URL: {url}")))?;
+    let host = parsed.host_str().unwrap_or("");
+    let is_loopback = matches!(host, "localhost" | "127.0.0.1" | "::1");
+    if !is_loopback && parsed.scheme() == "http" {
+        return Err(Error::ConfigValidation(format!(
+            "insecure server URL: remote host '{host}' must use https, not http"
+        )));
+    }
+    Ok(())
+}
+
 async fn run(cli: Cli) -> Result<i32, Error> {
     trace!(verbose = cli.verbose, format = %cli.log_format, "logging initialized");
     debug!("brrr starting");
@@ -89,6 +102,17 @@ async fn run(cli: Cli) -> Result<i32, Error> {
     let mut exit_code = 0;
 
     match cli.command {
+        CliCommand::Auth { ref server } => {
+            let file_config = load_file_config_from_cli(&cli).unwrap_or_default();
+            let server_url = server
+                .clone()
+                .or(file_config.server_url)
+                .unwrap_or_else(|| brrr::auth::DEFAULT_SERVER_URL.to_string());
+            validate_server_url_scheme(&server_url)?;
+            let (username, _token) = brrr::auth::authenticate(&server_url)?;
+            info!(username = %username, "authenticated");
+            println!("Authenticated as {username}");
+        }
         CliCommand::Init => {
             let init_cfg = resolve_init_config(&cli)?;
             if init_cfg.source == "linear" {

@@ -106,6 +106,7 @@ pub struct ConfigFile {
     pub fix: Option<ReviewStepConfigFile>,
     pub worktree_setup_script: Option<String>,
     pub linear: Option<LinearConfigFile>,
+    pub server_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -252,6 +253,17 @@ fn load_file_config(cli: &Cli, project_dir: &Path) -> Result<ConfigFile> {
             }
         }
     }
+}
+
+/// Load the raw config file (without merging CLI/build args).
+/// Useful for commands that only need a few fields from the config.
+///
+/// Config discovery is relative to the process's current working directory at
+/// call time. Running `brrr auth` outside the project root means no file
+/// config will be found unless `--config` is passed explicitly.
+pub fn load_file_config_from_cli(cli: &Cli) -> Result<ConfigFile> {
+    let cwd = std::env::current_dir()?;
+    load_file_config(cli, &cwd)
 }
 
 pub fn parse_config(content: &str) -> Result<ConfigFile> {

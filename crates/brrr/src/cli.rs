@@ -171,6 +171,13 @@ pub enum CliCommand {
         /// Seed description for the PRD (optional)
         description: Option<String>,
     },
+
+    /// Authenticate with the brrr server via SSH challenge-response
+    Auth {
+        /// Server URL (overrides server_url in config.toml)
+        #[arg(long)]
+        server: Option<String>,
+    },
 }
 
 #[cfg(test)]
