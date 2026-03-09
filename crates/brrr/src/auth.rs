@@ -108,8 +108,9 @@ impl<A: Authenticator> AuthClient<A> {
     }
 
     fn ensure_token(&self) -> Result<String, Error> {
-        if let Some(ref token) = *self.token.borrow() {
-            return Ok(token.clone());
+        let cached = self.token.borrow().clone();
+        if let Some(token) = cached {
+            return Ok(token);
         }
         self.refresh_token()
     }
@@ -316,7 +317,7 @@ fn home_path() -> Result<PathBuf, Error> {
 }
 
 /// Loads a stored token if it exists and hasn't expired.
-pub fn load_token() -> Result<Option<String>, Error> {
+fn load_token() -> Result<Option<String>, Error> {
     let path = session_path()?;
     if !path.exists() {
         return Ok(None);
@@ -411,16 +412,6 @@ pub fn authenticate(server_url: &str) -> Result<(String, String), Error> {
     info!(path = %session_file.display(), "session saved");
     let token = session.token;
     Ok((username, token))
-}
-
-/// Loads existing token or re-authenticates.
-pub fn ensure_authenticated(server_url: &str) -> Result<String, Error> {
-    if let Some(token) = load_token()? {
-        debug!("using cached token");
-        return Ok(token);
-    }
-    let (_username, token) = authenticate(server_url)?;
-    Ok(token)
 }
 
 /// Extracts `exp` from a JWT payload (no signature verification, just parsing).
