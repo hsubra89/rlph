@@ -20,6 +20,11 @@
       "source": "yektas/skills",
       "sourceType": "github",
       "computedHash": "c42ab2c341685cb8404b4894fed1ac4671f62cd34ab3126b30a9c2fd2f33158c"
+    },
+    "write-a-skill": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "computedHash": "b44d8aab2ead83c716e01af4c9a24ccc4575ce70ad58ec4f1749fb88c9cc82ba"
     }
   }
 }
