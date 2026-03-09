@@ -7,6 +7,7 @@ import { TokenDenylist } from "./token-denylist.js"
 export class AuthClaims extends Context.Tag("AuthClaims")<AuthClaims, {
   readonly sub: string
   readonly ghuser: string
+  readonly jti: string
 }>() {}
 
 export class JwtVerifyError extends Data.TaggedError("JwtVerifyError")<{
@@ -44,25 +45,23 @@ export const authMiddleware =
       }
 
       const payload = verifyResult.right.payload as { sub?: string; ghuser?: string; jti?: string }
-      if (!payload.sub || !payload.ghuser) {
+      if (!payload.sub || !payload.ghuser || !payload.jti) {
         return yield* HttpServerResponse.json(
           { error: "Invalid token claims" },
           { status: 401 },
         )
       }
 
-      if (payload.jti) {
-        const denylist = yield* TokenDenylist
-        const revoked = yield* denylist.isRevoked(payload.jti)
-        if (revoked) {
-          return yield* HttpServerResponse.json(
-            { error: "Token has been revoked" },
-            { status: 401 },
-          )
-        }
+      const denylist = yield* TokenDenylist
+      const revoked = yield* denylist.isRevoked(payload.jti)
+      if (revoked) {
+        return yield* HttpServerResponse.json(
+          { error: "Token has been revoked" },
+          { status: 401 },
+        )
       }
 
       return yield* handler.pipe(
-        Effect.provideService(AuthClaims, { sub: payload.sub, ghuser: payload.ghuser }),
+        Effect.provideService(AuthClaims, { sub: payload.sub, ghuser: payload.ghuser, jti: payload.jti }),
       )
     })
