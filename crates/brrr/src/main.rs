@@ -112,7 +112,7 @@ async fn run(cli: Cli) -> Result<i32, Error> {
             validate_server_url_scheme(&server_url)?;
             let (username, _token) = brrr::auth::authenticate(&server_url)?;
             info!(username = %username, "authenticated");
-            eprintln!("Authenticated as {username}");
+            println!("Authenticated as {username}");
         }
         CliCommand::Init => {
             let init_cfg = resolve_init_config(&cli)?;
