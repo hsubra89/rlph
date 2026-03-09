@@ -46,7 +46,7 @@ fn discover_pubkey() -> Result<(PathBuf, String), Error> {
     }
 
     // Fallback: default key names
-    let ssh_dir = dirs_path()?.join(".ssh");
+    let ssh_dir = home_path()?.join(".ssh");
     let candidates = ["id_ed25519.pub", "id_rsa.pub"];
 
     for name in &candidates {
@@ -74,7 +74,7 @@ fn discover_pubkey_from_ssh_config() -> Result<Option<(PathBuf, String)>, Error>
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let home = dirs_path()?;
+    let home = home_path()?;
     let candidates = parse_identity_files(&stdout, &home);
 
     for pub_path in candidates {
@@ -204,11 +204,11 @@ fn ssh_fingerprint(pubkey: &str) -> Result<String, Error> {
 }
 
 fn session_path() -> Result<PathBuf, Error> {
-    let config_dir = dirs_path()?.join(".config").join("brrr");
+    let config_dir = home_path()?.join(".config").join("brrr");
     Ok(config_dir.join("session.json"))
 }
 
-fn dirs_path() -> Result<PathBuf, Error> {
+fn home_path() -> Result<PathBuf, Error> {
     dirs::home_dir().ok_or_else(|| Error::Auth("cannot determine home directory".into()))
 }
 
