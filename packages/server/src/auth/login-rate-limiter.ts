@@ -1,12 +1,12 @@
-import { Chunk, Clock, Context, Duration, Effect, HashMap, Layer, Ref, Schedule } from "effect";
-import { pruneExpired } from "./map-utils.js";
+import { Chunk, Clock, Context, Duration, Effect, HashMap, Layer, Ref, Schedule } from "effect"
+import { pruneExpired } from "./map-utils.js"
 
-const WINDOW_MS = 10_000;
-const MAX_REQUESTS = 5;
+const WINDOW_MS = 10_000
+const MAX_REQUESTS = 5
 
 export interface LoginRateLimiterShape {
   /** Returns true if the request is allowed, false if rate-limited. */
-  readonly check: (ip: string) => Effect.Effect<boolean>;
+  readonly check: (ip: string) => Effect.Effect<boolean>
 }
 
 export class LoginRateLimiter extends Context.Tag("LoginRateLimiter")<
@@ -18,7 +18,7 @@ export class LoginRateLimiter extends Context.Tag("LoginRateLimiter")<
 export const LoginRateLimiterLive = Layer.scoped(
   LoginRateLimiter,
   Effect.gen(function* () {
-    const ref = yield* Ref.make(HashMap.empty<string, Chunk.Chunk<number>>());
+    const ref = yield* Ref.make(HashMap.empty<string, Chunk.Chunk<number>>())
 
     // Periodic bulk eviction of all stale entries so the map doesn't grow unboundedly.
     yield* Effect.forkScoped(
@@ -34,30 +34,30 @@ export const LoginRateLimiterLive = Layer.scoped(
         ),
         Schedule.fixed(Duration.millis(WINDOW_MS)),
       ),
-    );
+    )
 
     return {
       check: (ip: string) =>
         Effect.gen(function* () {
-          const now = yield* Clock.currentTimeMillis;
+          const now = yield* Clock.currentTimeMillis
 
           return yield* Ref.modify(ref, (map) => {
-            const cutoff = now - WINDOW_MS;
+            const cutoff = now - WINDOW_MS
 
             // Lazy: only filter timestamps for this IP, not the entire map.
-            const existing = HashMap.get(map, ip);
+            const existing = HashMap.get(map, ip)
             const timestamps =
               existing._tag === "Some"
                 ? Chunk.filter(existing.value, (t) => t > cutoff)
-                : Chunk.empty<number>();
+                : Chunk.empty<number>()
 
             if (Chunk.size(timestamps) >= MAX_REQUESTS) {
-              return [false, HashMap.set(map, ip, timestamps)] as const;
+              return [false, HashMap.set(map, ip, timestamps)] as const
             }
 
-            return [true, HashMap.set(map, ip, Chunk.append(timestamps, now))] as const;
-          });
+            return [true, HashMap.set(map, ip, Chunk.append(timestamps, now))] as const
+          })
         }),
-    };
+    }
   }),
-);
+)
