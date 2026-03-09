@@ -9,11 +9,22 @@ export class SshVerifyError extends Data.TaggedError("SshVerifyError")<{
   readonly cause?: unknown
 }> { }
 
-export function sshFingerprint(pubkey: string): Either.Either<string, FingerprintError> {
+// eslint-disable-next-line no-control-regex
+const controlCharRe = /[\x00-\x1f\x7f]/
+
+/** Parse and validate an SSH public key string. Returns [keyType, keyData] or null if invalid. */
+function parseSshKey(pubkey: string): [string, string] | null {
   const parts = pubkey.trim().split(/\s+/)
-  const keyData = parts[1]
-  if (!keyData) return Either.left(new FingerprintError())
-  const hash = crypto.createHash("sha256").update(Buffer.from(keyData, "base64")).digest("base64")
+  const [keyType, keyData] = parts
+  if (!keyType || !keyData) return null
+  if (controlCharRe.test(keyType) || controlCharRe.test(keyData)) return null
+  return [keyType, keyData]
+}
+
+export function sshFingerprint(pubkey: string): Either.Either<string, FingerprintError> {
+  const parsed = parseSshKey(pubkey)
+  if (!parsed) return Either.left(new FingerprintError())
+  const hash = crypto.createHash("sha256").update(Buffer.from(parsed[1], "base64")).digest("base64")
   return Either.right(`SHA256:${hash.replace(/=+$/, "")}`)
 }
 
@@ -32,13 +43,10 @@ export function verifySshSignature(
     const sigFile = `${tmpDir}/sig`
     const allowedSignersFile = `${tmpDir}/allowed_signers`
 
-    const keyParts = pubkey.trim().split(/\s+/)
-
     // Reject control characters (newlines, tabs, etc.) in key parts to prevent
     // injection of additional entries into the allowed_signers file.
-    // eslint-disable-next-line no-control-regex
-    const controlCharRe = /[\x00-\x1f\x7f]/
-    if (!keyParts[0] || !keyParts[1] || controlCharRe.test(keyParts[0]) || controlCharRe.test(keyParts[1])) {
+    const keyParts = parseSshKey(pubkey)
+    if (!keyParts) {
       return yield* Effect.fail(new SshVerifyError({ reason: "setup_failed" }))
     }
 
