@@ -13,12 +13,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use base64::prelude::*;
-
-pub const DEFAULT_SERVER_URL: &str = "http://localhost:3000";
-const JWT_FALLBACK_LIFETIME_SECS: u64 = 3600;
 use sha2::{Digest, Sha256};
 
 use crate::error::Error;
+
+pub const DEFAULT_SERVER_URL: &str = "http://localhost:3000";
+const JWT_FALLBACK_LIFETIME_SECS: u64 = 3600;
 
 fn unix_now_secs() -> u64 {
     std::time::SystemTime::now()
