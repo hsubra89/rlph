@@ -14,6 +14,13 @@ use tracing::{debug, info};
 
 use crate::error::Error;
 
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Session {
     token: String,
@@ -240,10 +247,7 @@ pub fn load_token() -> Result<Option<String>, Error> {
     let session: Session = serde_json::from_str(&content)
         .map_err(|e| Error::Auth(format!("failed to parse session file: {e}")))?;
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = unix_now_secs();
 
     if session.expires_at <= now {
         debug!("stored token expired");
@@ -260,10 +264,7 @@ pub fn authenticate(server_url: &str) -> Result<String, Error> {
     let fingerprint = ssh_fingerprint(&pubkey)?;
     info!(username = %username, "authenticating with server");
 
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let timestamp = unix_now_secs();
 
     let payload = format!("{username}\n{fingerprint}\n{timestamp}");
     let signature = ssh_sign(&private_key_path, &payload)?;
@@ -308,11 +309,7 @@ pub fn authenticate(server_url: &str) -> Result<String, Error> {
     // Decode JWT to get expiry (simple base64 decode of payload)
     let expires_at = jwt_expiry(&token).unwrap_or_else(|| {
         // Fallback: 1 hour from now
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 3600
+        unix_now_secs() + 3600
     });
 
     let session = Session { token, expires_at };
