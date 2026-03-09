@@ -25,6 +25,10 @@ CLI flags > config file values > built-in defaults. This is enforced in `config.
 
 Prefer well-established crates over hand-written code. Only roll your own when no popular crate fits.
 
+## API
+
+- JSON error responses use all-lowercase strings, e.g. `{ "error": "invalid token claims" }`. No sentence case or punctuation.
+
 ## Compatibility And Versioning
 
 - Target stable Rust in CI. If a change requires newer stable features, call it out in release notes and update CI/tooling docs in the same PR.

@@ -23,7 +23,7 @@ export const authMiddleware =
 
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
         return yield* HttpServerResponse.json(
-          { error: "Missing or invalid Authorization header" },
+          { error: "missing or invalid authorization header" },
           { status: 401 },
         )
       }
@@ -39,7 +39,7 @@ export const authMiddleware =
 
       if (Either.isLeft(verifyResult)) {
         return yield* HttpServerResponse.json(
-          { error: "Invalid or expired token" },
+          { error: "invalid or expired token" },
           { status: 401 },
         )
       }
@@ -47,7 +47,7 @@ export const authMiddleware =
       const payload = verifyResult.right.payload as { sub?: string; ghuser?: string; jti?: string }
       if (!payload.sub || !payload.ghuser || !payload.jti) {
         return yield* HttpServerResponse.json(
-          { error: "Invalid token claims" },
+          { error: "invalid token claims" },
           { status: 401 },
         )
       }
@@ -56,7 +56,7 @@ export const authMiddleware =
       const revoked = yield* denylist.isRevoked(payload.jti)
       if (revoked) {
         return yield* HttpServerResponse.json(
-          { error: "Token has been revoked" },
+          { error: "token has been revoked" },
           { status: 401 },
         )
       }
