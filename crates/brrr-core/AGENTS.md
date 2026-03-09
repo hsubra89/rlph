@@ -13,13 +13,8 @@ Pure domain types and algorithms. **Zero IO** — no network, no filesystem, no 
 
 ## Constraints
 
-- No IO. If it touches the network or filesystem, it belongs in `crates/brrr/`.
 - Prefer enums/newtypes over stringly-typed state.
 - Return structured errors — no panics, no `.unwrap()`.
-
-## Re-exports
-
-The `brrr` crate re-exports `ids`, `scc`, `deps`, `task` so existing `crate::` paths work.
 
 ## Testing
 
