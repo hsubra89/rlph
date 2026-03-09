@@ -1,5 +1,4 @@
-import { Config, ConfigError, Effect, Layer, Redacted } from "effect"
-import * as Context from "effect/Context"
+import { Config, ConfigError, Context, Effect, Layer, Redacted } from "effect"
 
 export class AppConfig {
   constructor(
