@@ -16,7 +16,7 @@ Entry point (`main.ts`) runs Postgres migrations, then composes layers:
 ```
 runDatabaseMigrations
   → ServerLive → NodeContext → ReplayGuardLive → TokenDenylistLive
-  → LoginRateLimiterLive → DatabaseHealthLive → FetchHttpClient → AppConfigLiveLayer
+  → LoginRateLimiterLive → DatabaseHealthLive → FetchHttpClient → JwtSecretLive
 ```
 
 ### Routes (`router.ts`)
@@ -47,11 +47,11 @@ runDatabaseMigrations
 
 ### Config (`config.ts`)
 
-`AppConfig` context:
+Per-concern config — no monolithic config bag:
 
-- port (env `BRRR_PORT`, default 3000)
-- JWT secret (env `BRRR_JWT_SECRET`, must be >= 32 bytes)
-- Postgres URL (env `BRRR_POSTGRES_URL`, required)
+- `JwtSecret` tag (env `BRRR_JWT_SECRET`, must be >= 32 bytes) — `Uint8Array` via `JwtSecretLive` layer
+- `ServerPort` config value (env `BRRR_PORT`, default 3000) — `Config.integer` with default
+- Postgres URL (env `BRRR_POSTGRES_URL`) — consumed directly by `PgClient.layerConfig` in `database.ts`
 
 ## Effect Patterns
 

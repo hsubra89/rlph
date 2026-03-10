@@ -7,7 +7,7 @@ import { Data, Effect, Layer, Redacted } from "effect"
 import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
 import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
 import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
-import { AppConfig, AppConfigTag } from "../../src/config.js"
+import { JwtSecret } from "../../src/config.js"
 import { DatabaseHealthLive, runDatabaseMigrations } from "../../src/database.js"
 import { router } from "../../src/router.js"
 
@@ -29,16 +29,12 @@ class PgContainer extends Effect.Service<PgContainer>()("test/PgContainer", {
   static TestDatabaseLayer = Layer.unwrapEffect(
     Effect.gen(function* () {
       const container = yield* PgContainer
-      return Layer.mergeAll(
-        PgClient.layer({ url: Redacted.make(container.getConnectionUri()) }),
-        Layer.succeed(
-          AppConfigTag,
-          new AppConfig(0, JWT_SECRET, Redacted.make(container.getConnectionUri())),
-        ),
-      )
+      return PgClient.layer({ url: Redacted.make(container.getConnectionUri()) })
     }),
   ).pipe(Layer.provide(this.Default))
 }
+
+const TestJwtSecretLayer = Layer.succeed(JwtSecret, JWT_SECRET)
 
 const DatabaseRuntimeLive = DatabaseHealthLive.pipe(Layer.provide(PgContainer.TestDatabaseLayer))
 
@@ -50,6 +46,7 @@ const TestLayer = Layer.mergeAll(
   LoginRateLimiterLive,
   DatabaseRuntimeLive,
   PgContainer.TestDatabaseLayer,
+  TestJwtSecretLayer,
 )
 
 describe("postgres foundation", () => {

@@ -5,20 +5,19 @@ import { createServer } from "node:http"
 import { LoginRateLimiterLive } from "./auth/login-rate-limiter.js"
 import { ReplayGuardLive } from "./auth/replay-guard.js"
 import { TokenDenylistLive } from "./auth/token-denylist.js"
-import { AppConfigTag, AppConfigLiveLayer } from "./config.js"
+import { JwtSecretLive, ServerPort } from "./config.js"
 import { DatabaseHealthLive, PostgresLive, runDatabaseMigrations } from "./database.js"
 import { router } from "./router.js"
 
 const program = Effect.gen(function* () {
-  const { port } = yield* AppConfigTag
+  const port = yield* ServerPort
 
   const ServerLive = NodeHttpServer.layer(() => createServer(), { port })
-  const PostgresRuntimeLive = PostgresLive.pipe(Layer.provide(AppConfigLiveLayer))
-  const DatabaseRuntimeLive = DatabaseHealthLive.pipe(Layer.provide(PostgresRuntimeLive))
+  const DatabaseRuntimeLive = DatabaseHealthLive.pipe(Layer.provide(PostgresLive))
 
   yield* Effect.logInfo("Running postgres migrations")
   const appliedMigrations = yield* runDatabaseMigrations.pipe(
-    Effect.provide(PostgresRuntimeLive),
+    Effect.provide(PostgresLive),
     Effect.provide(NodeContext.layer),
   )
   yield* Effect.logInfo(`Postgres migrations complete (${appliedMigrations.length} applied)`)
@@ -31,11 +30,11 @@ const program = Effect.gen(function* () {
     Layer.provide(LoginRateLimiterLive),
     Layer.provide(DatabaseRuntimeLive),
     Layer.provide(FetchHttpClient.layer),
-    Layer.provide(AppConfigLiveLayer),
+    Layer.provide(JwtSecretLive),
   )
 
   yield* Effect.logInfo(`Server starting on port ${port}`)
   yield* Layer.launch(HttpLive)
 })
 
-NodeRuntime.runMain(program.pipe(Effect.provide(AppConfigLiveLayer)))
+NodeRuntime.runMain(program)

@@ -1,23 +1,20 @@
 import { HttpBody, HttpClient, HttpServer } from "@effect/platform"
 import { NodeContext, NodeHttpServer } from "@effect/platform-node"
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Layer, Redacted } from "effect"
+import { Effect, Layer } from "effect"
 import * as crypto from "node:crypto"
 import * as jose from "jose"
 import { JWT_EXPIRY, unixNowSecs } from "../../src/auth/constants.js"
 import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
 import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
 import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
-import { AppConfig, AppConfigTag } from "../../src/config.js"
+import { JwtSecret } from "../../src/config.js"
 import { DatabaseHealth, DatabaseUnavailable } from "../../src/database.js"
 import { router } from "../../src/router.js"
 
 const JWT_SECRET = new TextEncoder().encode("test-secret-that-is-at-least-32-bytes-long")
 
-const TestConfigLayer = Layer.succeed(
-  AppConfigTag,
-  new AppConfig(0, JWT_SECRET, Redacted.make("postgres://postgres:postgres@127.0.0.1:5432/brrr")),
-)
+const TestJwtSecretLayer = Layer.succeed(JwtSecret, JWT_SECRET)
 
 const HealthyDatabaseLayer = Layer.succeed(DatabaseHealth, {
   check: Effect.void,
@@ -34,7 +31,7 @@ const makeTestLayer = (databaseLayer: Layer.Layer<DatabaseHealth>) =>
     ReplayGuardLive,
     TokenDenylistLive,
     LoginRateLimiterLive,
-    TestConfigLayer,
+    TestJwtSecretLayer,
     databaseLayer,
   )
 

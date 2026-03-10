@@ -1,8 +1,7 @@
 import { PgClient, PgMigrator } from "@effect/sql-pg"
 import { SqlClient } from "@effect/sql/SqlClient"
-import { Context, Data, Duration, Effect, Layer } from "effect"
-import { fileURLToPath } from "node:url"
-import { AppConfigTag } from "./config.js"
+import { Config, Context, Data, Duration, Effect, Layer } from "effect"
+import * as migration0001 from "./migrations/0001_postgres_foundation.js"
 
 export class DatabaseUnavailable extends Data.TaggedError("DatabaseUnavailable")<{
   readonly cause: unknown
@@ -14,14 +13,9 @@ export interface DatabaseHealthShape {
 
 export class DatabaseHealth extends Context.Tag("DatabaseHealth")<DatabaseHealth, DatabaseHealthShape>() {}
 
-const migrationsDirectory = fileURLToPath(new URL("./migrations", import.meta.url))
-
-export const PostgresLive = Layer.unwrapEffect(
-  Effect.gen(function* () {
-    const { postgresUrl } = yield* AppConfigTag
-    return PgClient.layer({ url: postgresUrl })
-  }),
-)
+export const PostgresLive = PgClient.layerConfig({
+  url: Config.redacted("BRRR_POSTGRES_URL"),
+})
 
 export const DatabaseHealthLive = Layer.effect(
   DatabaseHealth,
@@ -42,5 +36,7 @@ export const DatabaseHealthLive = Layer.effect(
 )
 
 export const runDatabaseMigrations = PgMigrator.run({
-  loader: PgMigrator.fromFileSystem(migrationsDirectory),
+  loader: PgMigrator.fromRecord({
+    "0001_postgres_foundation": migration0001.default,
+  }),
 })
