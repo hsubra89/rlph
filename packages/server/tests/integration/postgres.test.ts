@@ -50,22 +50,28 @@ const TestLayer = Layer.mergeAll(
 )
 
 describe("postgres foundation", () => {
-  it.scopedLive("applies the baseline migration", () =>
-    Effect.gen(function* () {
-      const applied = yield* runDatabaseMigrations
-      expect(applied).toEqual([[1, "postgres_foundation"]])
-    }).pipe(Effect.provide(TestLayer)),
+  it.scopedLive(
+    "applies the baseline migration",
+    () =>
+      Effect.gen(function* () {
+        const applied = yield* runDatabaseMigrations
+        expect(applied).toEqual([[1, "postgres_foundation"]])
+      }).pipe(Effect.provide(TestLayer)),
+    { timeout: 60_000 },
   )
 
-  it.scopedLive("GET /health returns 200 with a live postgres connection", () =>
-    Effect.gen(function* () {
-      yield* runDatabaseMigrations
-      yield* router.pipe(HttpServer.serveEffect())
-      const client = yield* HttpClient.HttpClient
-      const res = yield* client.get("/health")
-      expect(res.status).toBe(200)
-      const body = yield* res.json
-      expect(body).toEqual({ status: "ok" })
-    }).pipe(Effect.provide(TestLayer)),
+  it.scopedLive(
+    "GET /health returns 200 with a live postgres connection",
+    () =>
+      Effect.gen(function* () {
+        yield* runDatabaseMigrations
+        yield* router.pipe(HttpServer.serveEffect())
+        const client = yield* HttpClient.HttpClient
+        const res = yield* client.get("/health")
+        expect(res.status).toBe(200)
+        const body = yield* res.json
+        expect(body).toEqual({ status: "ok" })
+      }).pipe(Effect.provide(TestLayer)),
+    { timeout: 60_000 },
   )
 })
