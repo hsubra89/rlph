@@ -16,14 +16,14 @@ Entry point (`main.ts`) runs Postgres migrations, then composes layers:
 ```
 runDatabaseMigrations
   → ServerLive → NodeContext → ReplayGuardLive → TokenDenylistLive
-  → LoginRateLimiterLive → DatabaseHealthLive → FetchHttpClient → JwtSecretLive
+  → LoginRateLimiterLive → FetchHttpClient → JwtSecretLive
 ```
 
 ### Routes (`router.ts`)
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/health` | No | Readiness check backed by Postgres connectivity |
+| GET | `/health` | No | Cheap liveness check |
 | POST | `/auth/login` | No | SSH challenge-response → JWT |
 | GET | `/whoami` | Yes | Authenticated user info |
 | POST | `/auth/revoke` | Yes | Token revocation |
@@ -40,8 +40,8 @@ runDatabaseMigrations
 | `replay-guard.ts` | Block replayed (username, timestamp) pairs |
 | `login-rate-limiter.ts` | Per-IP rate limiting |
 | `token-denylist.ts` | Revoked token tracking |
-| `database.ts` | Required Postgres client, health service, and migration runner |
-| `health.ts` | Readiness endpoint backed by `DatabaseHealth` |
+| `database.ts` | Required Postgres client and migration runner |
+| `health.ts` | Liveness endpoint |
 | `constants.ts` | `JWT_EXPIRY`, `TIMESTAMP_FRESHNESS_SECS` |
 | `map-utils.ts` | Effect Map utility functions |
 

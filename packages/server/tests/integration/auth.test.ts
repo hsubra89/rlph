@@ -9,33 +9,20 @@ import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
 import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
 import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
 import { JwtSecret } from "../../src/config.js"
-import { DatabaseHealth, DatabaseUnavailable } from "../../src/database.js"
 import { router } from "../../src/router.js"
 
 const JWT_SECRET = new TextEncoder().encode("test-secret-that-is-at-least-32-bytes-long")
 
 const TestJwtSecretLayer = Layer.succeed(JwtSecret, JWT_SECRET)
 
-const HealthyDatabaseLayer = Layer.succeed(DatabaseHealth, {
-  check: Effect.void,
-})
-
-const UnhealthyDatabaseLayer = Layer.succeed(DatabaseHealth, {
-  check: Effect.fail(new DatabaseUnavailable({ cause: new Error("database offline") })),
-})
-
-const makeTestLayer = (databaseLayer: Layer.Layer<DatabaseHealth>) =>
-  Layer.mergeAll(
-    NodeHttpServer.layerTest,
-    NodeContext.layer,
-    ReplayGuardLive,
-    TokenDenylistLive,
-    LoginRateLimiterLive,
-    TestJwtSecretLayer,
-    databaseLayer,
-  )
-
-const TestLayer = makeTestLayer(HealthyDatabaseLayer)
+const TestLayer = Layer.mergeAll(
+  NodeHttpServer.layerTest,
+  NodeContext.layer,
+  ReplayGuardLive,
+  TokenDenylistLive,
+  LoginRateLimiterLive,
+  TestJwtSecretLayer,
+)
 
 function mintJwt(opts: { ghuser: string; sub: string; jti?: string }) {
   return new jose.SignJWT({ ghuser: opts.ghuser })
@@ -57,17 +44,6 @@ describe("auth flow", () => {
       const body = yield* res.json
       expect(body).toEqual({ status: "ok" })
     }).pipe(Effect.provide(TestLayer)),
-  )
-
-  it.scoped("GET /health returns 503 when database is unavailable", () =>
-    Effect.gen(function* () {
-      yield* router.pipe(HttpServer.serveEffect())
-      const client = yield* HttpClient.HttpClient
-      const res = yield* client.get("/health")
-      expect(res.status).toBe(503)
-      const body = yield* res.json
-      expect(body).toEqual({ error: "database unavailable" })
-    }).pipe(Effect.provide(makeTestLayer(UnhealthyDatabaseLayer))),
   )
 
   it.scoped("POST /auth/login rejects invalid body with 400", () =>

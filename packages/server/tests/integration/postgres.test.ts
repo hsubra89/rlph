@@ -8,7 +8,7 @@ import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
 import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
 import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
 import { JwtSecret } from "../../src/config.js"
-import { DatabaseHealthLive, runDatabaseMigrations } from "../../src/database.js"
+import { runDatabaseMigrations } from "../../src/database.js"
 import { router } from "../../src/router.js"
 
 const JWT_SECRET = new TextEncoder().encode("test-secret-that-is-at-least-32-bytes-long")
@@ -36,15 +36,12 @@ class PgContainer extends Effect.Service<PgContainer>()("test/PgContainer", {
 
 const TestJwtSecretLayer = Layer.succeed(JwtSecret, JWT_SECRET)
 
-const DatabaseRuntimeLive = DatabaseHealthLive.pipe(Layer.provide(PgContainer.TestDatabaseLayer))
-
 const TestLayer = Layer.mergeAll(
   NodeContext.layer,
   NodeHttpServer.layerTest,
   ReplayGuardLive,
   TokenDenylistLive,
   LoginRateLimiterLive,
-  DatabaseRuntimeLive,
   PgContainer.TestDatabaseLayer,
   TestJwtSecretLayer,
 )
@@ -61,7 +58,7 @@ describe("postgres foundation", () => {
   )
 
   it.scopedLive(
-    "GET /health returns 200 with a live postgres connection",
+    "GET /health returns 200 while the server is running",
     () =>
       Effect.gen(function* () {
         yield* runDatabaseMigrations
