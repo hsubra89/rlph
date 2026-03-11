@@ -21,14 +21,14 @@
     "@effect/sql": "^0.49.0",
     "@effect/sql-pg": "^0.50.3",
     "effect": "^3.19.19",
-    "jose": "^6.2.0"
+    "jose": "^6.2.1"
   },
   "devDependencies": {
     "@effect/vitest": "^0.27.0",
-    "@testcontainers/postgresql": "^10.25.0",
+    "@testcontainers/postgresql": "^11.12.0",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "vitest": "^3.2.4"
   }
 }
