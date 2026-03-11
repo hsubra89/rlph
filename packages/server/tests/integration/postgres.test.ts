@@ -1,17 +1,11 @@
 import { HttpClient, HttpServer } from "@effect/platform"
-import { NodeContext, NodeHttpServer } from "@effect/platform-node"
 import { PgClient } from "@effect/sql-pg"
 import { PostgreSqlContainer } from "@testcontainers/postgresql"
 import { describe, expect, it } from "@effect/vitest"
 import { Data, Effect, Layer, Redacted } from "effect"
-import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
-import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
-import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
-import { JwtSecret } from "../../src/config.js"
 import { runDatabaseMigrations } from "../../src/database.js"
 import { router } from "../../src/router.js"
-
-const JWT_SECRET = new TextEncoder().encode("test-secret-that-is-at-least-32-bytes-long")
+import { makeServerTestLayer } from "./fixtures.js"
 
 class ContainerError extends Data.TaggedError("ContainerError")<{
   readonly cause: unknown
@@ -34,17 +28,7 @@ class PgContainer extends Effect.Service<PgContainer>()("test/PgContainer", {
   ).pipe(Layer.provide(this.Default))
 }
 
-const TestJwtSecretLayer = Layer.succeed(JwtSecret, JWT_SECRET)
-
-const TestLayer = Layer.mergeAll(
-  NodeContext.layer,
-  NodeHttpServer.layerTest,
-  ReplayGuardLive,
-  TokenDenylistLive,
-  LoginRateLimiterLive,
-  PgContainer.TestDatabaseLayer,
-  TestJwtSecretLayer,
-)
+const TestLayer = makeServerTestLayer(PgContainer.TestDatabaseLayer)
 
 describe("postgres foundation", () => {
   it.scopedLive(
