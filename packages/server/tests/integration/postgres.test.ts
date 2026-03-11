@@ -3,7 +3,7 @@ import { PgClient } from "@effect/sql-pg"
 import { PostgreSqlContainer } from "@testcontainers/postgresql"
 import { describe, expect, it } from "@effect/vitest"
 import { Data, Effect, Layer, Redacted } from "effect"
-import { runDatabaseMigrations } from "../../src/database.js"
+import { DatabaseHealthLive, runDatabaseMigrations } from "../../src/database.js"
 import { router } from "../../src/router.js"
 import { makeServerTestLayer } from "./fixtures.js"
 
@@ -28,7 +28,7 @@ class PgContainer extends Effect.Service<PgContainer>()("test/PgContainer", {
   ).pipe(Layer.provide(this.Default))
 }
 
-const TestLayer = makeServerTestLayer(PgContainer.TestDatabaseLayer)
+const TestLayer = makeServerTestLayer(DatabaseHealthLive.pipe(Layer.provideMerge(PgContainer.TestDatabaseLayer)))
 
 describe("postgres foundation", () => {
   it.scopedLive(

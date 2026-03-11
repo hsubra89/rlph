@@ -1,11 +1,12 @@
 import { HttpBody, HttpClient, HttpServer } from "@effect/platform"
 import { describe, expect, it } from "@effect/vitest"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 import * as crypto from "node:crypto"
 import * as jose from "jose"
 import { JWT_EXPIRY, unixNowSecs } from "../../src/auth/constants.js"
+import { DatabaseHealth, DatabaseUnavailable } from "../../src/database.js"
 import { router } from "../../src/router.js"
-import { ServerTestLayer, TEST_JWT_SECRET } from "./fixtures.js"
+import { TEST_JWT_SECRET, makeServerTestLayer } from "./fixtures.js"
 
 function mintJwt(opts: { ghuser: string; sub: string; jti?: string }) {
   return new jose.SignJWT({ ghuser: opts.ghuser })
@@ -17,6 +18,9 @@ function mintJwt(opts: { ghuser: string; sub: string; jti?: string }) {
     .sign(TEST_JWT_SECRET)
 }
 
+const HealthyDatabaseLayer = Layer.succeed(DatabaseHealth, { check: Effect.void })
+const AuthServerTestLayer = makeServerTestLayer(HealthyDatabaseLayer)
+
 describe("auth flow", () => {
   it.scoped("GET /health returns 200", () =>
     Effect.gen(function* () {
@@ -26,7 +30,26 @@ describe("auth flow", () => {
       expect(res.status).toBe(200)
       const body = yield* res.json
       expect(body).toEqual({ status: "ok" })
-    }).pipe(Effect.provide(ServerTestLayer)),
+    }).pipe(Effect.provide(AuthServerTestLayer)),
+  )
+
+  it.scoped("GET /health returns 503 when the database health check fails", () =>
+    Effect.gen(function* () {
+      yield* router.pipe(HttpServer.serveEffect())
+      const client = yield* HttpClient.HttpClient
+      const res = yield* client.get("/health")
+      expect(res.status).toBe(503)
+      const body = yield* res.json
+      expect(body).toEqual({ status: "database_unavailable" })
+    }).pipe(
+      Effect.provide(
+        makeServerTestLayer(
+          Layer.succeed(DatabaseHealth, {
+            check: Effect.fail(new DatabaseUnavailable({ cause: new Error("database unavailable") })),
+          }),
+        ),
+      ),
+    ),
   )
 
   it.scoped("POST /auth/login rejects invalid body with 400", () =>
@@ -39,7 +62,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(400)
       const body = yield* res.json
       expect(body).toEqual({ error: "username, fingerprint, timestamp, and signature required" })
-    }).pipe(Effect.provide(ServerTestLayer)),
+    }).pipe(Effect.provide(AuthServerTestLayer)),
   )
 
   it.scoped("POST /auth/login rejects string timestamp with 400", () =>
@@ -55,7 +78,7 @@ describe("auth flow", () => {
         }),
       })
       expect(res.status).toBe(400)
-    }).pipe(Effect.provide(ServerTestLayer)),
+    }).pipe(Effect.provide(AuthServerTestLayer)),
   )
 
   it.scoped("POST /auth/login rejects stale timestamp with 401", () =>
@@ -73,7 +96,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(401)
       const body = yield* res.json
       expect(body).toEqual({ error: "timestamp too stale" })
-    }).pipe(Effect.provide(ServerTestLayer)),
+    }).pipe(Effect.provide(AuthServerTestLayer)),
   )
 
   it.scoped("POST /auth/login rejects replayed request with 401", () =>
@@ -97,7 +120,7 @@ describe("auth flow", () => {
       expect(res2.status).toBe(401)
       const body = yield* res2.json
       expect(body).toEqual({ error: "duplicate request" })
-    }).pipe(Effect.provide(ServerTestLayer)),
+    }).pipe(Effect.provide(AuthServerTestLayer)),
   )
 
   it.scoped("POST /auth/login returns 429 after too many requests", () =>
@@ -130,7 +153,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(429)
       const body = yield* res.json
       expect(body).toEqual({ error: "too many requests" })
-    }).pipe(Effect.provide(ServerTestLayer)),
+    }).pipe(Effect.provide(AuthServerTestLayer)),
   )
 
   it.scoped("GET /whoami rejects missing auth header with 401", () =>
@@ -141,7 +164,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(401)
       const body = yield* res.json
       expect(body).toEqual({ error: "missing or invalid authorization header" })
-    }).pipe(Effect.provide(ServerTestLayer)),
+    }).pipe(Effect.provide(AuthServerTestLayer)),
   )
 
   it.scoped("GET /whoami rejects invalid token with 401", () =>
@@ -154,7 +177,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(401)
       const body = yield* res.json
       expect(body).toEqual({ error: "invalid or expired token" })
-    }).pipe(Effect.provide(ServerTestLayer)),
+    }).pipe(Effect.provide(AuthServerTestLayer)),
   )
 
   it.scoped("GET /whoami succeeds with valid token", () =>
@@ -168,7 +191,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(200)
       const body = yield* res.json
       expect(body).toEqual({ ghuser: "alice", sub: "SHA256:fp" })
-    }).pipe(Effect.provide(ServerTestLayer)),
+    }).pipe(Effect.provide(AuthServerTestLayer)),
   )
 
   it.scoped("POST /auth/revoke invalidates token", () =>
@@ -197,7 +220,7 @@ describe("auth flow", () => {
       expect(res2.status).toBe(401)
       const body = yield* res2.json
       expect(body).toEqual({ error: "token has been revoked" })
-    }).pipe(Effect.provide(ServerTestLayer)),
+    }).pipe(Effect.provide(AuthServerTestLayer)),
   )
 
   it.scoped("POST /auth/revoke only revokes caller's own token", () =>
@@ -228,6 +251,6 @@ describe("auth flow", () => {
         headers: { authorization: `Bearer ${token2}` },
       })
       expect(res2.status).toBe(200)
-    }).pipe(Effect.provide(ServerTestLayer)),
+    }).pipe(Effect.provide(AuthServerTestLayer)),
   )
 })
