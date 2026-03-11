@@ -36,7 +36,10 @@ describe("postgres foundation", () => {
     () =>
       Effect.gen(function* () {
         const applied = yield* runDatabaseMigrations
-        expect(applied).toEqual([[1, "postgres_foundation"]])
+        expect(applied).toEqual([
+          [1, "postgres_foundation"],
+          [2, "webhook_tables"],
+        ])
       }).pipe(Effect.provide(TestLayer)),
     { timeout: 60_000 },
   )
