@@ -33,3 +33,5 @@ node_modules/
 dist/
 *.tsbuildinfo
 ralph.sh
+.env
+.env.files/

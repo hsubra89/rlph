@@ -1,5 +1,5 @@
 import { NodeContext, NodeHttpServer } from "@effect/platform-node"
-import { Effect, Layer } from "effect"
+import { Layer } from "effect"
 import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
 import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
 import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
@@ -19,4 +19,5 @@ export const ServerTestLayer = Layer.mergeAll(
   TestJwtSecretLayer,
 )
 
-export const makeServerTestLayer = (...layers: ReadonlyArray<Layer.Layer.Any>) => Layer.mergeAll(ServerTestLayer, ...layers)
+export const makeServerTestLayer = (...layers: ReadonlyArray<Layer.Layer<never, any, any>>) =>
+  Layer.mergeAll(ServerTestLayer, ...layers)

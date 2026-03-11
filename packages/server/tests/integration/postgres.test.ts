@@ -9,7 +9,7 @@ import { makeServerTestLayer } from "./fixtures.js"
 
 class ContainerError extends Data.TaggedError("ContainerError")<{
   readonly cause: unknown
-}> { }
+}> {}
 
 class PgContainer extends Effect.Service<PgContainer>()("test/PgContainer", {
   scoped: Effect.acquireRelease(

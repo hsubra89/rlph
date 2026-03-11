@@ -81,7 +81,9 @@ describe("PostgresMigrationsUrl", () => {
       const url = yield* PostgresMigrationsUrl
       expect(Redacted.value(url)).toBe("postgres://runtime")
     }).pipe(
-      Effect.withConfigProvider(ConfigProvider.fromMap(new Map([["BRRR_POSTGRES_URL", "postgres://runtime"]]))),
+      Effect.withConfigProvider(
+        ConfigProvider.fromMap(new Map([["BRRR_POSTGRES_URL", "postgres://runtime"]])),
+      ),
     ),
   )
 })
