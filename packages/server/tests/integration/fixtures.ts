@@ -4,8 +4,9 @@ import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
 import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
 import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
 import { JwtSecret } from "../../src/config.js"
+import { TEST_JWT_SECRET } from "../helpers/constants.js"
 
-export const TEST_JWT_SECRET = new TextEncoder().encode("test-secret-that-is-at-least-32-bytes-long")
+export { TEST_JWT_SECRET }
 
 export const TestJwtSecretLayer = Layer.succeed(JwtSecret, TEST_JWT_SECRET)
 

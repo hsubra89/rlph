@@ -2,8 +2,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { ConfigError, ConfigProvider, Effect, Redacted } from "effect"
 import { JwtSecret, JwtSecretLive, ServerPort } from "../../src/config.js"
 import { PostgresMigrationsUrl } from "../../src/database.js"
-
-const JWT_SECRET = "test-secret-that-is-at-least-32-bytes-long"
+import { TEST_JWT_SECRET_RAW } from "../helpers/constants.js"
 
 describe("JwtSecretLive", () => {
   it.effect("rejects secrets shorter than 32 bytes", () =>
@@ -26,7 +25,7 @@ describe("JwtSecretLive", () => {
       expect(secret.length).toBeGreaterThanOrEqual(32)
     }).pipe(
       Effect.provide(JwtSecretLive),
-      Effect.withConfigProvider(ConfigProvider.fromMap(new Map([["BRRR_JWT_SECRET", JWT_SECRET]]))),
+      Effect.withConfigProvider(ConfigProvider.fromMap(new Map([["BRRR_JWT_SECRET", TEST_JWT_SECRET_RAW]]))),
     ),
   )
 
