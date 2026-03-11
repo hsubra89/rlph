@@ -7,11 +7,10 @@ export class DatabaseUnavailable extends Data.TaggedError("DatabaseUnavailable")
   readonly cause: unknown
 }> {}
 
-export interface DatabaseHealthShape {
-  readonly check: Effect.Effect<void, DatabaseUnavailable>
-}
-
-export class DatabaseHealth extends Context.Tag("DatabaseHealth")<DatabaseHealth, DatabaseHealthShape>() {}
+export class DatabaseHealth extends Context.Tag("DatabaseHealth")<
+  DatabaseHealth,
+  { readonly check: Effect.Effect<void, DatabaseUnavailable> }
+>() {}
 
 export const PostgresLive = PgClient.layerConfig({
   url: Config.redacted("BRRR_POSTGRES_URL"),
