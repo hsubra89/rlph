@@ -6,7 +6,7 @@ import { LoginRateLimiterLive } from "./auth/login-rate-limiter.js"
 import { ReplayGuardLive } from "./auth/replay-guard.js"
 import { TokenDenylistLive } from "./auth/token-denylist.js"
 import { JwtSecretLive, ServerPort } from "./config.js"
-import { PostgresLive, runDatabaseMigrations } from "./database.js"
+import { PostgresMigrationsLive, runDatabaseMigrations } from "./database.js"
 import { router } from "./router.js"
 
 const program = Effect.gen(function* () {
@@ -15,7 +15,7 @@ const program = Effect.gen(function* () {
   const ServerLive = NodeHttpServer.layer(() => createServer(), { port })
   yield* Effect.logInfo("Running postgres migrations")
   const appliedMigrations = yield* runDatabaseMigrations.pipe(
-    Effect.provide(PostgresLive),
+    Effect.provide(PostgresMigrationsLive),
     Effect.provide(NodeContext.layer),
   )
   yield* Effect.logInfo(`Postgres migrations complete (${appliedMigrations.length} applied)`)

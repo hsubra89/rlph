@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
-import { ConfigError, ConfigProvider, Effect } from "effect"
+import { ConfigError, ConfigProvider, Effect, Redacted } from "effect"
 import { JwtSecret, JwtSecretLive, ServerPort } from "../../src/config.js"
+import { PostgresMigrationsUrl } from "../../src/database.js"
 
 const JWT_SECRET = "test-secret-that-is-at-least-32-bytes-long"
 
@@ -56,5 +57,32 @@ describe("ServerPort", () => {
       const port = yield* ServerPort
       expect(port).toBe(4000)
     }).pipe(Effect.withConfigProvider(ConfigProvider.fromMap(new Map([["BRRR_PORT", "4000"]])))),
+  )
+})
+
+describe("PostgresMigrationsUrl", () => {
+  it.effect("uses BRRR_POSTGRES_MIGRATIONS_URL when set", () =>
+    Effect.gen(function* () {
+      const url = yield* PostgresMigrationsUrl
+      expect(Redacted.value(url)).toBe("postgres://migrations")
+    }).pipe(
+      Effect.withConfigProvider(
+        ConfigProvider.fromMap(
+          new Map([
+            ["BRRR_POSTGRES_URL", "postgres://runtime"],
+            ["BRRR_POSTGRES_MIGRATIONS_URL", "postgres://migrations"],
+          ]),
+        ),
+      ),
+    ),
+  )
+
+  it.effect("falls back to BRRR_POSTGRES_URL", () =>
+    Effect.gen(function* () {
+      const url = yield* PostgresMigrationsUrl
+      expect(Redacted.value(url)).toBe("postgres://runtime")
+    }).pipe(
+      Effect.withConfigProvider(ConfigProvider.fromMap(new Map([["BRRR_POSTGRES_URL", "postgres://runtime"]]))),
+    ),
   )
 })

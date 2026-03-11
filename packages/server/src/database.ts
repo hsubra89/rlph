@@ -17,6 +17,14 @@ export const PostgresLive = PgClient.layerConfig({
   url: Config.redacted("BRRR_POSTGRES_URL"),
 })
 
+export const PostgresMigrationsUrl = Config.redacted("BRRR_POSTGRES_MIGRATIONS_URL").pipe(
+  Config.orElse(() => Config.redacted("BRRR_POSTGRES_URL")),
+)
+
+export const PostgresMigrationsLive = PgClient.layerConfig({
+  url: PostgresMigrationsUrl,
+})
+
 export const DatabaseHealthLive = Layer.effect(
   DatabaseHealth,
   Effect.gen(function* () {
