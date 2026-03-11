@@ -14,7 +14,7 @@ class ContainerError extends Data.TaggedError("ContainerError")<{
 class PgContainer extends Effect.Service<PgContainer>()("test/PgContainer", {
   scoped: Effect.acquireRelease(
     Effect.tryPromise({
-      try: () => new PostgreSqlContainer("postgres:alpine").start(),
+      try: () => new PostgreSqlContainer("postgres:16-alpine").start(),
       catch: (cause) => new ContainerError({ cause }),
     }),
     (container) => Effect.promise(() => container.stop()),
