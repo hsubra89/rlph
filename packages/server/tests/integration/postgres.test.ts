@@ -9,12 +9,12 @@ import { makeServerTestLayer } from "./fixtures.js"
 
 class ContainerError extends Data.TaggedError("ContainerError")<{
   readonly cause: unknown
-}> {}
+}> { }
 
 class PgContainer extends Effect.Service<PgContainer>()("test/PgContainer", {
   scoped: Effect.acquireRelease(
     Effect.tryPromise({
-      try: () => new PostgreSqlContainer("postgres:16-alpine").start(),
+      try: () => new PostgreSqlContainer("postgres:18-alpine").start(),
       catch: (cause) => new ContainerError({ cause }),
     }),
     (container) => Effect.promise(() => container.stop()),
