@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cargo build
 pnpm install
 pnpm build
-
-
-# Seeded by lalph. Customize this to prepare new worktrees.
