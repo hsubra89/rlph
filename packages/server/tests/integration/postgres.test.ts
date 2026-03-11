@@ -13,7 +13,7 @@ import { router } from "../../src/router.js"
 
 const JWT_SECRET = new TextEncoder().encode("test-secret-that-is-at-least-32-bytes-long")
 
-export class ContainerError extends Data.TaggedError("ContainerError")<{
+class ContainerError extends Data.TaggedError("ContainerError")<{
   readonly cause: unknown
 }> {}
 
