@@ -28,7 +28,7 @@ export const DatabaseHealthLive = Layer.effect(
         Effect.mapError((cause) => new DatabaseUnavailable({ cause })),
         Effect.timeoutFail({
           duration: Duration.seconds(2),
-          onTimeout: () => new DatabaseUnavailable({ cause: new Error("Database health check timed out") }),
+          onTimeout: () => new DatabaseUnavailable({ cause: new Error("database health check timed out") }),
         }),
       ),
     }
