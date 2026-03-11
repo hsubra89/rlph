@@ -1,0 +1,21 @@
+import { PgClient, PgMigrator } from "@effect/sql-pg"
+import { Config } from "effect"
+import * as migration0001 from "./migrations/0001_postgres_foundation.js"
+
+export const PostgresLive = PgClient.layerConfig({
+  url: Config.redacted("BRRR_POSTGRES_URL"),
+})
+
+export const PostgresMigrationsUrl = Config.redacted("BRRR_POSTGRES_MIGRATIONS_URL").pipe(
+  Config.orElse(() => Config.redacted("BRRR_POSTGRES_URL")),
+)
+
+export const PostgresMigrationsLive = PgClient.layerConfig({
+  url: PostgresMigrationsUrl,
+})
+
+export const runDatabaseMigrations = PgMigrator.run({
+  loader: PgMigrator.fromRecord({
+    "0001_postgres_foundation": migration0001.default,
+  }),
+})

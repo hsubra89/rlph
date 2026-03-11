@@ -1,28 +1,11 @@
 import { HttpBody, HttpClient, HttpServer } from "@effect/platform"
-import { NodeCommandExecutor, NodeFileSystem, NodeHttpServer } from "@effect/platform-node"
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 import * as crypto from "node:crypto"
 import * as jose from "jose"
 import { JWT_EXPIRY, unixNowSecs } from "../../src/auth/constants.js"
-import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
-import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
-import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
-import { AppConfig, AppConfigTag } from "../../src/config.js"
 import { router } from "../../src/router.js"
-
-const JWT_SECRET = new TextEncoder().encode("test-secret-that-is-at-least-32-bytes-long")
-
-const TestConfigLayer = Layer.succeed(AppConfigTag, new AppConfig(0, JWT_SECRET))
-
-const TestLayer = Layer.mergeAll(
-  NodeHttpServer.layerTest,
-  NodeCommandExecutor.layer.pipe(Layer.provideMerge(NodeFileSystem.layer)),
-  ReplayGuardLive,
-  TokenDenylistLive,
-  LoginRateLimiterLive,
-  TestConfigLayer,
-)
+import { ServerTestLayer, TEST_JWT_SECRET } from "./fixtures.js"
 
 function mintJwt(opts: { ghuser: string; sub: string; jti?: string }) {
   return new jose.SignJWT({ ghuser: opts.ghuser })
@@ -31,7 +14,7 @@ function mintJwt(opts: { ghuser: string; sub: string; jti?: string }) {
     .setJti(opts.jti ?? crypto.randomUUID())
     .setIssuedAt()
     .setExpirationTime(JWT_EXPIRY)
-    .sign(JWT_SECRET)
+    .sign(TEST_JWT_SECRET)
 }
 
 describe("auth flow", () => {
@@ -43,7 +26,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(200)
       const body = yield* res.json
       expect(body).toEqual({ status: "ok" })
-    }).pipe(Effect.provide(TestLayer)),
+    }).pipe(Effect.provide(ServerTestLayer)),
   )
 
   it.scoped("POST /auth/login rejects invalid body with 400", () =>
@@ -56,7 +39,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(400)
       const body = yield* res.json
       expect(body).toEqual({ error: "username, fingerprint, timestamp, and signature required" })
-    }).pipe(Effect.provide(TestLayer)),
+    }).pipe(Effect.provide(ServerTestLayer)),
   )
 
   it.scoped("POST /auth/login rejects string timestamp with 400", () =>
@@ -72,7 +55,7 @@ describe("auth flow", () => {
         }),
       })
       expect(res.status).toBe(400)
-    }).pipe(Effect.provide(TestLayer)),
+    }).pipe(Effect.provide(ServerTestLayer)),
   )
 
   it.scoped("POST /auth/login rejects stale timestamp with 401", () =>
@@ -90,7 +73,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(401)
       const body = yield* res.json
       expect(body).toEqual({ error: "timestamp too stale" })
-    }).pipe(Effect.provide(TestLayer)),
+    }).pipe(Effect.provide(ServerTestLayer)),
   )
 
   it.scoped("POST /auth/login rejects replayed request with 401", () =>
@@ -114,7 +97,7 @@ describe("auth flow", () => {
       expect(res2.status).toBe(401)
       const body = yield* res2.json
       expect(body).toEqual({ error: "duplicate request" })
-    }).pipe(Effect.provide(TestLayer)),
+    }).pipe(Effect.provide(ServerTestLayer)),
   )
 
   it.scoped("POST /auth/login returns 429 after too many requests", () =>
@@ -147,7 +130,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(429)
       const body = yield* res.json
       expect(body).toEqual({ error: "too many requests" })
-    }).pipe(Effect.provide(TestLayer)),
+    }).pipe(Effect.provide(ServerTestLayer)),
   )
 
   it.scoped("GET /whoami rejects missing auth header with 401", () =>
@@ -158,7 +141,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(401)
       const body = yield* res.json
       expect(body).toEqual({ error: "missing or invalid authorization header" })
-    }).pipe(Effect.provide(TestLayer)),
+    }).pipe(Effect.provide(ServerTestLayer)),
   )
 
   it.scoped("GET /whoami rejects invalid token with 401", () =>
@@ -171,7 +154,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(401)
       const body = yield* res.json
       expect(body).toEqual({ error: "invalid or expired token" })
-    }).pipe(Effect.provide(TestLayer)),
+    }).pipe(Effect.provide(ServerTestLayer)),
   )
 
   it.scoped("GET /whoami succeeds with valid token", () =>
@@ -185,7 +168,7 @@ describe("auth flow", () => {
       expect(res.status).toBe(200)
       const body = yield* res.json
       expect(body).toEqual({ ghuser: "alice", sub: "SHA256:fp" })
-    }).pipe(Effect.provide(TestLayer)),
+    }).pipe(Effect.provide(ServerTestLayer)),
   )
 
   it.scoped("POST /auth/revoke invalidates token", () =>
@@ -214,7 +197,7 @@ describe("auth flow", () => {
       expect(res2.status).toBe(401)
       const body = yield* res2.json
       expect(body).toEqual({ error: "token has been revoked" })
-    }).pipe(Effect.provide(TestLayer)),
+    }).pipe(Effect.provide(ServerTestLayer)),
   )
 
   it.scoped("POST /auth/revoke only revokes caller's own token", () =>
@@ -245,6 +228,6 @@ describe("auth flow", () => {
         headers: { authorization: `Bearer ${token2}` },
       })
       expect(res2.status).toBe(200)
-    }).pipe(Effect.provide(TestLayer)),
+    }).pipe(Effect.provide(ServerTestLayer)),
   )
 })

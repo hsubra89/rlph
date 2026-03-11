@@ -11,17 +11,19 @@ Auth API server. Handles SSH challenge-response login, JWT token lifecycle, rate
 
 ## Architecture
 
-Entry point (`main.ts`) composes layers:
+Entry point (`main.ts`) runs Postgres migrations, then composes layers:
 
 ```
-ServerLive → PlatformLive → ReplayGuardLive → TokenDenylistLive → LoginRateLimiterLive → FetchHttpClient → AppConfigLiveLayer
+runDatabaseMigrations
+  → ServerLive → NodeContext → ReplayGuardLive → TokenDenylistLive
+  → LoginRateLimiterLive → FetchHttpClient → JwtSecretLive
 ```
 
 ### Routes (`router.ts`)
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/health` | No | Health check |
+| GET | `/health` | No | Cheap liveness check |
 | POST | `/auth/login` | No | SSH challenge-response → JWT |
 | GET | `/whoami` | Yes | Authenticated user info |
 | POST | `/auth/revoke` | Yes | Token revocation |
@@ -38,12 +40,18 @@ ServerLive → PlatformLive → ReplayGuardLive → TokenDenylistLive → LoginR
 | `replay-guard.ts` | Block replayed (username, timestamp) pairs |
 | `login-rate-limiter.ts` | Per-IP rate limiting |
 | `token-denylist.ts` | Revoked token tracking |
+| `database.ts` | Required Postgres client and migration runner |
+| `health.ts` | Liveness endpoint |
 | `constants.ts` | `JWT_EXPIRY`, `TIMESTAMP_FRESHNESS_SECS` |
 | `map-utils.ts` | Effect Map utility functions |
 
 ### Config (`config.ts`)
 
-`AppConfig` context: port (env `BRRR_PORT`, default 3000), JWT secret (env `JWT_SECRET`, must be >= 32 bytes).
+Per-concern config — no monolithic config bag:
+
+- `JwtSecret` tag (env `BRRR_JWT_SECRET`, must be >= 32 bytes) — `Uint8Array` via `JwtSecretLive` layer
+- `ServerPort` config value (env `BRRR_PORT`, default 3000) — `Config.integer` with default
+- Postgres URL (env `BRRR_POSTGRES_URL`) — consumed directly by `PgClient.layerConfig` in `database.ts`
 
 ## Effect Patterns
 

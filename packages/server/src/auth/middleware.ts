@@ -1,7 +1,7 @@
 import { HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Context, Data, Effect, Either } from "effect"
 import * as jose from "jose"
-import { AppConfigTag } from "../config.js"
+import { JwtSecret } from "../config.js"
 import { TokenDenylist } from "./token-denylist.js"
 
 export class AuthClaims extends Context.Tag("AuthClaims")<
@@ -21,7 +21,7 @@ export const authMiddleware = <E, R>(
   handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R | AuthClaims>,
 ) =>
   Effect.gen(function* () {
-    const { jwtSecret } = yield* AppConfigTag
+    const jwtSecret = yield* JwtSecret
     const request = yield* HttpServerRequest.HttpServerRequest
     const authHeader = request.headers["authorization"]
 
