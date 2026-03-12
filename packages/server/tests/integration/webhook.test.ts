@@ -258,6 +258,39 @@ describe("webhook receiver", () => {
   )
 
   it.scopedLive(
+    "installation event with all repos → repos is null in DB",
+    () =>
+      Effect.gen(function* () {
+        yield* runDatabaseMigrations
+        yield* router.pipe(HttpServer.serveEffect())
+        const client = yield* HttpClient.HttpClient
+
+        const body = JSON.stringify({
+          action: "created",
+          installation: {
+            id: 11111,
+            account: { type: "Organization", login: "all-repos-org" },
+          },
+          // no repositories field — app installed on all repos
+        })
+
+        const res = yield* client.post("/webhooks/github", {
+          body: HttpBody.text(body, "application/json"),
+          headers: webhookHeaders(body, "installation"),
+        })
+        expect(res.status).toBe(200)
+
+        const sql = yield* SqlClient.SqlClient
+        const rows: readonly any[] = yield* sql.unsafe(
+          `SELECT repos FROM installations WHERE installation_id = 11111`,
+        )
+        expect(rows.length).toBe(1)
+        expect(rows[0].repos).toBeNull()
+      }).pipe(Effect.provide(TestLayer)),
+    { timeout: 60_000 },
+  )
+
+  it.scopedLive(
     "installation_repositories:added → merges into existing repos",
     () =>
       Effect.gen(function* () {

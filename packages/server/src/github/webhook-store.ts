@@ -21,7 +21,7 @@ const UpsertInstallationRequest = Schema.Struct({
   installationId: Schema.Number,
   accountType: Schema.String,
   accountLogin: Schema.String,
-  repos: Schema.Array(RepoEntry),
+  repos: Schema.NullOr(Schema.Array(RepoEntry)),
 })
 
 export type UpsertInstallationParams = typeof UpsertInstallationRequest.Type
@@ -62,7 +62,7 @@ export const WebhookStoreLive = Layer.effect(
       Request: UpsertInstallationRequest,
       execute: (p) =>
         sql`INSERT INTO installations (installation_id, account_type, account_login, repos)
-            VALUES (${p.installationId}, ${p.accountType}, ${p.accountLogin}, ${JSON.stringify(p.repos)})
+            VALUES (${p.installationId}, ${p.accountType}, ${p.accountLogin}, ${p.repos === null ? null : JSON.stringify(p.repos)})
             ON CONFLICT (installation_id) DO UPDATE SET
               account_type = EXCLUDED.account_type,
               account_login = EXCLUDED.account_login,
