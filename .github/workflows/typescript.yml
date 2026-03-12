@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  fmt:
+  ts-fmt:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
     - name: Format check
       run: pnpm --filter @brrr/server fmt:check
 
-  lint:
+  ts-lint:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -37,7 +37,7 @@ jobs:
     - name: Lint
       run: pnpm --filter @brrr/server lint
 
-  typecheck:
+  ts-typecheck:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -50,7 +50,7 @@ jobs:
     - name: Type-check
       run: pnpm --filter @brrr/server build
 
-  test:
+  ts-test:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
