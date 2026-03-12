@@ -5,7 +5,8 @@ export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
   yield* sql.unsafe(`
     CREATE TABLE webhook_events (
-      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      id              UUID PRIMARY KEY DEFAULT uuidv7(),
+      delivery_id     TEXT NOT NULL,
       event_type      TEXT NOT NULL,
       action          TEXT,
       repo_full_name  TEXT,
@@ -13,6 +14,7 @@ export default Effect.gen(function* () {
       payload         JSONB NOT NULL,
       received_at     TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    CREATE UNIQUE INDEX idx_webhook_events_delivery_id ON webhook_events (delivery_id);
     CREATE INDEX idx_webhook_events_type_action ON webhook_events (event_type, action);
     CREATE INDEX idx_webhook_events_repo ON webhook_events (repo_full_name);
     CREATE INDEX idx_webhook_events_received ON webhook_events (received_at);
