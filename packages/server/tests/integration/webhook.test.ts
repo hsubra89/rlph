@@ -55,7 +55,7 @@ describe("webhook receiver", () => {
 
         // Verify DB row
         const sql = yield* SqlClient.SqlClient
-        const rows = yield* sql.unsafe(
+        const rows: readonly any[] = yield* sql.unsafe(
           `SELECT event_type, action, repo_full_name, installation_id, received_at FROM webhook_events`,
         )
         expect(rows.length).toBe(1)
@@ -66,7 +66,7 @@ describe("webhook receiver", () => {
         expect(rows[0].received_at).toBeInstanceOf(Date)
 
         // Verify payload JSONB is queryable
-        const jsonbRows = yield* sql.unsafe(
+        const jsonbRows: readonly any[] = yield* sql.unsafe(
           `SELECT payload->>'action' AS action FROM webhook_events WHERE payload->>'action' = 'opened'`,
         )
         expect(jsonbRows.length).toBe(1)
@@ -170,7 +170,7 @@ describe("webhook receiver", () => {
 
         // Verify installations table
         const sql = yield* SqlClient.SqlClient
-        const rows = yield* sql.unsafe(
+        const rows: readonly any[] = yield* sql.unsafe(
           `SELECT installation_id, account_type, account_login, repos FROM installations WHERE installation_id = 99999`,
         )
         expect(rows.length).toBe(1)
@@ -220,7 +220,9 @@ describe("webhook receiver", () => {
 
         // Verify updated repos
         const sql = yield* SqlClient.SqlClient
-        const rows = yield* sql.unsafe(`SELECT repos FROM installations WHERE installation_id = 88888`)
+        const rows: readonly any[] = yield* sql.unsafe(
+          `SELECT repos FROM installations WHERE installation_id = 88888`,
+        )
         expect(rows.length).toBe(1)
         expect(rows[0].repos).toEqual([{ full_name: "someuser/repo2" }])
       }).pipe(Effect.provide(TestLayer)),
