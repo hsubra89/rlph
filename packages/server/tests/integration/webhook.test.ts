@@ -59,13 +59,21 @@ describe("webhook receiver", () => {
         // Verify DB row
         const sql = yield* SqlClient.SqlClient
         const rows = yield* sql.unsafe(
-          `SELECT event_type, action, repo_full_name, installation_id FROM webhook_events`,
+          `SELECT event_type, action, repo_full_name, installation_id, received_at FROM webhook_events`,
         )
         expect(rows.length).toBe(1)
         expect(rows[0].event_type).toBe("pull_request")
         expect(rows[0].action).toBe("opened")
         expect(rows[0].repo_full_name).toBe("owner/repo")
         expect(String(rows[0].installation_id)).toBe("12345")
+        expect(rows[0].received_at).toBeInstanceOf(Date)
+
+        // Verify payload JSONB is queryable
+        const jsonbRows = yield* sql.unsafe(
+          `SELECT payload->>'action' AS action FROM webhook_events WHERE payload->>'action' = 'opened'`,
+        )
+        expect(jsonbRows.length).toBe(1)
+        expect(jsonbRows[0].action).toBe("opened")
       }).pipe(Effect.provide(TestLayer)),
     { timeout: 60_000 },
   )
