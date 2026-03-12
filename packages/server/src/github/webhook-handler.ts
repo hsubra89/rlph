@@ -30,6 +30,11 @@ export const handleWebhook = Effect.gen(function* () {
     return yield* HttpServerResponse.json({ error: "missing event type" }, { status: 400 })
   }
 
+  const deliveryId = request.headers["x-github-delivery"]
+  if (!deliveryId) {
+    return yield* HttpServerResponse.json({ error: "missing delivery id" }, { status: 400 })
+  }
+
   const payload = JSON.parse(rawBody)
   const action: string | null = payload.action ?? null
   const repoFullName: string | null = payload.repository?.full_name ?? null
@@ -39,7 +44,16 @@ export const handleWebhook = Effect.gen(function* () {
 
   const persist = sql.withTransaction(
     Effect.gen(function* () {
-      yield* store.insertEvent({ eventType, action, repoFullName, installationId, rawPayload: rawBody })
+      const inserted = yield* store.insertEvent({
+        deliveryId,
+        eventType,
+        action,
+        repoFullName,
+        installationId,
+        rawPayload: rawBody,
+      })
+
+      if (!inserted) return
 
       if (INSTALLATION_EVENTS.has(eventType) && installationId !== null) {
         const account = payload.installation

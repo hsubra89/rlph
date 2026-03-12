@@ -16,6 +16,7 @@ describe("postgres foundation", () => {
         expect(applied).toEqual([
           [1, "postgres_foundation"],
           [2, "webhook_tables"],
+          [3, "webhook_delivery_id"],
         ])
       }).pipe(Effect.provide(TestLayer)),
     { timeout: 60_000 },

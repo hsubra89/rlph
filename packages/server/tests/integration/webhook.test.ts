@@ -1,23 +1,17 @@
 import { HttpBody, HttpClient, HttpServer } from "@effect/platform"
 import { SqlClient, SqlError } from "@effect/sql"
 import { describe, expect, it } from "@effect/vitest"
-import { ConfigProvider, Effect, Layer } from "effect"
+import { Effect, Layer } from "effect"
 import * as crypto from "node:crypto"
 import { runDatabaseMigrations } from "../../src/database.js"
 import { WebhookStore, WebhookStoreLive } from "../../src/github/webhook-store.js"
 import { router } from "../../src/router.js"
 import { signPayload } from "../helpers/webhook.js"
-import { makeServerTestLayer, PgContainer } from "./fixtures.js"
-
-const TEST_WEBHOOK_SECRET = "test-webhook-secret-for-integration"
-
-const TestConfigLayer = Layer.setConfigProvider(
-  ConfigProvider.fromMap(new Map([["BRRR_GITHUB_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET]])),
-)
+import { makeServerTestLayer, PgContainer, TEST_WEBHOOK_SECRET } from "./fixtures.js"
 
 const DbLayer = PgContainer.TestDatabaseLayer
 
-const TestLayer = makeServerTestLayer(DbLayer, WebhookStoreLive.pipe(Layer.provide(DbLayer)), TestConfigLayer)
+const TestLayer = makeServerTestLayer(DbLayer, WebhookStoreLive.pipe(Layer.provide(DbLayer)))
 
 function webhookHeaders(body: string, eventType: string, opts?: { skipSignature?: boolean }) {
   const headers: Record<string, string> = {
@@ -71,6 +65,64 @@ describe("webhook receiver", () => {
         )
         expect(jsonbRows.length).toBe(1)
         expect(jsonbRows[0].action).toBe("opened")
+      }).pipe(Effect.provide(TestLayer)),
+    { timeout: 60_000 },
+  )
+
+  it.scopedLive(
+    "duplicate delivery id → 200 idempotent, no second row or upsert",
+    () =>
+      Effect.gen(function* () {
+        yield* runDatabaseMigrations
+        yield* router.pipe(HttpServer.serveEffect())
+        const client = yield* HttpClient.HttpClient
+
+        const deliveryId = crypto.randomUUID()
+
+        const body = JSON.stringify({
+          action: "created",
+          installation: {
+            id: 55555,
+            account: { type: "Organization", login: "dedup-org" },
+          },
+          repositories: [{ full_name: "dedup-org/repo1" }],
+        })
+
+        const headers = {
+          "x-github-event": "installation",
+          "x-github-delivery": deliveryId,
+          "x-hub-signature-256": signPayload(TEST_WEBHOOK_SECRET, body),
+        }
+
+        // First delivery
+        const res1 = yield* client.post("/webhooks/github", {
+          body: HttpBody.text(body, "application/json"),
+          headers,
+        })
+        expect(res1.status).toBe(200)
+
+        // Second delivery with same delivery id
+        const res2 = yield* client.post("/webhooks/github", {
+          body: HttpBody.text(body, "application/json"),
+          headers,
+        })
+        expect(res2.status).toBe(200)
+        const resBody = yield* res2.json
+        expect(resBody).toEqual({ received: true })
+
+        // Verify only one event row
+        const sql = yield* SqlClient.SqlClient
+        const eventRows: readonly any[] = yield* sql.unsafe(
+          `SELECT * FROM webhook_events WHERE delivery_id = '${deliveryId}'`,
+        )
+        expect(eventRows.length).toBe(1)
+
+        // Verify installation was upserted only once (created_at == updated_at)
+        const instRows: readonly any[] = yield* sql.unsafe(
+          `SELECT created_at, updated_at FROM installations WHERE installation_id = 55555`,
+        )
+        expect(instRows.length).toBe(1)
+        expect(instRows[0].created_at).toEqual(instRows[0].updated_at)
       }).pipe(Effect.provide(TestLayer)),
     { timeout: 60_000 },
   )
@@ -141,6 +193,30 @@ describe("webhook receiver", () => {
         expect(res.status).toBe(400)
         const resBody = yield* res.json
         expect(resBody).toEqual({ error: "missing event type" })
+      }).pipe(Effect.provide(TestLayer)),
+    { timeout: 60_000 },
+  )
+
+  it.scopedLive(
+    "missing delivery id → 400",
+    () =>
+      Effect.gen(function* () {
+        yield* runDatabaseMigrations
+        yield* router.pipe(HttpServer.serveEffect())
+        const client = yield* HttpClient.HttpClient
+
+        const body = JSON.stringify({ action: "opened" })
+
+        const res = yield* client.post("/webhooks/github", {
+          body: HttpBody.text(body, "application/json"),
+          headers: {
+            "x-hub-signature-256": signPayload(TEST_WEBHOOK_SECRET, body),
+            "x-github-event": "push",
+          },
+        })
+        expect(res.status).toBe(400)
+        const resBody = yield* res.json
+        expect(resBody).toEqual({ error: "missing delivery id" })
       }).pipe(Effect.provide(TestLayer)),
     { timeout: 60_000 },
   )
@@ -270,17 +346,15 @@ describe("webhook receiver", () => {
                 const sql = yield* SqlClient.SqlClient
                 return {
                   insertEvent: (p) =>
-                    sql`INSERT INTO webhook_events (event_type, action, repo_full_name, installation_id, payload)
-                        VALUES (${p.eventType}, ${p.action}, ${p.repoFullName}, ${p.installationId}, ${p.rawPayload})`.pipe(
-                      Effect.asVoid,
-                    ),
+                    sql`INSERT INTO webhook_events (delivery_id, event_type, action, repo_full_name, installation_id, payload)
+                        VALUES (${p.deliveryId}, ${p.eventType}, ${p.action}, ${p.repoFullName}, ${p.installationId}, ${p.rawPayload})
+                        RETURNING id`.pipe(Effect.map((rows) => rows.length > 0)),
                   upsertInstallation: () =>
                     Effect.fail(new SqlError.SqlError({ message: "injected failure" })),
                   withTransaction: sql.withTransaction,
                 }
               }),
             ).pipe(Layer.provide(DbLayer)),
-            TestConfigLayer,
           ),
         ),
       ),

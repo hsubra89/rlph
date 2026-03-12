@@ -11,6 +11,8 @@ import { TEST_JWT_SECRET } from "../helpers/constants.js"
 
 export { TEST_JWT_SECRET }
 
+export const TEST_WEBHOOK_SECRET = "test-stub-secret"
+
 export class ContainerError extends Data.TaggedError("ContainerError")<{
   readonly cause: unknown
 }> {}
@@ -35,7 +37,7 @@ export class PgContainer extends Effect.Service<PgContainer>()("test/PgContainer
 export const TestJwtSecretLayer = Layer.succeed(JwtSecret, TEST_JWT_SECRET)
 
 const StubWebhookStoreLayer = Layer.succeed(WebhookStore, {
-  insertEvent: () => Effect.void,
+  insertEvent: () => Effect.succeed(true),
   upsertInstallation: () => Effect.void,
 })
 

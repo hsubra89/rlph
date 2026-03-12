@@ -2,6 +2,7 @@ import { SqlClient, SqlError } from "@effect/sql"
 import { Context, Effect, Layer } from "effect"
 
 export interface InsertEventParams {
+  readonly deliveryId: string
   readonly eventType: string
   readonly action: string | null
   readonly repoFullName: string | null
@@ -17,7 +18,7 @@ export interface UpsertInstallationParams {
 }
 
 export interface WebhookStoreShape {
-  readonly insertEvent: (params: InsertEventParams) => Effect.Effect<void, SqlError.SqlError>
+  readonly insertEvent: (params: InsertEventParams) => Effect.Effect<boolean, SqlError.SqlError>
   readonly upsertInstallation: (params: UpsertInstallationParams) => Effect.Effect<void, SqlError.SqlError>
 }
 
@@ -30,10 +31,10 @@ export const WebhookStoreLive = Layer.effect(
 
     return {
       insertEvent: (p: InsertEventParams) =>
-        sql`INSERT INTO webhook_events (event_type, action, repo_full_name, installation_id, payload)
-            VALUES (${p.eventType}, ${p.action}, ${p.repoFullName}, ${p.installationId}, ${p.rawPayload})`.pipe(
-          Effect.asVoid,
-        ),
+        sql`INSERT INTO webhook_events (delivery_id, event_type, action, repo_full_name, installation_id, payload)
+            VALUES (${p.deliveryId}, ${p.eventType}, ${p.action}, ${p.repoFullName}, ${p.installationId}, ${p.rawPayload})
+            ON CONFLICT (delivery_id) DO NOTHING
+            RETURNING id`.pipe(Effect.map((rows) => rows.length > 0)),
 
       upsertInstallation: (p: UpsertInstallationParams) =>
         sql`INSERT INTO installations (installation_id, account_type, account_login, repos)
