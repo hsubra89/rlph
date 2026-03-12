@@ -54,11 +54,7 @@ Per-concern config — no monolithic config bag:
 - Postgres URL (env `BRRR_POSTGRES_URL`) — consumed directly by `PgClient.layerConfig` in `database.ts`
 
 ## Effect Patterns
-
-- Services defined with `Context.Tag`, provided via `Layer`
-- Use `Effect.gen` for sequential effectful code
-- Errors are typed — use `Effect.fail` with tagged error types
-- Layer composition: `Layer.provide` / `Layer.provideMerge`
+- Always refer to the Effect source-code as a reference at `source-references/effect` to learn idiomatic effect patterns and discover API(s).
 
 ## Commands
 

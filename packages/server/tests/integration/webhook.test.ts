@@ -1,10 +1,10 @@
 import { HttpBody, HttpClient, HttpServer } from "@effect/platform"
-import { SqlClient } from "@effect/sql"
+import { SqlClient, SqlError } from "@effect/sql"
 import { describe, expect, it } from "@effect/vitest"
 import { ConfigProvider, Effect, Layer } from "effect"
 import * as crypto from "node:crypto"
 import { runDatabaseMigrations } from "../../src/database.js"
-import { WebhookStoreLive } from "../../src/github/webhook-store.js"
+import { WebhookStore, WebhookStoreLive } from "../../src/github/webhook-store.js"
 import { router } from "../../src/router.js"
 import { signPayload } from "../helpers/webhook.js"
 import { makeServerTestLayer, PgContainer } from "./fixtures.js"
@@ -226,6 +226,64 @@ describe("webhook receiver", () => {
         expect(rows.length).toBe(1)
         expect(rows[0].repos).toEqual([{ full_name: "someuser/repo2" }])
       }).pipe(Effect.provide(TestLayer)),
+    { timeout: 60_000 },
+  )
+
+  it.scopedLive(
+    "upsertInstallation failure → 500, event row rolled back",
+    () =>
+      Effect.gen(function* () {
+        yield* runDatabaseMigrations
+        yield* router.pipe(HttpServer.serveEffect())
+        const client = yield* HttpClient.HttpClient
+
+        const body = JSON.stringify({
+          action: "created",
+          installation: {
+            id: 77777,
+            account: { type: "Organization", login: "fail-org" },
+          },
+          repositories: [{ full_name: "fail-org/repo1" }],
+        })
+
+        const res = yield* client.post("/webhooks/github", {
+          body: HttpBody.text(body, "application/json"),
+          headers: webhookHeaders(body, "installation"),
+        })
+        expect(res.status).toBe(500)
+        const resBody = yield* res.json
+        expect(resBody).toEqual({ error: "internal error" })
+
+        // Verify event was rolled back — no row should exist
+        const sql = yield* SqlClient.SqlClient
+        const rows: readonly any[] = yield* sql.unsafe(
+          `SELECT * FROM webhook_events WHERE installation_id = 77777`,
+        )
+        expect(rows.length).toBe(0)
+      }).pipe(
+        Effect.provide(
+          makeServerTestLayer(
+            DbLayer,
+            Layer.effect(
+              WebhookStore,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient
+                return {
+                  insertEvent: (p) =>
+                    sql`INSERT INTO webhook_events (event_type, action, repo_full_name, installation_id, payload)
+                        VALUES (${p.eventType}, ${p.action}, ${p.repoFullName}, ${p.installationId}, ${p.rawPayload})`.pipe(
+                      Effect.asVoid,
+                    ),
+                  upsertInstallation: () =>
+                    Effect.fail(new SqlError.SqlError({ message: "injected failure" })),
+                  withTransaction: sql.withTransaction,
+                }
+              }),
+            ).pipe(Layer.provide(DbLayer)),
+            TestConfigLayer,
+          ),
+        ),
+      ),
     { timeout: 60_000 },
   )
 })

@@ -2,6 +2,7 @@ import { HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Config, Effect, Either, Redacted } from "effect"
 import { verifyWebhookSignature } from "./webhook-signature.js"
 import { WebhookStore } from "./webhook-store.js"
+import { SqlClient } from "@effect/sql"
 
 const INSTALLATION_EVENTS = new Set(["installation", "installation_repositories"])
 
@@ -34,23 +35,27 @@ export const handleWebhook = Effect.gen(function* () {
   const repoFullName: string | null = payload.repository?.full_name ?? null
   const installationId: number | null = payload.installation?.id ?? null
 
-  const insertResult = yield* Effect.either(
-    store.insertEvent({ eventType, action, repoFullName, installationId, rawPayload: rawBody }),
-  )
-  if (Either.isLeft(insertResult)) {
-    return yield* HttpServerResponse.json({ error: "internal error" }, { status: 500 })
-  }
+  const sql = yield* SqlClient.SqlClient
 
-  if (INSTALLATION_EVENTS.has(eventType) && installationId !== null) {
-    const account = payload.installation
-    yield* store
-      .upsertInstallation({
-        installationId,
-        accountType: account?.account?.type ?? "Unknown",
-        accountLogin: account?.account?.login ?? "unknown",
-        repos: payload.repositories ?? payload.repositories_added ?? null,
-      })
-      .pipe(Effect.catchAll((err) => Effect.logWarning(`Failed to upsert installation: ${err}`)))
+  const persist = sql.withTransaction(
+    Effect.gen(function* () {
+      yield* store.insertEvent({ eventType, action, repoFullName, installationId, rawPayload: rawBody })
+
+      if (INSTALLATION_EVENTS.has(eventType) && installationId !== null) {
+        const account = payload.installation
+        yield* store.upsertInstallation({
+          installationId,
+          accountType: account?.account?.type ?? "Unknown",
+          accountLogin: account?.account?.login ?? "unknown",
+          repos: payload.repositories ?? payload.repositories_added ?? null,
+        })
+      }
+    }),
+  )
+
+  const persistResult = yield* Effect.either(persist)
+  if (Either.isLeft(persistResult)) {
+    return yield* HttpServerResponse.json({ error: "internal error" }, { status: 500 })
   }
 
   return yield* HttpServerResponse.json({ received: true })
