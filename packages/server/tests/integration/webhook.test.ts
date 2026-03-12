@@ -291,6 +291,51 @@ describe("webhook receiver", () => {
   )
 
   it.scopedLive(
+    'installation_repositories with repository_selection "all" → repos becomes null in DB',
+    () =>
+      Effect.gen(function* () {
+        yield* runDatabaseMigrations
+        yield* router.pipe(HttpServer.serveEffect())
+        const client = yield* HttpClient.HttpClient
+
+        const createBody = JSON.stringify({
+          action: "created",
+          installation: {
+            id: 22222,
+            account: { type: "Organization", login: "switch-org" },
+          },
+          repositories: [{ full_name: "switch-org/repo1" }],
+        })
+        yield* client.post("/webhooks/github", {
+          body: HttpBody.text(createBody, "application/json"),
+          headers: webhookHeaders(createBody, "installation"),
+        })
+
+        const reposBody = JSON.stringify({
+          action: "added",
+          repository_selection: "all",
+          installation: {
+            id: 22222,
+            account: { type: "Organization", login: "switch-org" },
+          },
+        })
+        const res = yield* client.post("/webhooks/github", {
+          body: HttpBody.text(reposBody, "application/json"),
+          headers: webhookHeaders(reposBody, "installation_repositories"),
+        })
+        expect(res.status).toBe(200)
+
+        const sql = yield* SqlClient.SqlClient
+        const rows: readonly any[] = yield* sql.unsafe(
+          `SELECT repos FROM installations WHERE installation_id = 22222`,
+        )
+        expect(rows.length).toBe(1)
+        expect(rows[0].repos).toBeNull()
+      }).pipe(Effect.provide(TestLayer)),
+    { timeout: 60_000 },
+  )
+
+  it.scopedLive(
     "installation_repositories:added → merges into existing repos",
     () =>
       Effect.gen(function* () {
