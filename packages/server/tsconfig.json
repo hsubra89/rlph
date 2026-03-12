@@ -6,10 +6,15 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noPropertyAccessFromIndexSignature": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": true,
     "incremental": true
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ]
 }
