@@ -5,10 +5,11 @@ import { WebhookStore } from "./webhook-store.js"
 import { SqlClient } from "@effect/sql"
 
 const INSTALLATION_EVENTS = new Set(["installation", "installation_repositories"])
+const GitHubWebhookSecret = Config.redacted("BRRR_GITHUB_WEBHOOK_SECRET").pipe(Config.map(Redacted.value))
 
 export const handleWebhook = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest
-  const secret = Redacted.value(yield* Config.redacted("BRRR_GITHUB_WEBHOOK_SECRET"))
+  const secret = yield* GitHubWebhookSecret
   const store = yield* WebhookStore
 
   const rawBody = yield* request.text

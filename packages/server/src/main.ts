@@ -1,14 +1,15 @@
 import { FetchHttpClient, HttpServer } from "@effect/platform"
 import { NodeContext, NodeHttpServer, NodeRuntime } from "@effect/platform-node"
-import { Effect, Layer } from "effect"
+import { Config, Effect, Layer } from "effect"
 import { createServer } from "node:http"
 import { LoginRateLimiterLive } from "./auth/login-rate-limiter.js"
 import { ReplayGuardLive } from "./auth/replay-guard.js"
 import { TokenDenylistLive } from "./auth/token-denylist.js"
-import { JwtSecretLive, ServerPort } from "./config.js"
 import { PostgresLive, PostgresMigrationsLive, runDatabaseMigrations } from "./database.js"
 import { WebhookStoreLive } from "./github/webhook-store.js"
 import { router } from "./router.js"
+
+const ServerPort = Config.integer("BRRR_PORT").pipe(Config.withDefault(4000))
 
 const program = Effect.gen(function* () {
   const port = yield* ServerPort
@@ -28,7 +29,6 @@ const program = Effect.gen(function* () {
     Layer.provide(TokenDenylistLive),
     Layer.provide(LoginRateLimiterLive),
     Layer.provide(FetchHttpClient.layer),
-    Layer.provide(JwtSecretLive),
     Layer.provide(WebhookStoreLive),
     Layer.provide(PostgresLive),
   )

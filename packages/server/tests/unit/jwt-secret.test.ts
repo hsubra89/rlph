@@ -1,13 +1,12 @@
 import { describe, expect, it } from "@effect/vitest"
 import { ConfigError, ConfigProvider, Effect } from "effect"
-import { JwtSecret, JwtSecretLive } from "../../src/config.js"
+import { JwtSecret } from "../../src/auth/jwt-secret.js"
 
-describe("JwtSecretLive", () => {
+describe("JwtSecret", () => {
   it.effect("rejects secrets shorter than 32 bytes", () =>
     Effect.gen(function* () {
       return yield* JwtSecret
     }).pipe(
-      Effect.provide(JwtSecretLive),
       Effect.withConfigProvider(ConfigProvider.fromMap(new Map([["BRRR_JWT_SECRET", "too-short"]]))),
       Effect.flip,
       Effect.tap((error) => {
@@ -20,7 +19,6 @@ describe("JwtSecretLive", () => {
     Effect.gen(function* () {
       return yield* JwtSecret
     }).pipe(
-      Effect.provide(JwtSecretLive),
       Effect.withConfigProvider(ConfigProvider.fromMap(new Map())),
       Effect.flip,
       Effect.tap((error) => {
