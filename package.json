@@ -2,9 +2,13 @@
   "private": true,
   "packageManager": "pnpm@10.32.1",
   "scripts": {
+    "dev": "pnpm -r run dev",
     "build": "pnpm -r run build",
     "test": "pnpm -r run test",
-    "lint": "pnpm -r run lint --parallel"
+    "test:integration": "pnpm -r run test:integration",
+    "lint": "pnpm -r run lint",
+    "fmt": "pnpm -r run fmt",
+    "fmt:check": "pnpm -r run fmt:check"
   },
   "devDependencies": {
     "oxfmt": "^0.37.0",

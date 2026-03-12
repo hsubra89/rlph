@@ -25,13 +25,13 @@ Use [smee.io](https://smee.io) to proxy webhooks to localhost:
 # 1. Visit https://smee.io/new to get a unique channel URL
 # 2. Set that URL as the Webhook URL in the GitHub App settings
 # 3. Run the smee client locally:
-npx smee -u https://smee.io/<channel-id> -t http://localhost:3000/webhooks/github
+npx smee -u https://smee.io/<channel-id> -t http://localhost:4000/webhooks/github
 ```
 
 Alternative: [ngrok](https://ngrok.com):
 
 ```bash
-ngrok http 3000
+ngrok http 4000
 # Use the https://*.ngrok.io URL as the Webhook URL
 ```
 

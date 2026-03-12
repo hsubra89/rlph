@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::error::Error;
 
-pub const DEFAULT_SERVER_URL: &str = "http://localhost:3000";
+pub const DEFAULT_SERVER_URL: &str = "http://localhost:4000";
 
 // ---------------------------------------------------------------------------
 // AuthClient: authenticated requests with automatic 401 retry

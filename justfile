@@ -1,23 +1,26 @@
 # Run all checks (mirrors CI)
+[parallel]
 check: fmt-check lint test ts-build
 
 # Format check
 fmt-check:
     cargo fmt --all -- --check
-    pnpm --filter '@brrr/*' run fmt:check
+    pnpm fmt:check
 
 # Lint
 lint:
     cargo clippy --all-targets --all-features -- -D warnings
-    pnpm --filter '@brrr/*' run lint
+    pnpm lint
 
 # Unit + lib tests
 test:
     cargo nextest run
+    pnpm test
 
 # Integration tests (CI gate)
 integration:
     cargo nextest run --profile integration -E 'binary(cli_binary)'
+    pnpm test:integration
 
 # Integration tests (full local sweep)
 integration-all:
@@ -26,12 +29,16 @@ integration-all:
 # Format (fix)
 fmt:
     cargo fmt --all
-    pnpm --filter '@brrr/*' run fmt
+    pnpm fmt
 
 # TypeScript build
 ts-build:
-    pnpm --filter '@brrr/*' run build
+    pnpm build
 
 # TypeScript dev server
-ts-dev:
-    pnpm --filter @brrr/server run dev
+dev:
+    pnpm dev
+
+build:
+    cargo build
+    pnpm build

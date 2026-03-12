@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "dev": "tsx src/main.ts",
+    "dev": "tsx --env-file=../../.env src/main.ts",
     "start": "node dist/main.js",
     "test": "vitest run --dir tests/unit",
     "test:integration": "vitest run --dir tests/integration",

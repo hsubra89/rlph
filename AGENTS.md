@@ -19,7 +19,7 @@ Mixed-language monorepo: Rust CLI (`crates/`) + TypeScript packages (`packages/`
 - **Integration (CI gate):** `just integration`
 - **Integration (full):** `just integration-all`
 - **Single Rust test:** `cargo nextest run -E 'test(test_name)'`
-- **TS dev server:** `just ts-dev`
+- **TS dev server:** `just dev`
 
 ## Development Methodology
 
