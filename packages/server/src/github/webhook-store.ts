@@ -17,17 +17,19 @@ export type InsertEventParams = typeof InsertEventRequest.Type
 
 const InsertedRow = Schema.Struct({ id: Schema.UUID })
 
+const NullableRepos = Schema.NullOr(Schema.Array(RepoEntry))
+
 const UpsertInstallationRequest = Schema.Struct({
   installationId: Schema.Number,
   accountType: Schema.String,
   accountLogin: Schema.String,
-  repos: Schema.NullOr(Schema.Array(RepoEntry)),
+  repos: NullableRepos,
 })
 
 export type UpsertInstallationParams = typeof UpsertInstallationRequest.Type
 
 const InstallationReposRow = Schema.Struct({
-  repos: Schema.NullOr(Schema.Array(RepoEntry)),
+  repos: NullableRepos,
 })
 
 type StoreError = SqlError.SqlError | ParseError
