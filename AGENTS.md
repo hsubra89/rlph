@@ -19,7 +19,7 @@ Mixed-language monorepo: Rust CLI (`crates/`) + TypeScript packages (`packages/`
 - **Integration (CI gate):** `just integration`
 - **Integration (full):** `just integration-all`
 - **Single Rust test:** `cargo nextest run -E 'test(test_name)'`
-- **TS dev server:** `just ts-dev`
+- **TS dev server:** `just dev`
 
 ## Development Methodology
 
@@ -34,3 +34,9 @@ Read when working in the relevant area:
 - [Testing](docs/testing.md) — mocking strategy, integration tests, execution policy, coverage expectations
 - [Conventions](docs/conventions.md) — design principles, error handling, async patterns, config merge, observability
 - [Specifications/](specs/) — specification files for systems built and being built
+
+## Source References 
+
+[Source References](source-references/) contains the source-code of libraries we use in this monorepo. Refer to them to discover API(s) and to identify idiomatic patterns when working with that library.
+
+- Effect

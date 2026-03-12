@@ -27,7 +27,7 @@ The Effect source code lives at `source-references/effect/`. **Always consult it
 
 | Package | Path | Use for |
 |---------|------|---------|
-| effect | `packages/effect/` | Core: Effect, Layer, Stream, Schema, Fiber, etc. |
+| effect | `packages/effect/` | Core: Effect, Layer, Stream, Schema, Fiber, RateLimiter, etc. |
 | platform | `packages/platform/` | HTTP client/server, filesystem, terminal |
 | platform-node | `packages/platform-node/` | Node.js platform implementation |
 | sql-pg | `packages/sql-pg/` | Postgres via Effect SQL |
@@ -45,7 +45,7 @@ See [PATTERNS.md](PATTERNS.md) for detailed examples covering:
 - Layer composition — `merge`, `provide`, `scoped`, `unwrapEffect`
 - Tagged errors with `Schema.TaggedError` + `catchTag`
 - Schema class definitions and `TaggedRequest`
-- Resource management with `acquireRelease` + `Scope`
+- Resource management with `acquireRelease` + `Scope` or `addFinalizer`.
 - Stream building, transformation, error recovery
 - Fiber forking, joining, interruption
 - Ref for mutable state
@@ -57,4 +57,6 @@ See [PATTERNS.md](PATTERNS.md) for detailed examples covering:
 - **Never guess APIs** — if unsure, read the source file first.
 - **Follow patterns from tests** — the test suite is the best style guide.
 - **Use `Effect.gen`** — prefer generator syntax over pipe chains for complex flows.
-- **Use `Schema` for validation** — not zod or other libraries.
+- **Use `Effect.fn`** or `Effect.fnUntraced` — to define an effectful function. Use `fnUntraced` for performance sensitive parts of the application or for library code.
+- **Use `Schema` for validation**.
+- **Use `SqlSchema` when querying data from the databse.

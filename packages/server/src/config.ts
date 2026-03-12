@@ -19,4 +19,4 @@ export const JwtSecretLive: Layer.Layer<JwtSecret, ConfigError.ConfigError> = La
   }),
 )
 
-export const ServerPort = Config.integer("BRRR_PORT").pipe(Config.withDefault(3000))
+export const ServerPort = Config.integer("BRRR_PORT").pipe(Config.withDefault(4000))
