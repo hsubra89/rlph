@@ -1,7 +1,7 @@
 import { HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Context, Data, Effect, Either } from "effect"
 import * as jose from "jose"
-import { JwtSecret } from "../config.js"
+import { JwtSecret } from "./jwt-secret.js"
 import { TokenDenylist } from "./token-denylist.js"
 
 export class AuthClaims extends Context.Tag("AuthClaims")<

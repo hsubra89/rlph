@@ -5,9 +5,8 @@ import { ConfigProvider, Data, Effect, Layer, Redacted } from "effect"
 import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
 import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
 import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
-import { JwtSecret } from "../../src/config.js"
 import { WebhookStore } from "../../src/github/webhook-store.js"
-import { TEST_JWT_SECRET } from "../helpers/constants.js"
+import { TEST_JWT_SECRET, TEST_JWT_SECRET_RAW } from "../helpers/constants.js"
 
 export { TEST_JWT_SECRET }
 
@@ -34,8 +33,6 @@ export class PgContainer extends Effect.Service<PgContainer>()("test/PgContainer
   ).pipe(Layer.provide(this.Default))
 }
 
-export const TestJwtSecretLayer = Layer.succeed(JwtSecret, TEST_JWT_SECRET)
-
 const StubWebhookStoreLayer = Layer.succeed(WebhookStore, {
   insertEvent: () => Effect.succeed(true),
   upsertInstallation: () => Effect.void,
@@ -44,7 +41,12 @@ const StubWebhookStoreLayer = Layer.succeed(WebhookStore, {
 })
 
 const TestConfigLayer = Layer.setConfigProvider(
-  ConfigProvider.fromMap(new Map([["BRRR_GITHUB_WEBHOOK_SECRET", "test-stub-secret"]])),
+  ConfigProvider.fromMap(
+    new Map([
+      ["BRRR_GITHUB_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET],
+      ["BRRR_JWT_SECRET", TEST_JWT_SECRET_RAW],
+    ]),
+  ),
 )
 
 export const ServerTestLayer = Layer.mergeAll(
@@ -53,7 +55,6 @@ export const ServerTestLayer = Layer.mergeAll(
   ReplayGuardLive,
   TokenDenylistLive,
   LoginRateLimiterLive,
-  TestJwtSecretLayer,
   StubWebhookStoreLayer,
   TestConfigLayer,
 )
