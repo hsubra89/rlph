@@ -39,7 +39,7 @@ export const TestJwtSecretLayer = Layer.succeed(JwtSecret, TEST_JWT_SECRET)
 const StubWebhookStoreLayer = Layer.succeed(WebhookStore, {
   insertEvent: () => Effect.succeed(true),
   upsertInstallation: () => Effect.void,
-  getInstallationRepos: () => Effect.succeed(null),
+  getInstallationRepos: () => Effect.succeed({ found: true as const, repos: null }),
   deleteInstallation: () => Effect.void,
 })
 

@@ -17,27 +17,34 @@ export type InsertEventParams = typeof InsertEventRequest.Type
 
 const InsertedRow = Schema.Struct({ id: Schema.UUID })
 
+const NullableRepos = Schema.NullOr(Schema.Array(RepoEntry))
+
 const UpsertInstallationRequest = Schema.Struct({
   installationId: Schema.Number,
   accountType: Schema.String,
   accountLogin: Schema.String,
-  repos: Schema.Array(RepoEntry),
+  repos: NullableRepos,
 })
 
 export type UpsertInstallationParams = typeof UpsertInstallationRequest.Type
 
 const InstallationReposRow = Schema.Struct({
-  repos: Schema.NullOr(Schema.Array(RepoEntry)),
+  repos: NullableRepos,
 })
 
 type StoreError = SqlError.SqlError | ParseError
+type InstallationRepos = ReadonlyArray<typeof RepoEntry.Type> | null
+
+export type InstallationReposLookup =
+  | { readonly found: false }
+  | { readonly found: true; readonly repos: InstallationRepos }
 
 export interface WebhookStoreShape {
   readonly insertEvent: (params: InsertEventParams) => Effect.Effect<boolean, StoreError>
   readonly upsertInstallation: (params: UpsertInstallationParams) => Effect.Effect<void, StoreError>
   readonly getInstallationRepos: (
     installationId: number,
-  ) => Effect.Effect<ReadonlyArray<typeof RepoEntry.Type> | null, StoreError>
+  ) => Effect.Effect<InstallationReposLookup, StoreError>
   readonly deleteInstallation: (installationId: number) => Effect.Effect<void, StoreError>
 }
 
@@ -62,7 +69,7 @@ export const WebhookStoreLive = Layer.effect(
       Request: UpsertInstallationRequest,
       execute: (p) =>
         sql`INSERT INTO installations (installation_id, account_type, account_login, repos)
-            VALUES (${p.installationId}, ${p.accountType}, ${p.accountLogin}, ${JSON.stringify(p.repos)})
+            VALUES (${p.installationId}, ${p.accountType}, ${p.accountLogin}, ${p.repos === null ? null : JSON.stringify(p.repos)})
             ON CONFLICT (installation_id) DO UPDATE SET
               account_type = EXCLUDED.account_type,
               account_login = EXCLUDED.account_login,
@@ -89,8 +96,8 @@ export const WebhookStoreLive = Layer.effect(
         _getInstallationRepos(id).pipe(
           Effect.map(
             Option.match({
-              onNone: () => null,
-              onSome: (row) => row.repos,
+              onNone: () => ({ found: false as const }),
+              onSome: (row) => ({ found: true as const, repos: row.repos }),
             }),
           ),
         ),
