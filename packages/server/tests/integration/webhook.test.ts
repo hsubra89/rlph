@@ -1,10 +1,9 @@
 import { HttpBody, HttpClient, HttpServer } from "@effect/platform"
 import { SqlClient } from "@effect/sql"
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Layer } from "effect"
+import { ConfigProvider, Effect, Layer } from "effect"
 import * as crypto from "node:crypto"
 import { runDatabaseMigrations } from "../../src/database.js"
-import { GitHubWebhookSecret } from "../../src/github/config.js"
 import { WebhookStoreLive } from "../../src/github/webhook-store.js"
 import { router } from "../../src/router.js"
 import { signPayload } from "../helpers/webhook.js"
@@ -12,15 +11,13 @@ import { makeServerTestLayer, PgContainer } from "./fixtures.js"
 
 const TEST_WEBHOOK_SECRET = "test-webhook-secret-for-integration"
 
-const TestGitHubWebhookSecretLayer = Layer.succeed(GitHubWebhookSecret, TEST_WEBHOOK_SECRET)
+const TestConfigLayer = Layer.setConfigProvider(
+  ConfigProvider.fromMap(new Map([["BRRR_GITHUB_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET]])),
+)
 
 const DbLayer = PgContainer.TestDatabaseLayer
 
-const TestLayer = makeServerTestLayer(
-  DbLayer,
-  WebhookStoreLive.pipe(Layer.provide(DbLayer)),
-  TestGitHubWebhookSecretLayer,
-)
+const TestLayer = makeServerTestLayer(DbLayer, WebhookStoreLive.pipe(Layer.provide(DbLayer)), TestConfigLayer)
 
 function webhookHeaders(body: string, eventType: string, opts?: { skipSignature?: boolean }) {
   const headers: Record<string, string> = {

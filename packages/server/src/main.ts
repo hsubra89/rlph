@@ -7,7 +7,6 @@ import { ReplayGuardLive } from "./auth/replay-guard.js"
 import { TokenDenylistLive } from "./auth/token-denylist.js"
 import { JwtSecretLive, ServerPort } from "./config.js"
 import { PostgresLive, PostgresMigrationsLive, runDatabaseMigrations } from "./database.js"
-import { GitHubWebhookSecretLive } from "./github/config.js"
 import { WebhookStoreLive } from "./github/webhook-store.js"
 import { router } from "./router.js"
 
@@ -30,7 +29,6 @@ const program = Effect.gen(function* () {
     Layer.provide(LoginRateLimiterLive),
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(JwtSecretLive),
-    Layer.provide(GitHubWebhookSecretLive),
     Layer.provide(WebhookStoreLive),
     Layer.provide(PostgresLive),
   )

@@ -1,6 +1,5 @@
 import { HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Effect, Either } from "effect"
-import { GitHubWebhookSecret } from "./config.js"
+import { Config, Effect, Either, Redacted } from "effect"
 import { verifyWebhookSignature } from "./webhook-signature.js"
 import { WebhookStore } from "./webhook-store.js"
 
@@ -8,7 +7,7 @@ const INSTALLATION_EVENTS = new Set(["installation", "installation_repositories"
 
 export const handleWebhook = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest
-  const secret = yield* GitHubWebhookSecret
+  const secret = Redacted.value(yield* Config.redacted("BRRR_GITHUB_WEBHOOK_SECRET"))
   const store = yield* WebhookStore
 
   const rawBody = yield* request.text
