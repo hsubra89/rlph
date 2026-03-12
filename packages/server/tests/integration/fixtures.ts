@@ -1,5 +1,7 @@
 import { NodeContext, NodeHttpServer } from "@effect/platform-node"
-import { Layer } from "effect"
+import { PgClient } from "@effect/sql-pg"
+import { PostgreSqlContainer } from "@testcontainers/postgresql"
+import { Data, Effect, Layer, Redacted } from "effect"
 import { LoginRateLimiterLive } from "../../src/auth/login-rate-limiter.js"
 import { ReplayGuardLive } from "../../src/auth/replay-guard.js"
 import { TokenDenylistLive } from "../../src/auth/token-denylist.js"
@@ -7,6 +9,27 @@ import { JwtSecret } from "../../src/config.js"
 import { TEST_JWT_SECRET } from "../helpers/constants.js"
 
 export { TEST_JWT_SECRET }
+
+export class ContainerError extends Data.TaggedError("ContainerError")<{
+  readonly cause: unknown
+}> {}
+
+export class PgContainer extends Effect.Service<PgContainer>()("test/PgContainer", {
+  scoped: Effect.acquireRelease(
+    Effect.tryPromise({
+      try: () => new PostgreSqlContainer("postgres:18-alpine").start(),
+      catch: (cause) => new ContainerError({ cause }),
+    }),
+    (container) => Effect.promise(() => container.stop()),
+  ),
+}) {
+  static TestDatabaseLayer = Layer.unwrapEffect(
+    Effect.gen(function* () {
+      const container = yield* PgContainer
+      return PgClient.layer({ url: Redacted.make(container.getConnectionUri()) })
+    }),
+  ).pipe(Layer.provide(this.Default))
+}
 
 export const TestJwtSecretLayer = Layer.succeed(JwtSecret, TEST_JWT_SECRET)
 

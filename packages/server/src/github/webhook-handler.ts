@@ -1,5 +1,5 @@
 import { HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Effect } from "effect"
+import { Effect, Either } from "effect"
 import { GitHubWebhookSecret } from "./config.js"
 import { verifyWebhookSignature } from "./webhook-signature.js"
 import { WebhookStore } from "./webhook-store.js"
@@ -14,12 +14,14 @@ export const handleWebhook = Effect.gen(function* () {
   const rawBody = yield* request.text
 
   const signatureHeader = request.headers["x-hub-signature-256"]
+
   if (!signatureHeader) {
     return yield* HttpServerResponse.json({ error: "missing signature" }, { status: 401 })
   }
 
-  const verifyResult = yield* verifyWebhookSignature(secret, signatureHeader, rawBody).pipe(Effect.either)
-  if (verifyResult._tag === "Left") {
+  const verifyResult = yield* Effect.either(verifyWebhookSignature(secret, signatureHeader, rawBody))
+
+  if (Either.isLeft(verifyResult)) {
     return yield* HttpServerResponse.json({ error: "invalid signature" }, { status: 401 })
   }
 
@@ -33,10 +35,10 @@ export const handleWebhook = Effect.gen(function* () {
   const repoFullName: string | null = payload.repository?.full_name ?? null
   const installationId: number | null = payload.installation?.id ?? null
 
-  const insertResult = yield* store
-    .insertEvent({ eventType, action, repoFullName, installationId, payload })
-    .pipe(Effect.either)
-  if (insertResult._tag === "Left") {
+  const insertResult = yield* Effect.either(
+    store.insertEvent({ eventType, action, repoFullName, installationId, rawPayload: rawBody }),
+  )
+  if (Either.isLeft(insertResult)) {
     return yield* HttpServerResponse.json({ error: "internal error" }, { status: 500 })
   }
 
@@ -49,7 +51,7 @@ export const handleWebhook = Effect.gen(function* () {
         accountLogin: account?.account?.login ?? "unknown",
         repos: payload.repositories ?? payload.repositories_added ?? null,
       })
-      .pipe(Effect.catchAll(() => Effect.void))
+      .pipe(Effect.catchAll((err) => Effect.logWarning(`Failed to upsert installation: ${err}`)))
   }
 
   return yield* HttpServerResponse.json({ received: true })

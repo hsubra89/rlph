@@ -6,7 +6,7 @@ export interface InsertEventParams {
   readonly action: string | null
   readonly repoFullName: string | null
   readonly installationId: number | null
-  readonly payload: unknown
+  readonly rawPayload: string
 }
 
 export interface UpsertInstallationParams {
@@ -31,7 +31,7 @@ export const WebhookStoreLive = Layer.effect(
     return {
       insertEvent: (p: InsertEventParams) =>
         sql`INSERT INTO webhook_events (event_type, action, repo_full_name, installation_id, payload)
-            VALUES (${p.eventType}, ${p.action}, ${p.repoFullName}, ${p.installationId}, ${JSON.stringify(p.payload)})`.pipe(
+            VALUES (${p.eventType}, ${p.action}, ${p.repoFullName}, ${p.installationId}, ${p.rawPayload})`.pipe(
           Effect.asVoid,
         ),
 

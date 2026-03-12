@@ -2,14 +2,9 @@ import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
 import * as crypto from "node:crypto"
 import { verifyWebhookSignature, WebhookSignatureError } from "../../src/github/webhook-signature.js"
+import { signPayload } from "../helpers/webhook.js"
 
 const SECRET = "test-webhook-secret"
-
-function signPayload(secret: string, body: string): string {
-  const hmac = crypto.createHmac("sha256", secret)
-  hmac.update(body)
-  return `sha256=${hmac.digest("hex")}`
-}
 
 describe("verifyWebhookSignature", () => {
   it.effect("accepts a valid HMAC signature", () =>

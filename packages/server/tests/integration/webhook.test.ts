@@ -1,42 +1,19 @@
 import { HttpBody, HttpClient, HttpServer } from "@effect/platform"
 import { SqlClient } from "@effect/sql"
-import { PgClient } from "@effect/sql-pg"
-import { PostgreSqlContainer } from "@testcontainers/postgresql"
 import { describe, expect, it } from "@effect/vitest"
-import { Data, Effect, Layer, Redacted } from "effect"
+import { Effect, Layer } from "effect"
 import * as crypto from "node:crypto"
 import { runDatabaseMigrations } from "../../src/database.js"
 import { GitHubWebhookSecret } from "../../src/github/config.js"
 import { WebhookStoreLive } from "../../src/github/webhook-store.js"
 import { router } from "../../src/router.js"
-import { makeServerTestLayer } from "./fixtures.js"
+import { signPayload } from "../helpers/webhook.js"
+import { makeServerTestLayer, PgContainer } from "./fixtures.js"
 
 const TEST_WEBHOOK_SECRET = "test-webhook-secret-for-integration"
 
-class ContainerError extends Data.TaggedError("ContainerError")<{
-  readonly cause: unknown
-}> {}
-
-class PgContainer extends Effect.Service<PgContainer>()("test/WebhookPgContainer", {
-  scoped: Effect.acquireRelease(
-    Effect.tryPromise({
-      try: () => new PostgreSqlContainer("postgres:18-alpine").start(),
-      catch: (cause) => new ContainerError({ cause }),
-    }),
-    (container) => Effect.promise(() => container.stop()),
-  ),
-}) {
-  static TestDatabaseLayer = Layer.unwrapEffect(
-    Effect.gen(function* () {
-      const container = yield* PgContainer
-      return PgClient.layer({ url: Redacted.make(container.getConnectionUri()) })
-    }),
-  ).pipe(Layer.provide(this.Default))
-}
-
 const TestGitHubWebhookSecretLayer = Layer.succeed(GitHubWebhookSecret, TEST_WEBHOOK_SECRET)
 
-// Build a single DB layer shared by WebhookStoreLive and migrations
 const DbLayer = PgContainer.TestDatabaseLayer
 
 const TestLayer = makeServerTestLayer(
@@ -44,12 +21,6 @@ const TestLayer = makeServerTestLayer(
   WebhookStoreLive.pipe(Layer.provide(DbLayer)),
   TestGitHubWebhookSecretLayer,
 )
-
-function signPayload(secret: string, body: string): string {
-  const hmac = crypto.createHmac("sha256", secret)
-  hmac.update(body)
-  return `sha256=${hmac.digest("hex")}`
-}
 
 function webhookHeaders(body: string, eventType: string, opts?: { skipSignature?: boolean }) {
   const headers: Record<string, string> = {

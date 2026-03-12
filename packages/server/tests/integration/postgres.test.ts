@@ -1,32 +1,9 @@
 import { HttpClient, HttpServer } from "@effect/platform"
-import { PgClient } from "@effect/sql-pg"
-import { PostgreSqlContainer } from "@testcontainers/postgresql"
 import { describe, expect, it } from "@effect/vitest"
-import { Data, Effect, Layer, Redacted } from "effect"
+import { Effect } from "effect"
 import { runDatabaseMigrations } from "../../src/database.js"
 import { router } from "../../src/router.js"
-import { makeServerTestLayer } from "./fixtures.js"
-
-class ContainerError extends Data.TaggedError("ContainerError")<{
-  readonly cause: unknown
-}> {}
-
-class PgContainer extends Effect.Service<PgContainer>()("test/PgContainer", {
-  scoped: Effect.acquireRelease(
-    Effect.tryPromise({
-      try: () => new PostgreSqlContainer("postgres:18-alpine").start(),
-      catch: (cause) => new ContainerError({ cause }),
-    }),
-    (container) => Effect.promise(() => container.stop()),
-  ),
-}) {
-  static TestDatabaseLayer = Layer.unwrapEffect(
-    Effect.gen(function* () {
-      const container = yield* PgContainer
-      return PgClient.layer({ url: Redacted.make(container.getConnectionUri()) })
-    }),
-  ).pipe(Layer.provide(this.Default))
-}
+import { makeServerTestLayer, PgContainer } from "./fixtures.js"
 
 const TestLayer = makeServerTestLayer(PgContainer.TestDatabaseLayer)
 
