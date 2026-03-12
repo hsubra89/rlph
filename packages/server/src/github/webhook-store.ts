@@ -42,7 +42,9 @@ export type InstallationReposLookup =
 export interface WebhookStoreShape {
   readonly insertEvent: (params: InsertEventParams) => Effect.Effect<boolean, StoreError>
   readonly upsertInstallation: (params: UpsertInstallationParams) => Effect.Effect<void, StoreError>
-  readonly getInstallationRepos: (installationId: number) => Effect.Effect<InstallationReposLookup, StoreError>
+  readonly getInstallationRepos: (
+    installationId: number,
+  ) => Effect.Effect<InstallationReposLookup, StoreError>
   readonly deleteInstallation: (installationId: number) => Effect.Effect<void, StoreError>
 }
 
