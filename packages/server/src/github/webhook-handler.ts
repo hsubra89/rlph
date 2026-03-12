@@ -57,12 +57,38 @@ export const handleWebhook = Effect.gen(function* () {
 
       if (INSTALLATION_EVENTS.has(eventType) && installationId !== null) {
         const account = payload.installation
-        yield* store.upsertInstallation({
-          installationId,
-          accountType: account?.account?.type ?? "Unknown",
-          accountLogin: account?.account?.login ?? "unknown",
-          repos: payload.repositories ?? payload.repositories_added ?? null,
-        })
+
+        if (eventType === "installation" && action === "deleted") {
+          yield* store.deleteInstallation(installationId)
+        } else if (eventType === "installation_repositories") {
+          const current = (yield* store.getInstallationRepos(installationId)) ?? []
+          let repos: ReadonlyArray<{ full_name: string }>
+          if (action === "added") {
+            const added: ReadonlyArray<{ full_name: string }> = payload.repositories_added ?? []
+            const existing = new Set(current.map((r) => r.full_name))
+            repos = [...current, ...added.filter((r) => !existing.has(r.full_name))]
+          } else if (action === "removed") {
+            const removed = new Set(
+              (payload.repositories_removed ?? []).map((r: { full_name: string }) => r.full_name),
+            )
+            repos = current.filter((r) => !removed.has(r.full_name))
+          } else {
+            repos = current
+          }
+          yield* store.upsertInstallation({
+            installationId,
+            accountType: account?.account?.type ?? "Unknown",
+            accountLogin: account?.account?.login ?? "unknown",
+            repos,
+          })
+        } else {
+          yield* store.upsertInstallation({
+            installationId,
+            accountType: account?.account?.type ?? "Unknown",
+            accountLogin: account?.account?.login ?? "unknown",
+            repos: payload.repositories ?? [],
+          })
+        }
       }
     }),
   )

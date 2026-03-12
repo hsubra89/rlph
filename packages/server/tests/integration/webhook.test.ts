@@ -258,14 +258,14 @@ describe("webhook receiver", () => {
   )
 
   it.scopedLive(
-    "installation_repositories event → updates repos list",
+    "installation_repositories:added → merges into existing repos",
     () =>
       Effect.gen(function* () {
         yield* runDatabaseMigrations
         yield* router.pipe(HttpServer.serveEffect())
         const client = yield* HttpClient.HttpClient
 
-        // First: create installation
+        // First: create installation with repo1
         const createBody = JSON.stringify({
           action: "created",
           installation: {
@@ -279,7 +279,7 @@ describe("webhook receiver", () => {
           headers: webhookHeaders(createBody, "installation"),
         })
 
-        // Second: repos added event
+        // Second: repos added event adds repo2
         const reposBody = JSON.stringify({
           action: "added",
           installation: {
@@ -294,13 +294,107 @@ describe("webhook receiver", () => {
         })
         expect(res.status).toBe(200)
 
-        // Verify updated repos
+        // Verify repos contains both repo1 and repo2
         const sql = yield* SqlClient.SqlClient
         const rows: readonly any[] = yield* sql.unsafe(
           `SELECT repos FROM installations WHERE installation_id = 88888`,
         )
         expect(rows.length).toBe(1)
+        expect(rows[0].repos).toEqual([{ full_name: "someuser/repo1" }, { full_name: "someuser/repo2" }])
+      }).pipe(Effect.provide(TestLayer)),
+    { timeout: 60_000 },
+  )
+
+  it.scopedLive(
+    "installation_repositories:removed → removes from existing repos",
+    () =>
+      Effect.gen(function* () {
+        yield* runDatabaseMigrations
+        yield* router.pipe(HttpServer.serveEffect())
+        const client = yield* HttpClient.HttpClient
+
+        // Create installation with two repos
+        const createBody = JSON.stringify({
+          action: "created",
+          installation: {
+            id: 44444,
+            account: { type: "User", login: "someuser" },
+          },
+          repositories: [{ full_name: "someuser/repo1" }, { full_name: "someuser/repo2" }],
+        })
+        yield* client.post("/webhooks/github", {
+          body: HttpBody.text(createBody, "application/json"),
+          headers: webhookHeaders(createBody, "installation"),
+        })
+
+        // Remove repo1
+        const removeBody = JSON.stringify({
+          action: "removed",
+          installation: {
+            id: 44444,
+            account: { type: "User", login: "someuser" },
+          },
+          repositories_removed: [{ full_name: "someuser/repo1" }],
+        })
+        const res = yield* client.post("/webhooks/github", {
+          body: HttpBody.text(removeBody, "application/json"),
+          headers: webhookHeaders(removeBody, "installation_repositories"),
+        })
+        expect(res.status).toBe(200)
+
+        // Verify only repo2 remains
+        const sql = yield* SqlClient.SqlClient
+        const rows: readonly any[] = yield* sql.unsafe(
+          `SELECT repos FROM installations WHERE installation_id = 44444`,
+        )
+        expect(rows.length).toBe(1)
         expect(rows[0].repos).toEqual([{ full_name: "someuser/repo2" }])
+      }).pipe(Effect.provide(TestLayer)),
+    { timeout: 60_000 },
+  )
+
+  it.scopedLive(
+    "installation:deleted → removes installation row",
+    () =>
+      Effect.gen(function* () {
+        yield* runDatabaseMigrations
+        yield* router.pipe(HttpServer.serveEffect())
+        const client = yield* HttpClient.HttpClient
+
+        // Create installation
+        const createBody = JSON.stringify({
+          action: "created",
+          installation: {
+            id: 33333,
+            account: { type: "Organization", login: "del-org" },
+          },
+          repositories: [{ full_name: "del-org/repo1" }],
+        })
+        yield* client.post("/webhooks/github", {
+          body: HttpBody.text(createBody, "application/json"),
+          headers: webhookHeaders(createBody, "installation"),
+        })
+
+        // Delete installation
+        const deleteBody = JSON.stringify({
+          action: "deleted",
+          installation: {
+            id: 33333,
+            account: { type: "Organization", login: "del-org" },
+          },
+        })
+        const res = yield* client.post("/webhooks/github", {
+          body: HttpBody.text(deleteBody, "application/json"),
+          headers: webhookHeaders(deleteBody, "installation"),
+        })
+        expect(res.status).toBe(200)
+
+        // Verify installation row is gone
+        const sql = yield* SqlClient.SqlClient
+        const rows: readonly any[] = yield* sql.unsafe(
+          `SELECT * FROM installations WHERE installation_id = 33333`,
+        )
+        expect(rows.length).toBe(0)
       }).pipe(Effect.provide(TestLayer)),
     { timeout: 60_000 },
   )
@@ -351,6 +445,8 @@ describe("webhook receiver", () => {
                         RETURNING id`.pipe(Effect.map((rows) => rows.length > 0)),
                   upsertInstallation: () =>
                     Effect.fail(new SqlError.SqlError({ message: "injected failure" })),
+                  getInstallationRepos: () => Effect.succeed(null),
+                  deleteInstallation: () => Effect.void,
                   withTransaction: sql.withTransaction,
                 }
               }),

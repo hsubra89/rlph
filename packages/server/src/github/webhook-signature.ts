@@ -3,7 +3,7 @@ import * as crypto from "node:crypto"
 
 export class WebhookSignatureError extends Data.TaggedError("WebhookSignatureError")<{
   readonly reason: string
-}> { }
+}> {}
 
 export const verifyWebhookSignature = (
   secret: string,

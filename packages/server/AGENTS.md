@@ -54,7 +54,7 @@ Per-concern config — no monolithic config bag:
 - Postgres URL (env `BRRR_POSTGRES_URL`) — consumed directly by `PgClient.layerConfig` in `database.ts`
 
 ## Effect Patterns
-- Always refer to the Effect source-code as a reference at `source-references/effect` to learn idiomatic effect patterns and discover API(s).
+- Always refer to the Effect source-code as a reference at `source-references/effect/` to learn idiomatic effect patterns and discover API(s).
 
 ## Commands
 
