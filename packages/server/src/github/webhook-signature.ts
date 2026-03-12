@@ -3,7 +3,7 @@ import * as crypto from "node:crypto"
 
 export class WebhookSignatureError extends Data.TaggedError("WebhookSignatureError")<{
   readonly reason: string
-}> {}
+}> { }
 
 export const verifyWebhookSignature = (
   secret: string,
@@ -15,12 +15,21 @@ export const verifyWebhookSignature = (
       return yield* new WebhookSignatureError({ reason: "missing sha256= prefix" })
     }
 
-    const expected = "sha256=" + crypto.createHmac("sha256", secret).update(rawBody).digest("hex")
+    const hex = signatureHeader.slice(7)
 
-    const sigBuf = Buffer.from(signatureHeader)
-    const expectedBuf = Buffer.from(expected)
+    if (hex.length !== 64) {
+      return yield* new WebhookSignatureError({ reason: "signature mismatch" })
+    }
 
-    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+    const sigBytes = Buffer.from(hex, "hex")
+
+    if (sigBytes.length !== 32) {
+      return yield* new WebhookSignatureError({ reason: "signature mismatch" })
+    }
+
+    const expected = crypto.createHmac("sha256", secret).update(rawBody).digest()
+
+    if (!crypto.timingSafeEqual(sigBytes, expected)) {
       return yield* new WebhookSignatureError({ reason: "signature mismatch" })
     }
   })
