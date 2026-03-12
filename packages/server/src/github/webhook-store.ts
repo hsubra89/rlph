@@ -33,13 +33,16 @@ const InstallationReposRow = Schema.Struct({
 })
 
 type StoreError = SqlError.SqlError | ParseError
+type InstallationRepos = ReadonlyArray<typeof RepoEntry.Type> | null
+
+export type InstallationReposLookup =
+  | { readonly found: false }
+  | { readonly found: true; readonly repos: InstallationRepos }
 
 export interface WebhookStoreShape {
   readonly insertEvent: (params: InsertEventParams) => Effect.Effect<boolean, StoreError>
   readonly upsertInstallation: (params: UpsertInstallationParams) => Effect.Effect<void, StoreError>
-  readonly getInstallationRepos: (
-    installationId: number,
-  ) => Effect.Effect<ReadonlyArray<typeof RepoEntry.Type> | null, StoreError>
+  readonly getInstallationRepos: (installationId: number) => Effect.Effect<InstallationReposLookup, StoreError>
   readonly deleteInstallation: (installationId: number) => Effect.Effect<void, StoreError>
 }
 
@@ -91,8 +94,8 @@ export const WebhookStoreLive = Layer.effect(
         _getInstallationRepos(id).pipe(
           Effect.map(
             Option.match({
-              onNone: () => null,
-              onSome: (row) => row.repos,
+              onNone: () => ({ found: false as const }),
+              onSome: (row) => ({ found: true as const, repos: row.repos }),
             }),
           ),
         ),

@@ -66,24 +66,26 @@ export const handleWebhook = Effect.gen(function* () {
 
           let repos: ReadonlyArray<{ full_name: string }> | null
           if (eventType === "installation_repositories") {
+            const current = yield* store.getInstallationRepos(installationId)
+            if (!current.found) {
+              return
+            }
+
             if (payload.repository_selection === "all") {
               repos = null
+            } else if (current.repos === null) {
+              repos = null
+            } else if (action === "added") {
+              const added: ReadonlyArray<{ full_name: string }> = payload.repositories_added ?? []
+              const existing = new Set(current.repos.map((r) => r.full_name))
+              repos = [...current.repos, ...added.filter((r) => !existing.has(r.full_name))]
+            } else if (action === "removed") {
+              const removed = new Set(
+                (payload.repositories_removed ?? []).map((r: { full_name: string }) => r.full_name),
+              )
+              repos = current.repos.filter((r) => !removed.has(r.full_name))
             } else {
-              const current = yield* store.getInstallationRepos(installationId)
-              if (current === null) {
-                repos = null
-              } else if (action === "added") {
-                const added: ReadonlyArray<{ full_name: string }> = payload.repositories_added ?? []
-                const existing = new Set(current.map((r) => r.full_name))
-                repos = [...current, ...added.filter((r) => !existing.has(r.full_name))]
-              } else if (action === "removed") {
-                const removed = new Set(
-                  (payload.repositories_removed ?? []).map((r: { full_name: string }) => r.full_name),
-                )
-                repos = current.filter((r) => !removed.has(r.full_name))
-              } else {
-                repos = current
-              }
+              repos = current.repos
             }
           } else {
             repos = payload.repositories ?? null
